@@ -1,0 +1,20 @@
+{
+    "name": "cursor-replacer-native",
+    "version": "0.1.0",
+    "main": "index.js",
+    "types": "index.d.ts",
+    "napi": {
+        "name": "cursor-replacer-native",
+        "triples": {
+            "defaults": true,
+            "additional": []
+        }
+    },
+    "devDependencies": {
+        "@napi-rs/cli": "^2.18.0"
+    },
+    "scripts": {
+        "build": "napi build --release --platform",
+        "build:debug": "napi build --platform"
+    }
+}

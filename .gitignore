@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+dist-electron/
+release/
+native/target/
+
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# Secrets / configs
+.env
+.env.local
+*.pem
+*.key

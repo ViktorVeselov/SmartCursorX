@@ -1,4 +1,4 @@
-# Cursor Replacer
+# SmartCursorX
 
 An AI-first IDE with Vim mode, built with Electron + React + Rust.
 
