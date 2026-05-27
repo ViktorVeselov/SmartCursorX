@@ -25,4 +25,4 @@ jobs:
       # Note: This script uses native Node.js libraries (fs, path),
       # so it runs instantly without needing a slow 'npm install' step!
       - name: Scan Codebase for Secrets & Credentials
-        run: node scripts/verify-secrets.cjs
+        run: node .github/scripts/verify-secrets.cjs

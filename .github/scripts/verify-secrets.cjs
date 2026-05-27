@@ -108,7 +108,7 @@ function scanFile(filePath) {
 }
 
 function main() {
-  const projectRoot = path.resolve(__dirname, '..');
+  const projectRoot = path.resolve(__dirname, '../..');
   console.log(`🔍 Starting deterministic secret scan in: ${projectRoot}`);
   
   let files;
