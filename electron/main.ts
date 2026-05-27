@@ -1,0 +1,108 @@
+import { app, BrowserWindow } from 'electron'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+// import { store } from './store'
+import { dbService } from './db'
+import { IpcManager } from './ipcHandlers'
+import { adminApiService } from './services/AdminApiService'
+
+console.log(' [Main] Starting Electron Main Process...');
+
+const require = createRequire(import.meta.url)
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+// Polyfill for dependencies that expect __dirname (like sql.js or node-pty)
+Object.assign(global, { __dirname, require });
+
+// The built directory structure
+process.env.APP_ROOT = path.join(__dirname, '..')
+
+// Import native module
+const nativePath = app.isPackaged
+  ? path.join(process.resourcesPath, 'native')
+  : path.join(process.env.APP_ROOT, 'native')
+
+let native: typeof import('../native')
+try {
+  native = require(nativePath)
+  console.log('Native module loaded:', native.nativeHealthCheck())
+} catch (err) {
+  console.error('Failed to load native module:', err)
+}
+
+// 🚧 Use ['ENV_NAME'] avoid vite:define plugin - Vite@2.x
+export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
+export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
+export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
+
+process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
+
+let win: BrowserWindow | null
+
+function createWindow() {
+  console.log(' [Main] Creating Window...');
+  win = new BrowserWindow({
+    icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.mjs'),
+      // Security: Context Isolation is true by default in Electron 12+
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  })
+
+  // Test active push message to Renderer-process.
+  win.webContents.on('did-finish-load', () => {
+    win?.webContents.send('main-process-message', (new Date).toLocaleString())
+  })
+
+  if (VITE_DEV_SERVER_URL) {
+    console.log(' [Main] Loading URL:', VITE_DEV_SERVER_URL);
+    win.loadURL(VITE_DEV_SERVER_URL)
+  } else {
+    // win.loadFile('dist/index.html')
+    win.loadFile(path.join(RENDERER_DIST, 'index.html'))
+  }
+}
+
+app.on('window-all-closed', () => {
+  adminApiService.stop();
+  if (process.platform !== 'darwin') {
+    app.quit()
+    win = null
+  }
+})
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow()
+  }
+})
+
+app.whenReady().then(async () => {
+  console.log(' [Main] App Ready');
+  try {
+    // Initialize Database
+    console.log(' [Main] Initializing DB...');
+    await dbService.init()
+    console.log(' [Main] DB Initialized');
+
+    // Start Admin HTTP server
+    console.log(' [Main] Starting Admin REST API Server...');
+    adminApiService.start();
+
+    // Initialize IPC Manager
+    const ipcManager = new IpcManager(native);
+    ipcManager.registerHandlers();
+    console.log(' [Main] Handlers Registered');
+
+    // Create Window
+    createWindow();
+
+    if (win) {
+      ipcManager.setWindow(win);
+    }
+  } catch (err) {
+    console.error(' [Main] Error during startup:', err);
+  }
+})
