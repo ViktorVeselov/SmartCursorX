@@ -1,12 +1,13 @@
 import { dbService } from '../db';
 import { CodeAnalysisService } from './CodeAnalysisService';
+import console from 'console';
 
 export interface ContextBudget {
-    taskContext: number;      // tokens for task description + parent chain
-    ragResults: number;       // tokens for RAG-retrieved knowledge
-    codeSymbols: number;      // tokens for relevant code structures
-    chatHistory: number;      // tokens for recent conversation
-    total: number;            // hard cap (sum of above)
+    taskContext: number;
+    ragResults: number;
+    codeSymbols: number;
+    chatHistory: number;
+    total: number;
 }
 
 export interface AssembledContext {
@@ -19,6 +20,7 @@ export interface AssembledContext {
 export class ContextAssembler {
     /**
      * Intelligently selects, scores, and packs workspace elements within a strict budget constraint.
+     * Incorporates Phase 3 active context discovery and plan-aware symbol mapping.
      */
     static async assembleContext(
         taskId: number,
@@ -36,7 +38,11 @@ export class ContextAssembler {
             total: 0
         };
 
-        // 1. Traverse parent task chain
+        const activeTask = dbService.getTask(taskId);
+        if (!activeTask) {
+            throw new Error(`[ContextAssembler] Task with ID ${taskId} not found in database.`);
+        }
+
         let taskContextBlock = '';
         let currentId: number | null = taskId;
         const taskChain: string[] = [];
@@ -51,54 +57,99 @@ export class ContextAssembler {
         taskContextBlock = `Active hierarchical task context tree:\n${taskChain.join('\n└── ')}\n`;
         tokenUsage.taskContext = this.estimateTokens(taskContextBlock);
 
-        // 2. Extract references to workspace symbols if mentioned
         let symbolContextBlock = '';
         const symbolList: string[] = [];
+        const filesToParse = new Set<string>();
 
-        // Check task descriptions or messages for potential files to analyze
-        const activeTask = dbService.getTask(taskId);
-        const textToScan = `${activeTask ? activeTask.description : ''} ${activeTask ? activeTask.title : ''}`;
-        
-        // Simple file path regex extraction
-        const pathMatches = textToScan.match(/[\w-]+\.(?:ts|tsx|js|jsx|py|rs)/g);
-        if (pathMatches) {
-            const uniquePaths = Array.from(new Set(pathMatches));
-            for (const file of uniquePaths.slice(0, 3)) { // limit path scan counts
-                const outline = CodeAnalysisService.getWorkspaceOutline('.');
-                const match = outline.find(o => o.filePath.includes(file));
-                if (match) {
-                    symbolList.push(`File Outline for ${file}:\nClasses: ${match.outline.classes.map((c: any) => c.name).join(', ')}\nFunctions: ${match.outline.functions.map((f: any) => f.name).join(', ')}`);
+        const planRow = dbService.getTaskPlan(taskId);
+        if (planRow) {
+            try {
+                const plan = JSON.parse(planRow.plan_json);
+                const reads = plan.filesRead || [];
+                const writes = plan.filesToModify || [];
+                
+                for (const f of [...reads, ...writes]) {
+                    if (typeof f === 'string' && f.trim().length > 0) {
+                        filesToParse.add(f.trim());
+                    }
+                }
+            } catch (e) {
+                console.error('[ContextAssembler] Failed to parse plan JSON for active context discovery:', e);
+            }
+        }
+
+        if (filesToParse.size === 0) {
+            const textToScan = `${activeTask.description || ''} ${activeTask.title}`;
+            const pathMatches = textToScan.match(/[\w-]+\.(?:ts|tsx|js|jsx|py|rs)/g);
+            if (pathMatches) {
+                for (const f of pathMatches) {
+                    filesToParse.add(f);
+                }
+            }
+        }
+
+        if (filesToParse.size > 0) {
+            const uniquePaths = Array.from(filesToParse).slice(0, 5);
+            
+            for (const file of uniquePaths) {
+                try {
+                    const parsed = CodeAnalysisService.parseFileSymbols(file);
+                    
+                    if (parsed.classes.length > 0 || parsed.functions.length > 0 || parsed.interfaces.length > 0) {
+                        const classNames = parsed.classes.map(c => c.name).join(', ');
+                        const funcNames = parsed.functions.map(f => f.name).join(', ');
+                        const interfaceNames = parsed.interfaces.map(i => i.name).join(', ');
+
+                        let fileSummary = `File outline for ${file}:\n`;
+                        if (classNames) fileSummary += `  Classes: ${classNames}\n`;
+                        if (funcNames) fileSummary += `  Functions: ${funcNames}\n`;
+                        if (interfaceNames) fileSummary += `  Interfaces: ${interfaceNames}\n`;
+
+                        if (parsed.functions.length > 0) {
+                            const mainFunc = parsed.functions[0].name;
+                            const callHierarchy = CodeAnalysisService.getCallHierarchy(mainFunc, '.', 'incoming');
+                            if (callHierarchy.length > 0) {
+                                fileSummary += `  Incoming Callers to ${mainFunc}: ${callHierarchy.map(h => `${h.symbol} (${h.filePath})`).join(', ')}\n`;
+                            }
+                        }
+
+                        symbolList.push(fileSummary);
+                    }
+                } catch (err) {
+                    console.warn(`[ContextAssembler] Failed parsing outline for file ${file}:`, err);
                 }
             }
         }
 
         if (symbolList.length > 0) {
-            symbolContextBlock = `Touched Code Outline Symbols:\n${symbolList.join('\n---\n')}\n`;
-            // Bound inside symbol budget limit
+            symbolContextBlock = `Workspace Code Outline Symbols:\n${symbolList.join('\n---\n')}\n`;
+            
             if (this.estimateTokens(symbolContextBlock) > budget.codeSymbols) {
-                symbolContextBlock = symbolContextBlock.substring(0, budget.codeSymbols * 4); // safe cut
+                symbolContextBlock = symbolContextBlock.substring(0, budget.codeSymbols * 4);
             }
             tokenUsage.codeSymbols = this.estimateTokens(symbolContextBlock);
         }
 
-        // 3. Dynamic RAG retrieval backplanes
         let ragBlock = '';
         const relevantChunks: string[] = [];
         try {
             const { EmbeddingService } = require('./EmbeddingService');
-            const queryText = activeTask ? `${activeTask.title} ${activeTask.description || ''}` : '';
+            const queryText = `${activeTask.title} ${activeTask.description || ''}`;
             if (queryText.trim().length > 0) {
                 const results = await EmbeddingService.searchSimilarity(queryText, 3);
                 let currentRagTokens = 0;
+                
                 for (const r of results) {
                     const chunkText = `[Semantic Memory Source: ${r.sourceType} - Dist: ${r.distance.toFixed(3)}]\n${r.content}\n`;
                     const chunkTokens = Math.ceil(chunkText.length / 4);
+                    
                     if (currentRagTokens + chunkTokens > budget.ragResults) {
                         break;
                     }
                     relevantChunks.push(chunkText);
                     currentRagTokens += chunkTokens;
                 }
+                
                 if (relevantChunks.length > 0) {
                     ragBlock = `Relevant Shared Semantic Memory:\n${relevantChunks.join('\n---\n')}\n`;
                     tokenUsage.ragResults = currentRagTokens;
@@ -108,7 +159,6 @@ export class ContextAssembler {
             console.error('[ContextAssembler] RAG retrieval failed:', e);
         }
 
-        // 3. Simple message chat history inclusion
         let chatContextBlock = '';
         const selectedMessages: Array<{ role: string; content: string }> = [];
         let accumulatedTokens = 0;
@@ -126,17 +176,19 @@ export class ContextAssembler {
         chatContextBlock = selectedMessages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
         tokenUsage.chatHistory = accumulatedTokens;
 
-        // 4. Synthesize prompt
         tokenUsage.total = tokenUsage.taskContext + tokenUsage.ragResults + tokenUsage.codeSymbols + tokenUsage.chatHistory;
 
-        const systemPrompt = `You are Cursor Replacer's high-reliability agentic assistant. Follow safety-critical guidelines.
+        const systemPrompt = `You are Cursor Replacer's high-reliability agentic assistant. Follow strict safety-critical guidelines.
+Ensure 100% accurate edits. Verify syntax and types, and do not introduce implicit 'any' values.
+
 ${taskContextBlock}
 ${symbolContextBlock}
 ${ragBlock}
-Observe previous history where appropriate:
+
+Observe previous conversation history where appropriate:
 ${chatContextBlock}
 
-Complete the active task effectively.`;
+Execute the active task effectively using the predefined plan.`;
 
         return {
             systemPrompt,
@@ -147,7 +199,6 @@ Complete the active task effectively.`;
     }
 
     private static estimateTokens(text: string): number {
-        // Fast static character heuristic conforming to token limit principles
         if (!text) return 0;
         return Math.ceil(text.length / 4);
     }
