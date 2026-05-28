@@ -14,7 +14,6 @@ export interface ChunkResult {
 
 export class EmbeddingService {
     private static getOpenAIClient(): OpenAI | null {
-        // Pull OpenAI key dynamically from secure safeStorage
         const key = secureStore.getApiKey('openai') || process.env.OPENAI_API_KEY;
         if (!key) return null;
         return new OpenAI({ apiKey: key });
@@ -33,7 +32,7 @@ export class EmbeddingService {
             try {
                 const response = await client.embeddings.create({
                     model: 'text-embedding-3-small',
-                    input: text.replace(/\n/g, ' ') // OpenAI best-practice sanitization
+                    input: text.replace(/\n/g, ' ')
                 });
                 const vec = response.data[0]?.embedding;
                 if (vec && vec.length === defaultDim) {
@@ -44,28 +43,41 @@ export class EmbeddingService {
             }
         }
 
-        // Mathematical TF-IDF deterministic fallback if API Key is not set/available
+        console.warn('[EmbeddingService] OpenAI Key not set or failed. Using deterministic word feature-hashing fallback.');
         const fallback = new Float32Array(defaultDim);
         const lowerText = text.toLowerCase();
-        for (let i = 0; i < defaultDim; i++) {
-            // Pseudo-random but deterministic projection matrix mapping text characters
-            const keywordCode = (i * 31) % 65536;
-            const charStr = String.fromCharCode(keywordCode % 256);
-            let count = 0;
-            let pos = lowerText.indexOf(charStr);
-            while (pos !== -1) {
-                count++;
-                pos = lowerText.indexOf(charStr, pos + 1);
+
+        const words = lowerText.split(/[^a-z0-9]+/i).filter(w => w.length >= 2);
+
+        if (words.length === 0) {
+            for (let i = 0; i < lowerText.length; i++) {
+                const charCode = lowerText.charCodeAt(i);
+                const index = (charCode * 31) % defaultDim;
+                fallback[index] += 1.0;
             }
-            fallback[i] = count / (lowerText.length || 1);
+        } else {
+            for (const word of words) {
+                let hash = 0;
+                for (let j = 0; j < word.length; j++) {
+                    hash = (hash * 31 + word.charCodeAt(j)) | 0;
+                }
+                const index = Math.abs(hash) % defaultDim;
+                fallback[index] += 1.0;
+            }
         }
 
-        // Normalize the fallback vector to length 1.0 (cosine expects normalized inputs)
+        for (let i = 0; i < defaultDim; i++) {
+            if (fallback[i] > 0) {
+                fallback[i] = 1.0 + Math.log(fallback[i]);
+            }
+        }
+
         let sumSqr = 0;
         for (let i = 0; i < defaultDim; i++) sumSqr += fallback[i] * fallback[i];
         const magnitude = Math.sqrt(sumSqr) || 1.0;
         for (let i = 0; i < defaultDim; i++) fallback[i] /= magnitude;
 
+        console.assert(fallback.length === defaultDim, `Fallback vector must have exactly ${defaultDim} dimensions`);
         return fallback;
     }
 
@@ -83,7 +95,6 @@ export class EmbeddingService {
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
             
-            // Heuristic logical chunk boundary cuts: class/function starts or paragraph blank lines
             const isCodeSeparator = /^(?:export\s+)?(?:class|function|interface|const)\s+/.test(line.trim());
             const isMarkdownSeparator = line.trim() === '' && currentLength > 300;
 
@@ -123,7 +134,6 @@ export class EmbeddingService {
             const tokenCount = Math.ceil(chunk.length / 4);
             const embedding = await this.generateEmbedding(chunk);
 
-            // Insert into the transaction-wrapped database service indexing method
             dbService.addKnowledgeChunk(
                 sourceType,
                 sourceId,
