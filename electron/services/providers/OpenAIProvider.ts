@@ -19,7 +19,6 @@ export class OpenAIProvider implements IAIProvider {
         this.client = new OpenAI({
             apiKey: this.apiKey,
             baseURL: this.baseUrl,
-            // No dangerouslyAllowBrowser needed in Backend
         });
     }
 
@@ -34,10 +33,9 @@ export class OpenAIProvider implements IAIProvider {
                 model,
                 messages,
                 stream: true,
-                temperature: options?.temperature
+                temperature: options?.temperature ?? 0.0
             });
 
-            // Convert OpenAI Stream to AsyncIterable<string>
             return (async function* () {
                 for await (const chunk of streamResponse) {
                     const content = chunk.choices[0]?.delta?.content || '';
@@ -49,7 +47,7 @@ export class OpenAIProvider implements IAIProvider {
                 model,
                 messages,
                 stream: false,
-                temperature: options?.temperature
+                temperature: options?.temperature ?? 0.0
             });
             return response.choices[0]?.message?.content || '';
         }
@@ -66,7 +64,7 @@ export class OpenAIProvider implements IAIProvider {
     }
 
     async getModels(): Promise<string[]> {
-        if (!this.client) return ['gpt-3.5-turbo', 'gpt-4', 'gpt-4o']; // Fallback
+        if (!this.client) return ['gpt-3.5-turbo', 'gpt-4', 'gpt-4o'];
         try {
             const list = await this.client.models.list();
             return list.data.map(m => m.id).filter(id => id.includes('gpt'));

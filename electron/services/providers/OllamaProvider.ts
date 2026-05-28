@@ -27,7 +27,7 @@ export class OllamaProvider implements IAIProvider {
                 messages,
                 stream,
                 options: {
-                    temperature: options?.temperature ?? 0.7
+                    temperature: options?.temperature ?? 0.0
                 }
             })
         });

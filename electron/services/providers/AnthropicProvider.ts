@@ -44,7 +44,7 @@ export class AnthropicProvider implements IAIProvider {
                 system: systemPrompt,
                 stream,
                 max_tokens: options?.maxTokens || 4096,
-                temperature: options?.temperature ?? 0.7
+                temperature: options?.temperature ?? 0.0
             })
         });
 
