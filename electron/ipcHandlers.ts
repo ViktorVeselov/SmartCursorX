@@ -52,6 +52,7 @@ export class IpcManager {
         this.registerTerminalHandlers();
         this.registerVCHandlers();
         this.registerGitHandlers();
+        this.registerAiHandlers();
         this.registerOpenClawHandlers();
         this.registerCodeAnalysisHandlers();
         this.registerTaskHandlers();
@@ -349,6 +350,31 @@ export class IpcManager {
             } catch (e) {
                 return false;
             }
+        });
+
+        // General settings IPC handlers
+        ipcMain.handle('get-general-settings', () => {
+            return {
+                theme: secureStore.getTheme(),
+                fontSize: secureStore.getFontSize(),
+                activeProvider: secureStore.getActiveProvider(),
+                selectedModel: secureStore.getSelectedModel(),
+                allowFileRead: secureStore.getAllowFileRead(),
+                autoApproveCommands: secureStore.getAutoApproveCommands(),
+                systemPromptOverride: secureStore.getSystemPromptOverride()
+            };
+        });
+
+        ipcMain.handle('save-general-settings', (_, settings) => {
+            console.assert(settings !== null && typeof settings === 'object', 'Settings must be an object');
+            if (settings.theme) secureStore.setTheme(settings.theme);
+            if (typeof settings.fontSize === 'number') secureStore.setFontSize(settings.fontSize);
+            if (settings.activeProvider) secureStore.setActiveProvider(settings.activeProvider);
+            if (settings.selectedModel) secureStore.setSelectedModel(settings.selectedModel);
+            if (typeof settings.allowFileRead === 'boolean') secureStore.setAllowFileRead(settings.allowFileRead);
+            if (typeof settings.autoApproveCommands === 'boolean') secureStore.setAutoApproveCommands(settings.autoApproveCommands);
+            if (typeof settings.systemPromptOverride === 'string') secureStore.setSystemPromptOverride(settings.systemPromptOverride);
+            return true;
         });
     }
 
@@ -670,7 +696,9 @@ export class IpcManager {
                 return '';
             }
         });
+    }
 
+    private registerAiHandlers() {
         // ============================================
         // AI Chat Handler (Streaming)
         // ============================================
@@ -688,9 +716,6 @@ export class IpcManager {
                 let baseUrl = targetProvider === 'ollama' ? 'http://localhost:11434' : undefined;
 
                 if (custom) {
-                    if (!apiKey) {
-                        apiKey = custom.api_key || '';
-                    }
                     baseUrl = custom.base_url;
                 }
 
@@ -774,9 +799,6 @@ export class IpcManager {
             let baseUrl = providerId === 'ollama' ? 'http://localhost:11434' : undefined;
             
             if (custom) {
-                if (!apiKey) {
-                    apiKey = custom.api_key || '';
-                }
                 baseUrl = custom.base_url;
             }
 
@@ -806,31 +828,6 @@ export class IpcManager {
                 const combined = Array.from(new Set([...customModels, ...fallbacks]));
                 return combined;
             }
-        });
-
-        // General settings IPC handlers
-        ipcMain.handle('get-general-settings', () => {
-            return {
-                theme: secureStore.getTheme(),
-                fontSize: secureStore.getFontSize(),
-                activeProvider: secureStore.getActiveProvider(),
-                selectedModel: secureStore.getSelectedModel(),
-                allowFileRead: secureStore.getAllowFileRead(),
-                autoApproveCommands: secureStore.getAutoApproveCommands(),
-                systemPromptOverride: secureStore.getSystemPromptOverride()
-            };
-        });
-
-        ipcMain.handle('save-general-settings', (_, settings) => {
-            console.assert(settings !== null && typeof settings === 'object', 'Settings must be an object');
-            if (settings.theme) secureStore.setTheme(settings.theme);
-            if (typeof settings.fontSize === 'number') secureStore.setFontSize(settings.fontSize);
-            if (settings.activeProvider) secureStore.setActiveProvider(settings.activeProvider);
-            if (settings.selectedModel) secureStore.setSelectedModel(settings.selectedModel);
-            if (typeof settings.allowFileRead === 'boolean') secureStore.setAllowFileRead(settings.allowFileRead);
-            if (typeof settings.autoApproveCommands === 'boolean') secureStore.setAutoApproveCommands(settings.autoApproveCommands);
-            if (typeof settings.systemPromptOverride === 'string') secureStore.setSystemPromptOverride(settings.systemPromptOverride);
-            return true;
         });
     }
 
