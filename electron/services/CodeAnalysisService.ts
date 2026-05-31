@@ -404,7 +404,7 @@ export class CodeAnalysisService {
         const files: string[] = [];
         this.scanDirectoryRecursive(rootPath, files);
 
-        for (const file of files.slice(0, 2000)) { // limit recursion outline size
+        for (const file of files.slice(0, 500)) { // limit recursion outline size
             const outline = this.parseFileSymbols(file);
             if (outline.classes.length > 0 || outline.functions.length > 0 || outline.interfaces.length > 0) {
                 list.push({ filePath: file, outline });
