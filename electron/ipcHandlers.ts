@@ -402,8 +402,8 @@ export class IpcManager {
             console.assert(typeof providerId === 'string', 'providerId must be a string');
             return secureStore.getApiKey(providerId);
         });
-        ipcMain.handle('ai:add-custom-provider', (_event, id: string, name: string, baseUrl: string, apiKey?: string) => {
-            dbService.addCustomProvider(id, name, baseUrl, apiKey);
+        ipcMain.handle('ai:add-custom-provider', (_event, id: string, name: string, baseUrl: string, apiKey?: string, isLocal?: boolean) => {
+            dbService.addCustomProvider(id, name, baseUrl, apiKey, !!isLocal);
             return true;
         });
         ipcMain.handle('ai:delete-custom-provider', (_event, id: string) => {
@@ -687,6 +687,11 @@ export class IpcManager {
                 let apiKey = secureStore.getApiKey(targetProvider) || AIService.getEnvKey(targetProvider) || '';
                 let baseUrl = targetProvider === 'ollama' ? 'http://localhost:11434' : undefined;
 
+                if (targetProvider === 'litellm') {
+                    const port = secureStore.getLiteLLMPort() || 4000;
+                    baseUrl = `http://localhost:${port}/v1`;
+                }
+
                 if (custom) {
                     if (!apiKey) {
                         apiKey = custom.api_key || '';
@@ -694,7 +699,7 @@ export class IpcManager {
                     baseUrl = custom.base_url;
                 }
 
-                if (targetProvider !== 'ollama' && !custom) {
+                if (targetProvider !== 'ollama' && targetProvider !== 'litellm' && !custom) {
                     console.assert(apiKey.length > 0, `API key for provider ${targetProvider} must be configured`);
                 }
 
@@ -773,6 +778,11 @@ export class IpcManager {
             let apiKey = secureStore.getApiKey(providerId) || AIService.getEnvKey(providerId) || '';
             let baseUrl = providerId === 'ollama' ? 'http://localhost:11434' : undefined;
             
+            if (providerId === 'litellm') {
+                const port = secureStore.getLiteLLMPort() || 4000;
+                baseUrl = `http://localhost:${port}/v1`;
+            }
+
             if (custom) {
                 if (!apiKey) {
                     apiKey = custom.api_key || '';
@@ -799,9 +809,54 @@ export class IpcManager {
                 console.error(`Failed to list models for provider ${providerId}`, e);
                 // Return static fallbacks on failure, merged with custom models
                 let fallbacks: string[] = [];
-                if (providerId === 'openai') fallbacks = ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
-                else if (providerId === 'anthropic') fallbacks = ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'];
-                else if (providerId === 'ollama') fallbacks = ['llama3', 'mistral'];
+                if (providerId === 'openai') {
+                    fallbacks = [
+                        'gpt-4o',
+                        'gpt-4o-mini',
+                        'o1',
+                        'o1-mini',
+                        'o3-mini',
+                        'gpt-4-turbo',
+                        'gpt-4',
+                        'gpt-3.5-turbo'
+                    ];
+                } else if (providerId === 'anthropic') {
+                    fallbacks = [
+                        'claude-3-5-sonnet-latest',
+                        'claude-3-5-sonnet-20241022',
+                        'claude-3-5-haiku-latest',
+                        'claude-3-5-haiku-20241022',
+                        'claude-3-opus-20240229',
+                        'claude-3-sonnet-20240229',
+                        'claude-3-haiku-20240307'
+                    ];
+                } else if (providerId === 'ollama') {
+                    fallbacks = [
+                        'llama3.1',
+                        'llama3.2',
+                        'llama3',
+                        'qwen2.5-coder',
+                        'deepseek-r1',
+                        'mistral',
+                        'gemma2',
+                        'phi3'
+                    ];
+                } else if (providerId === 'litellm') {
+                    fallbacks = [
+                        'gpt-4o',
+                        'gpt-4o-mini',
+                        'o1-mini',
+                        'o3-mini',
+                        'claude-3-5-sonnet-20241022',
+                        'claude-3-5-haiku-20241022',
+                        'deepseek-chat',
+                        'deepseek-reasoner',
+                        'gemini/gemini-1.5-pro',
+                        'gemini/gemini-1.5-flash',
+                        'anthropic.claude-3-5-sonnet-v1:0',
+                        'meta.llama3-1-70b-instruct-v1:0'
+                    ];
+                }
                 
                 const combined = Array.from(new Set([...customModels, ...fallbacks]));
                 return combined;
@@ -817,7 +872,20 @@ export class IpcManager {
                 selectedModel: secureStore.getSelectedModel(),
                 allowFileRead: secureStore.getAllowFileRead(),
                 autoApproveCommands: secureStore.getAutoApproveCommands(),
-                systemPromptOverride: secureStore.getSystemPromptOverride()
+                systemPromptOverride: secureStore.getSystemPromptOverride(),
+
+                // LiteLLM proxy settings
+                enableLiteLLMProxy: secureStore.getEnableLiteLLMProxy(),
+                liteLLMConfigPath: secureStore.getLiteLLMConfigPath(),
+                liteLLMModel: secureStore.getLiteLLMModel(),
+                liteLLMPort: secureStore.getLiteLLMPort(),
+
+                // Cloud Credentials
+                awsRegion: secureStore.getAwsRegion(),
+                vertexProject: secureStore.getVertexProject(),
+                vertexLocation: secureStore.getVertexLocation(),
+                azureApiBase: secureStore.getAzureApiBase(),
+                azureApiVersion: secureStore.getAzureApiVersion()
             };
         });
 
@@ -830,6 +898,20 @@ export class IpcManager {
             if (typeof settings.allowFileRead === 'boolean') secureStore.setAllowFileRead(settings.allowFileRead);
             if (typeof settings.autoApproveCommands === 'boolean') secureStore.setAutoApproveCommands(settings.autoApproveCommands);
             if (typeof settings.systemPromptOverride === 'string') secureStore.setSystemPromptOverride(settings.systemPromptOverride);
+
+            // LiteLLM proxy settings
+            if (typeof settings.enableLiteLLMProxy === 'boolean') secureStore.setEnableLiteLLMProxy(settings.enableLiteLLMProxy);
+            if (typeof settings.liteLLMConfigPath === 'string') secureStore.setLiteLLMConfigPath(settings.liteLLMConfigPath);
+            if (typeof settings.liteLLMModel === 'string') secureStore.setLiteLLMModel(settings.liteLLMModel);
+            if (typeof settings.liteLLMPort === 'number') secureStore.setLiteLLMPort(settings.liteLLMPort);
+
+            // Cloud Credentials
+            if (typeof settings.awsRegion === 'string') secureStore.setAwsRegion(settings.awsRegion);
+            if (typeof settings.vertexProject === 'string') secureStore.setVertexProject(settings.vertexProject);
+            if (typeof settings.vertexLocation === 'string') secureStore.setVertexLocation(settings.vertexLocation);
+            if (typeof settings.azureApiBase === 'string') secureStore.setAzureApiBase(settings.azureApiBase);
+            if (typeof settings.azureApiVersion === 'string') secureStore.setAzureApiVersion(settings.azureApiVersion);
+
             return true;
         });
     }
