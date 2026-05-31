@@ -57,8 +57,25 @@ export class AdminApiService {
         console.assert(typeof token === 'string' && token.length > 0, 'Admin token must be present');
 
         this.server = http.createServer((req, res) => {
-            // Set CORS Headers
-            res.setHeader('Access-Control-Allow-Origin', '*');
+            // Enforce Host validation to prevent DNS rebinding
+            const host = req.headers['host'];
+            if (!host || (host !== 'localhost:3003' && host !== '127.0.0.1:3003')) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Bad Request: Invalid Host header' }));
+                return;
+            }
+
+            // Set safe CORS Headers
+            const origin = req.headers['origin'];
+            if (origin) {
+                if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1') || origin.startsWith('vscode-webview://')) {
+                    res.setHeader('Access-Control-Allow-Origin', origin);
+                } else {
+                    res.writeHead(403, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Forbidden: CORS origin not allowed' }));
+                    return;
+                }
+            }
             res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
@@ -172,7 +189,7 @@ export class AdminApiService {
             }
         });
 
-        this.server.listen(AdminApiService.PORT, () => {
+        this.server.listen(AdminApiService.PORT, '127.0.0.1', () => {
             console.log(`[AdminApiService] Listening on http://localhost:${AdminApiService.PORT}`);
         });
     }
