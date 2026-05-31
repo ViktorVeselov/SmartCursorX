@@ -48,6 +48,8 @@ export class AIService {
         switch (config.providerId) {
             case 'openai':
                 return new OpenAIProvider(config.apiKey, config.baseUrl);
+            case 'litellm':
+                return new OpenAIProvider(config.apiKey, config.baseUrl || 'http://localhost:4000/v1');
             case 'anthropic':
                 return new AnthropicProvider(config.apiKey, config.baseUrl);
             case 'ollama':
