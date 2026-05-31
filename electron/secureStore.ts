@@ -23,6 +23,19 @@ interface SecureStoreSchema {
     allowFileRead?: boolean;
     autoApproveCommands?: boolean;
     systemPromptOverride?: string;
+
+    // LiteLLM Local Proxy states
+    enableLiteLLMProxy?: boolean;
+    liteLLMConfigPath?: string;
+    liteLLMModel?: string;
+    liteLLMPort?: number;
+
+    // Enterprise Cloud Credentials
+    awsRegion?: string;
+    vertexProject?: string;
+    vertexLocation?: string;
+    azureApiBase?: string;
+    azureApiVersion?: string;
     
     windowBounds?: { width: number; height: number };
 }
@@ -36,7 +49,16 @@ const store = new Store<SecureStoreSchema>({
         selectedModel: 'gpt-4o',
         allowFileRead: false,
         autoApproveCommands: false,
-        systemPromptOverride: ''
+        systemPromptOverride: '',
+        enableLiteLLMProxy: false,
+        liteLLMConfigPath: '',
+        liteLLMModel: 'gpt-4o',
+        liteLLMPort: 4000,
+        awsRegion: 'us-east-1',
+        vertexProject: '',
+        vertexLocation: 'us-central1',
+        azureApiBase: '',
+        azureApiVersion: '2024-02-01'
     }
 });
 
@@ -82,6 +104,10 @@ export const secureStore = {
             console.error(`[SecureStore] Failed to decrypt key for ${providerId}`, e);
             return undefined;
         }
+    },
+    deleteApiKey(providerId: string): void {
+        console.assert(typeof providerId === 'string', 'providerId must be a string');
+        store.delete(`${providerId}ApiKey_encrypted` as any);
     },
 
     setGitHubToken(token: string): void {
@@ -151,6 +177,79 @@ export const secureStore = {
     setSystemPromptOverride(prompt: string): void {
         console.assert(typeof prompt === 'string', 'System prompt must be a string');
         store.set('systemPromptOverride', prompt);
+    },
+
+    // LiteLLM getters and setters
+    getEnableLiteLLMProxy(): boolean {
+        return !!store.get('enableLiteLLMProxy');
+    },
+    setEnableLiteLLMProxy(enable: boolean): void {
+        store.set('enableLiteLLMProxy', enable);
+    },
+
+    getLiteLLMConfigPath(): string {
+        return store.get('liteLLMConfigPath') || '';
+    },
+    setLiteLLMConfigPath(path: string): void {
+        console.assert(typeof path === 'string', 'Config path must be a string');
+        store.set('liteLLMConfigPath', path);
+    },
+
+    getLiteLLMModel(): string {
+        return store.get('liteLLMModel') || 'gpt-4o';
+    },
+    setLiteLLMModel(model: string): void {
+        console.assert(typeof model === 'string', 'Model must be a string');
+        store.set('liteLLMModel', model);
+    },
+
+    getLiteLLMPort(): number {
+        return store.get('liteLLMPort') || 4000;
+    },
+    setLiteLLMPort(port: number): void {
+        console.assert(typeof port === 'number' && port > 0, 'Port must be a positive number');
+        store.set('liteLLMPort', port);
+    },
+
+    // Cloud Credentials getters and setters
+    getAwsRegion(): string {
+        return store.get('awsRegion') || 'us-east-1';
+    },
+    setAwsRegion(region: string): void {
+        console.assert(typeof region === 'string', 'AWS Region must be a string');
+        store.set('awsRegion', region);
+    },
+
+    getVertexProject(): string {
+        return store.get('vertexProject') || '';
+    },
+    setVertexProject(project: string): void {
+        console.assert(typeof project === 'string', 'Vertex Project must be a string');
+        store.set('vertexProject', project);
+    },
+
+    getVertexLocation(): string {
+        return store.get('vertexLocation') || 'us-central1';
+    },
+    setVertexLocation(location: string): void {
+        console.assert(typeof location === 'string', 'Vertex Location must be a string');
+        store.set('vertexLocation', location);
+    },
+
+    getAzureApiBase(): string {
+        return store.get('azureApiBase') || '';
+    },
+    setAzureApiBase(base: string): void {
+        console.assert(typeof base === 'string', 'Azure API Base must be a string');
+        store.set('azureApiBase', base);
+    },
+
+    getAzureApiVersion(): string {
+        return store.get('azureApiVersion') || '2024-02-01';
+    },
+    setAzureApiVersion(version: string): void {
+        console.assert(typeof version === 'string', 'Azure API Version must be a string');
+        store.set('azureApiVersion', version);
     },
 
     getWindowBounds(): { width: number; height: number } | undefined {
