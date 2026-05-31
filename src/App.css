@@ -1359,3 +1359,33 @@ body {
 :root[data-theme='light'] ::webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.16);
 }
+
+/* Sidebar Item & Symbol Highlighting Styles */
+.sidebar-item {
+  transition: var(--transition-smooth);
+}
+
+.sidebar-item:hover {
+  background-color: var(--bg-hover) !important;
+}
+
+.sidebar-item:active {
+  background-color: var(--bg-active) !important;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.loading-spin {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+
+/* Monaco Code Line Highlight Decoration */
+.line-highlight-decoration {
+  background: rgba(99, 102, 241, 0.15) !important;
+  border-left: 3px solid var(--accent-primary) !important;
+  width: 100% !important;
+}
