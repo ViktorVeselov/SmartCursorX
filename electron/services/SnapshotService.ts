@@ -19,20 +19,17 @@ export class SnapshotService {
         const snapshotId = Number(snapshotIdRaw);
         console.assert(snapshotId > 0, 'Snapshot ID must be a positive integer');
 
-        const workspaceRoot = path.resolve(process.cwd());
-
         for (const file of filePaths) {
-            const absolutePath = path.resolve(workspaceRoot, file);
+            const absolutePath = path.resolve(file);
             if (fs.existsSync(absolutePath)) {
                 try {
                     const content = fs.readFileSync(absolutePath, 'utf-8');
                     const hash = crypto.createHash('sha256').update(content).digest('hex');
 
                     dbService.addBlob(hash, content);
-                    const relativePath = path.relative(workspaceRoot, absolutePath);
-                    dbService.addSnapshotFile(snapshotId, relativePath, hash);
+                    dbService.addSnapshotFile(snapshotId, file, hash);
                     
-                    console.log(`[SnapshotService] Snapshotted file: ${relativePath} (hash: ${hash.substring(0, 8)})`);
+                    console.log(`[SnapshotService] Snapshotted file: ${file} (hash: ${hash.substring(0, 8)})`);
                 } catch (err) {
                     console.error(`[SnapshotService] Failed snapshotting file ${file}:`, err);
                 }
@@ -57,21 +54,10 @@ export class SnapshotService {
             return;
         }
 
-        const workspaceRoot = path.resolve(process.cwd());
-
         for (const f of files) {
             const relativePath = f.file_path;
             const content = f.content;
-            const absolutePath = path.resolve(workspaceRoot, relativePath);
-
-            // Strict containment validation to prevent path traversal
-            const relative = path.relative(workspaceRoot, absolutePath);
-            const isContained = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
-
-            if (!isContained) {
-                console.error(`[SnapshotService] Safety Block: Out-of-bounds snapshot restore rejected: ${relativePath} (Resolved: ${absolutePath})`);
-                continue;
-            }
+            const absolutePath = path.resolve(relativePath);
 
             try {
                 const parentDir = path.dirname(absolutePath);

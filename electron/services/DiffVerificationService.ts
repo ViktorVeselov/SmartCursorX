@@ -47,9 +47,8 @@ export class DiffVerificationService {
             details += `✅ Scope Boundaries: Checked. All edits conform strictly to planning schema.\n`;
         }
 
-        const workspaceRoot = path.resolve(process.cwd());
         for (const file of modifiedFiles) {
-            const absolutePath = path.resolve(workspaceRoot, file);
+            const absolutePath = path.resolve(file);
             if (fs.existsSync(absolutePath)) {
                 const content = fs.readFileSync(absolutePath, 'utf-8');
                 const lines = content.split(/\r?\n/);
@@ -78,11 +77,7 @@ export class DiffVerificationService {
             details += `✅ Code Quality Rules: Checked. Banned typings or placeholders absent.\n`;
         }
 
-        let workspacePath = process.cwd();
-        if (!fs.existsSync(path.join(workspacePath, 'tsconfig.json')) && fs.existsSync(path.join(workspacePath, 'cursor-replacer', 'tsconfig.json'))) {
-            workspacePath = path.join(workspacePath, 'cursor-replacer');
-        }
-
+        const workspacePath = path.resolve('cursor-replacer');
         if (fs.existsSync(path.join(workspacePath, 'tsconfig.json'))) {
             try {
                 details += `⚡ Running project compilation check (tsc --noEmit)...\n`;

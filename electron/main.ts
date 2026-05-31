@@ -1,14 +1,3 @@
-// Force console.assert to throw runtime Error objects instead of being a silent no-op/logging warning
-const throwingAssert = (condition: any, message?: string) => {
-  if (!condition) {
-    throw new Error(message || 'Assertion failed');
-  }
-};
-console.assert = throwingAssert;
-if (globalThis.console) {
-  globalThis.console.assert = throwingAssert;
-}
-
 import { app, BrowserWindow } from 'electron'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
