@@ -10,8 +10,6 @@ type SettingsTab = 'general' | 'models' | 'agent' | 'openclaw' | 'local';
 const getIpc = () => (window as any).ipcRenderer;
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-    if (!isOpen) return null;
-
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
 
     // General & Agent State
@@ -25,6 +23,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [modelProvider, setModelProvider] = useState('openai');
     const [openAIKey, setOpenAIKey] = useState('');
     const [anthropicKey, setAnthropicKey] = useState('');
+    const [liteLLMKey, setLiteLLMKey] = useState('');
     const [githubToken, setGithubToken] = useState('');
 
     // Dynamic models selection inside Settings
@@ -106,6 +105,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
             const aKey = await getIpc().invoke('ai:get-provider-key', 'anthropic');
             if (aKey) setAnthropicKey(aKey);
+
+            const lKey = await getIpc().invoke('ai:get-provider-key', 'litellm');
+            if (lKey) setLiteLLMKey(lKey);
 
             const gh = await getIpc().invoke('get-github-token');
             if (gh) setGithubToken(gh);
@@ -190,6 +192,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             await getIpc().invoke('set-api-key', openAIKey);
         } else if (modelProvider === 'anthropic' && anthropicKey) {
             await getIpc().invoke('ai:save-config', { providerId: 'anthropic', apiKey: anthropicKey });
+        } else if (modelProvider === 'litellm' && liteLLMKey) {
+            await getIpc().invoke('ai:save-config', { providerId: 'litellm', apiKey: liteLLMKey });
         } else if (customProviders.some(p => p.id === modelProvider) && customApiKey) {
             await getIpc().invoke('ai:save-config', { providerId: modelProvider, apiKey: customApiKey });
         }
@@ -212,7 +216,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         // Save active provider config to initialize AIService
         await getIpc().invoke('ai:save-config', {
             providerId: modelProvider,
-            apiKey: modelProvider === 'openai' ? openAIKey : modelProvider === 'anthropic' ? anthropicKey : modelProvider === 'ollama' ? '' : customApiKey
+            apiKey: modelProvider === 'openai' ? openAIKey : modelProvider === 'anthropic' ? anthropicKey : modelProvider === 'litellm' ? liteLLMKey : modelProvider === 'ollama' ? '' : customApiKey
         });
 
         // Save general & agent configuration (including cloud settings)
@@ -260,6 +264,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         onClose();
     };
 
+    if (!isOpen) return null;
+
     return (
         <div style={{
             position: 'fixed',
@@ -297,7 +303,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     </div>
                     {(() => {
                         const baseTabs = ['general', 'models', 'agent', 'openclaw'];
-                        const isLocalProvider = modelProvider === 'ollama' || customProviders.some((p: any) => p.id === modelProvider && p.isLocal);
+                        const isLocalProvider = modelProvider === 'ollama' || modelProvider === 'litellm' || customProviders.some((p: any) => p.id === modelProvider && (p.isLocal || p.is_local));
                         if (isLocalProvider) baseTabs.push('local');
                         return baseTabs.map(tab => (
                             <div
@@ -368,6 +374,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             >
                                                 <option value="openai">OpenAI (Official)</option>
                                                 <option value="anthropic">Anthropic (Official)</option>
+                                                <option value="litellm">LiteLLM (Local Proxy)</option>
                                                 <option value="ollama">Ollama (Local)</option>
                                                 {customProviders.map((p: any) => (
                                                     <option key={p.id} value={p.id}>{p.name}</option>
@@ -389,57 +396,79 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     </div>
 
-                                    {/* API Keys Configuration */}
-                                    {modelProvider === 'openai' && (
-                                        <div style={{ marginBottom: 0 }}>
-                                            <label style={{ display: 'block', marginBottom: 4, fontSize: 10, fontWeight: 500, color: 'var(--text-secondary)' }}>OpenAI API Key</label>
-                                            <input
-                                                type="password"
-                                                value={openAIKey}
-                                                onChange={e => setOpenAIKey(e.target.value)}
-                                                placeholder="sk-..."
-                                                style={{ width: '100%', padding: '6px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', borderRadius: 'var(--radius-md)', outline: 'none', fontSize: 12, boxSizing: 'border-box' }}
-                                            />
-                                        </div>
-                                    )}
-
-                                    {modelProvider === 'anthropic' && (
-                                        <div style={{ marginBottom: 0 }}>
-                                            <label style={{ display: 'block', marginBottom: 4, fontSize: 10, fontWeight: 500, color: 'var(--text-secondary)' }}>Anthropic API Key</label>
-                                            <input
-                                                type="password"
-                                                value={anthropicKey}
-                                                onChange={e => setAnthropicKey(e.target.value)}
-                                                placeholder="sk-ant-..."
-                                                style={{ width: '100%', padding: '6px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', borderRadius: 'var(--radius-md)', outline: 'none', fontSize: 12, boxSizing: 'border-box' }}
-                                            />
-                                        </div>
-                                    )}
-
-                                    {customProviders.some((p: any) => p.id === modelProvider) && (
+                                    {/* Unified Dynamic API Key Configuration */}
+                                    {modelProvider !== 'ollama' && (
                                         <div style={{ marginBottom: 0 }}>
                                             <label style={{ display: 'block', marginBottom: 4, fontSize: 10, fontWeight: 500, color: 'var(--text-secondary)' }}>
-                                                {customProviders.find((p: any) => p.id === modelProvider)?.name} API Key (Optional)
+                                                API Key
                                             </label>
                                             <input
                                                 type="password"
-                                                value={customApiKey}
-                                                onChange={e => setCustomApiKey(e.target.value)}
-                                                placeholder="Enter API key or token if required"
+                                                value={
+                                                    modelProvider === 'openai'
+                                                        ? openAIKey
+                                                        : modelProvider === 'anthropic'
+                                                        ? anthropicKey
+                                                        : modelProvider === 'litellm'
+                                                        ? liteLLMKey
+                                                        : customApiKey
+                                                }
+                                                onChange={e => {
+                                                    const val = e.target.value;
+                                                    if (modelProvider === 'openai') setOpenAIKey(val);
+                                                    else if (modelProvider === 'anthropic') setAnthropicKey(val);
+                                                    else if (modelProvider === 'litellm') setLiteLLMKey(val);
+                                                    else setCustomApiKey(val);
+                                                }}
+                                                placeholder={
+                                                    modelProvider === 'openai'
+                                                        ? 'sk-...'
+                                                        : modelProvider === 'anthropic'
+                                                        ? 'sk-ant-...'
+                                                        : modelProvider === 'litellm'
+                                                        ? 'Enter LiteLLM proxy API key (Optional)'
+                                                        : 'Enter API key or token if required'
+                                                }
                                                 style={{ width: '100%', padding: '6px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', borderRadius: 'var(--radius-md)', outline: 'none', fontSize: 12, boxSizing: 'border-box' }}
                                             />
-                                            <div style={{ marginTop: 8 }}>
-                                                <label style={{ display: 'block', marginBottom: 4, fontSize: 10, fontWeight: 500, color: 'var(--text-secondary)' }}>
-                                                    Local Provider?
-                                                </label>
-                                                <input
-                                                    type="checkbox"
-                                                    checked={customProviderIsLocal}
-                                                    onChange={e => setCustomProviderIsLocal(e.target.checked)}
-                                                />
-                                            </div>
+                                            
+                                            {customProviders.some((p: any) => p.id === modelProvider) && (
+                                                <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        id="custom-provider-local-check"
+                                                        checked={customProviderIsLocal}
+                                                        onChange={e => setCustomProviderIsLocal(e.target.checked)}
+                                                    />
+                                                    <label htmlFor="custom-provider-local-check" style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                                                        Local Provider?
+                                                    </label>
+                                                </div>
+                                            )}
                                         </div>
                                     )}
+
+                                    {/* Explanatory Info Box for connecting to any provider */}
+                                    <div style={{
+                                        marginTop: 12,
+                                        padding: '10px 12px',
+                                        background: 'rgba(99, 102, 241, 0.05)',
+                                        border: '1px solid rgba(99, 102, 241, 0.15)',
+                                        borderRadius: 'var(--radius-md)',
+                                        fontSize: 11,
+                                        color: 'var(--text-secondary)',
+                                        lineHeight: '1.4'
+                                    }}>
+                                        <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                            <span className="codicon codicon-info" style={{ color: 'var(--accent-primary)', fontSize: 12 }} />
+                                            How to Connect Any Provider:
+                                        </div>
+                                        <ul style={{ margin: 0, paddingLeft: 14 }}>
+                                            <li><strong>Standard Providers</strong>: Connect directly to OpenAI, Anthropic, or local Ollama.</li>
+                                            <li><strong>LiteLLM Local Proxy</strong>: Runs a local unified endpoint (`http://localhost:4000/v1`) to manage multiple cloud/local models.</li>
+                                            <li><strong>Custom API Gateways</strong>: Connect directly to any other OpenAI-compatible host (e.g. OpenRouter, DeepSeek, Together, Groq) without needing a local proxy connection.</li>
+                                        </ul>
+                                    </div>
                                 </div>
 
                                 {/* Custom API Gateways */}
