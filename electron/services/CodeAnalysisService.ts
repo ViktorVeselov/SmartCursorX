@@ -51,6 +51,8 @@ export class CodeAnalysisService {
             this.parsePythonSymbols(lines, classes, functions);
         } else if (ext === '.rs') {
             this.parseRustSymbols(lines, classes, functions, interfaces);
+        } else {
+            this.parseGenericSymbols(lines, classes, functions, interfaces, ext);
         }
 
         return { classes, functions, interfaces };
@@ -402,7 +404,7 @@ export class CodeAnalysisService {
         const files: string[] = [];
         this.scanDirectoryRecursive(rootPath, files);
 
-        for (const file of files.slice(0, 50)) { // limit recursion outline size
+        for (const file of files.slice(0, 2000)) { // limit recursion outline size
             const outline = this.parseFileSymbols(file);
             if (outline.classes.length > 0 || outline.functions.length > 0 || outline.interfaces.length > 0) {
                 list.push({ filePath: file, outline });
@@ -415,16 +417,201 @@ export class CodeAnalysisService {
         if (!fs.existsSync(dir)) return;
         const files = fs.readdirSync(dir);
         
+        const binaryExtensions = new Set([
+            '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz',
+            '.exe', '.dll', '.so', '.dylib', '.woff', '.woff2', '.eot', '.ttf', '.mp4', '.mp3'
+        ]);
+
         for (const file of files) {
             const fullPath = path.join(dir, file);
-            if (fs.statSync(fullPath).isDirectory()) {
-                if (['node_modules', '.git', 'dist', 'build', 'out'].includes(file)) {
-                    continue;
+            try {
+                if (fs.statSync(fullPath).isDirectory()) {
+                    if (['node_modules', '.git', 'dist', 'build', 'out', 'release', 'dist-electron'].includes(file)) {
+                        continue;
+                    }
+                    this.scanDirectoryRecursive(fullPath, fileList);
+                } else {
+                    const ext = path.extname(file).toLowerCase();
+                    if (!binaryExtensions.has(ext)) {
+                        fileList.push(fullPath);
+                    }
                 }
-                this.scanDirectoryRecursive(fullPath, fileList);
-            } else {
-                if (['.ts', '.tsx', '.js', '.jsx', '.py', '.rs'].includes(path.extname(file))) {
-                    fileList.push(fullPath);
+            } catch (e) {
+                // Ignore stat errors for symlinks or permission-restricted folders
+            }
+        }
+    }
+
+    private static parseGenericSymbols(
+        lines: string[],
+        classes: CodeSymbol[],
+        functions: CodeSymbol[],
+        interfaces: CodeSymbol[],
+        ext: string
+    ) {
+        ext = ext.toLowerCase();
+        if (['.html', '.htm', '.xml', '.svg'].includes(ext)) {
+            const idRegex = /id="([^"]+)"/;
+            const classRegex = /class="([^"]+)"/;
+            const tagRegex = /<(!?[\w:-]+)/;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const tagMatch = line.match(tagRegex);
+                if (tagMatch) {
+                    const tagName = tagMatch[1];
+                    functions.push({
+                        name: tagName,
+                        kind: 'function',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line.trim(),
+                        params: [],
+                        docstring: ''
+                    });
+                }
+                const idMatch = line.match(idRegex);
+                if (idMatch) {
+                    interfaces.push({
+                        name: `#${idMatch[1]}`,
+                        kind: 'interface',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line.trim(),
+                        params: [],
+                        docstring: ''
+                    });
+                }
+                const classMatch = line.match(classRegex);
+                if (classMatch) {
+                    classes.push({
+                        name: `.${classMatch[1]}`,
+                        kind: 'class',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line.trim(),
+                        params: [],
+                        docstring: ''
+                    });
+                }
+                const fnMatch = line.match(/(?:function)\s+(\w+)/);
+                if (fnMatch) {
+                    functions.push({
+                        name: fnMatch[1],
+                        kind: 'function',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line.trim(),
+                        params: [],
+                        docstring: ''
+                    });
+                }
+            }
+        } else if (['.css', '.scss', '.less'].includes(ext)) {
+            const cssClassRegex = /^\.([\w-]+)/;
+            const cssIdRegex = /^#([\w-]+)/;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                const classMatch = line.match(cssClassRegex);
+                if (classMatch) {
+                    classes.push({
+                        name: `.${classMatch[1]}`,
+                        kind: 'class',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line,
+                        params: [],
+                        docstring: ''
+                    });
+                }
+                const idMatch = line.match(cssIdRegex);
+                if (idMatch) {
+                    interfaces.push({
+                        name: `#${idMatch[1]}`,
+                        kind: 'interface',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line,
+                        params: [],
+                        docstring: ''
+                    });
+                }
+            }
+        } else if (ext === '.md') {
+            const headerRegex = /^(#+)\s+(.+)$/;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                const match = line.match(headerRegex);
+                if (match) {
+                    const level = match[1].length;
+                    classes.push({
+                        name: `${'#'.repeat(level)} ${match[2]}`,
+                        kind: 'class',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line,
+                        params: [],
+                        docstring: ''
+                    });
+                }
+            }
+        } else if (['.json', '.json5'].includes(ext)) {
+            const jsonKeyRegex = /^\s*"([\w-]+)"\s*:/;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const match = line.match(jsonKeyRegex);
+                if (match) {
+                    functions.push({
+                        name: match[1],
+                        kind: 'function',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line.trim(),
+                        params: [],
+                        docstring: ''
+                    });
+                }
+            }
+        } else {
+            const funcRegex = /(?:function|def|fn)\s+(\w+)/;
+            const classRegex = /(?:class|struct)\s+(\w+)/;
+            const interfaceRegex = /interface\s+(\w+)/;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const fnMatch = line.match(funcRegex);
+                if (fnMatch) {
+                    functions.push({
+                        name: fnMatch[1],
+                        kind: 'function',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line.trim(),
+                        params: [],
+                        docstring: ''
+                    });
+                }
+                const clsMatch = line.match(classRegex);
+                if (clsMatch) {
+                    classes.push({
+                        name: clsMatch[1],
+                        kind: 'class',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line.trim(),
+                        params: [],
+                        docstring: ''
+                    });
+                }
+                const intMatch = line.match(interfaceRegex);
+                if (intMatch) {
+                    interfaces.push({
+                        name: intMatch[1],
+                        kind: 'interface',
+                        startLine: i + 1,
+                        endLine: i + 1,
+                        signature: line.trim(),
+                        params: [],
+                        docstring: ''
+                    });
                 }
             }
         }
