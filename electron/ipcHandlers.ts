@@ -449,10 +449,35 @@ export class IpcManager {
         const pty = require('node-pty');
         const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
 
-        // Initialize terminal with unique ID
-        ipcMain.handle('term-init', (_event, terminalId: string) => {
+        // Initialize terminal with unique ID and optional shell type
+        ipcMain.handle('term-init', (_event, terminalId: string, shellType?: string) => {
             if (!terminalId) {
                 terminalId = `term-${Date.now()}`;
+            }
+
+            let selectedShell = shell;
+            if (shellType) {
+                if (os.platform() === 'win32') {
+                    if (shellType === 'powershell') {
+                        selectedShell = 'powershell.exe';
+                    } else if (shellType === 'cmd') {
+                        selectedShell = 'cmd.exe';
+                    } else if (shellType === 'bash') {
+                        selectedShell = 'bash.exe';
+                    } else {
+                        selectedShell = shellType;
+                    }
+                } else {
+                    if (shellType === 'zsh') {
+                        selectedShell = 'zsh';
+                    } else if (shellType === 'bash') {
+                        selectedShell = 'bash';
+                    } else if (shellType === 'sh') {
+                        selectedShell = 'sh';
+                    } else {
+                        selectedShell = shellType;
+                    }
+                }
             }
 
             // Kill existing if same ID
@@ -461,7 +486,7 @@ export class IpcManager {
                 this.ptyProcesses.delete(terminalId);
             }
 
-            const ptyProcess = pty.spawn(shell, [], {
+            const ptyProcess = pty.spawn(selectedShell, [], {
                 name: 'xterm-color',
                 cols: 80,
                 rows: 24,
