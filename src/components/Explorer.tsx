@@ -240,8 +240,14 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '.', onOpenFol
     }, [rootPath]);
 
     useEffect(() => {
-        loadWorkspaceOutline();
-    }, [loadWorkspaceOutline]);
+        setWorkspaceOutline([]);
+    }, [rootPath]);
+
+    useEffect(() => {
+        if (symbolSearchQuery.trim().length > 0 && workspaceOutline.length === 0 && !isLoadingOutline) {
+            loadWorkspaceOutline();
+        }
+    }, [symbolSearchQuery, workspaceOutline.length, isLoadingOutline, loadWorkspaceOutline]);
 
     const getFlattenedSymbols = useCallback((): Array<{ name: string; kind: 'class' | 'function' | 'interface' | 'method'; startLine: number; filePath: string }> => {
         const list: Array<{ name: string; kind: 'class' | 'function' | 'interface' | 'method'; startLine: number; filePath: string }> = [];
