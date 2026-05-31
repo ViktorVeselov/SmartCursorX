@@ -9,7 +9,7 @@ export class OpenAIProvider implements IAIProvider {
     private baseUrl?: string;
 
     constructor(apiKey: string, baseUrl?: string) {
-        this.apiKey = apiKey;
+        this.apiKey = apiKey || (baseUrl ? 'local-proxy-no-key' : '');
         this.baseUrl = baseUrl;
         this.initializeClient();
     }
