@@ -108,13 +108,19 @@ function App() {
     setActiveFilePath(path);
   };
 
+  const [editorTargetLine, setEditorTargetLine] = useState<{ line: number; timestamp: number } | null>(null);
+  const [symbolSearchQuery, setSymbolSearchQuery] = useState('');
+
   // Derived active file
   const activeFile = files.find(f => f.path === activeFilePath) || files[0];
 
-  const handleFileSelect = (content: string, path: string) => {
+  const handleFileSelect = (content: string, path: string, line?: number) => {
     const existing = files.find(f => f.path === path);
     if (existing) {
       setActiveFilePath(path);
+      if (line !== undefined) {
+        setEditorTargetLine({ line, timestamp: Date.now() });
+      }
       return;
     }
 
@@ -125,6 +131,9 @@ function App() {
     };
     setFiles([...files, newFile]);
     setActiveFilePath(path);
+    if (line !== undefined) {
+      setEditorTargetLine({ line, timestamp: Date.now() });
+    }
   };
 
   // New file dialog state
@@ -427,6 +436,8 @@ function App() {
               onRunFlow={handleRunFlow}
               onOpenFlow={handleOpenFlow}
               width={sidebarWidth}
+              symbolSearchQuery={symbolSearchQuery}
+              setSymbolSearchQuery={setSymbolSearchQuery}
             />
           </div>
           {/* Resizer */}
@@ -488,6 +499,8 @@ function App() {
                       onChange={handleContentChange}
                       language={getFileSettings(activeFile.name).language}
                       vimEnabled={vimEnabled}
+                      targetLine={editorTargetLine}
+                      highlightActive={!!symbolSearchQuery}
                       options={{
                         tabSize: getFileSettings(activeFile.name).tabSize,
                         insertSpaces: true,
