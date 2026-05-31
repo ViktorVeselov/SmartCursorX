@@ -27,6 +27,14 @@ export function TerminalPanel({ isOpen }: TerminalPanelProps) {
 
     // Persist the default shell type (initially PowerShell on Windows, Zsh/Bash on macOS/Linux)
     const [defaultShell, setDefaultShell] = useState<{ key?: string; name: string }>(() => {
+        try {
+            const saved = localStorage.getItem('terminal:defaultShell');
+            if (saved) {
+                return JSON.parse(saved);
+            }
+        } catch (e) {
+            console.error('Error loading default terminal shell configuration', e);
+        }
         return isWindows
             ? { key: 'powershell', name: 'PowerShell' }
             : { key: 'zsh', name: 'Zsh' };
@@ -62,7 +70,9 @@ export function TerminalPanel({ isOpen }: TerminalPanelProps) {
 
         // If a new shell profile was explicitly chosen, save it as the new default
         if (shellType !== undefined) {
-            setDefaultShell({ key: shellType, name: displayName || 'Terminal' });
+            const newDefault = { key: shellType, name: displayName || 'Terminal' };
+            setDefaultShell(newDefault);
+            localStorage.setItem('terminal:defaultShell', JSON.stringify(newDefault));
         }
 
         const terminal = new Terminal({
