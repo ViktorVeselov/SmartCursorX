@@ -1,6 +1,7 @@
 import path from 'path';
 import { app } from 'electron';
 import { createRequire } from 'module';
+import { secureStore } from './secureStore';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -29,6 +30,7 @@ export class DatabaseService {
             console.log(`[DatabaseService] sqlite-vec loaded successfully. v${versionRow ? versionRow.version : 'unknown'}`);
 
             this.runMigrations();
+            this.migrateKeysToSecureStore();
             console.log(`Database initialized at ${this.dbPath}`);
         } catch (err) {
             console.error('Failed to initialize database:', err);
@@ -110,6 +112,7 @@ export class DatabaseService {
                 name TEXT NOT NULL,
                 base_url TEXT NOT NULL,
                 api_key TEXT,
+                is_local INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         `).run();
@@ -126,6 +129,11 @@ export class DatabaseService {
 
         try {
             this.db.prepare('ALTER TABLE custom_models ADD COLUMN has_thinking INTEGER DEFAULT 0').run();
+        } catch (e) {
+        }
+
+        try {
+            this.db.prepare('ALTER TABLE custom_providers ADD COLUMN is_local INTEGER DEFAULT 0').run();
         } catch (e) {
         }
 
@@ -274,6 +282,27 @@ export class DatabaseService {
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         `).run();
+    }
+    
+    private migrateKeysToSecureStore() {
+        if (!this.db) return;
+        try {
+            const providers = this.db.prepare("SELECT id, api_key FROM custom_providers WHERE api_key IS NOT NULL AND api_key != ''").all();
+            if (providers.length > 0) {
+                console.log(`[DatabaseService] Found ${providers.length} custom providers with plaintext API keys in SQLite. Migrating...`);
+                for (const p of providers) {
+                    if (p.api_key && p.api_key.trim().length > 0) {
+                        secureStore.setApiKey(p.id, p.api_key);
+                        console.log(`[DatabaseService] Securely migrated API key for custom provider: ${p.id}`);
+                    }
+                }
+                // Clear plaintext keys from database
+                this.db.prepare('UPDATE custom_providers SET api_key = NULL').run();
+                console.log(`[DatabaseService] Cleared plaintext API keys from SQLite database.`);
+            }
+        } catch (e) {
+            console.error('[DatabaseService] Failed to run custom provider API key migration:', e);
+        }
     }
 
     save() {
@@ -441,13 +470,19 @@ export class DatabaseService {
     /**
      * Registers a custom OpenAI-compatible API gateway.
      */
-    addCustomProvider(id: string, name: string, baseUrl: string, apiKey?: string) {
+    addCustomProvider(id: string, name: string, baseUrl: string, apiKey?: string, isLocal: boolean = false) {
         console.assert(id && typeof id === 'string', 'Provider ID is required');
         console.assert(name && typeof name === 'string', 'Provider Name is required');
         console.assert(baseUrl && typeof baseUrl === 'string', 'Provider Base URL is required');
         if (!this.db) throw new Error('DB not initialized');
-        this.db.prepare('INSERT OR REPLACE INTO custom_providers (id, name, base_url, api_key) VALUES (?, ?, ?, ?)')
-            .run(id, name, baseUrl, apiKey || null);
+        
+        // Save the API key securely using secureStore
+        if (apiKey && apiKey.trim().length > 0) {
+            secureStore.setApiKey(id, apiKey);
+        }
+        
+        this.db.prepare('INSERT OR REPLACE INTO custom_providers (id, name, base_url, api_key, is_local) VALUES (?, ?, ?, NULL, ?)')
+            .run(id, name, baseUrl, isLocal ? 1 : 0);
     }
 
     /**
@@ -465,6 +500,9 @@ export class DatabaseService {
         if (!this.db) throw new Error('DB not initialized');
         this.db.prepare('DELETE FROM custom_providers WHERE id = ?').run(id);
         this.db.prepare('DELETE FROM custom_models WHERE provider_id = ?').run(id);
+        
+        // Delete API key from secureStore
+        secureStore.deleteApiKey(id);
     }
 
     /**
