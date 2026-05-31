@@ -13,6 +13,8 @@ interface CodeEditorProps {
   onChange: (value: string | undefined) => void;
   language?: string;
   vimEnabled?: boolean;
+  targetLine?: { line: number; timestamp: number } | null;
+  highlightActive?: boolean;
 }
 
 export function CodeEditor({
@@ -20,17 +22,84 @@ export function CodeEditor({
   onChange,
   language = 'typescript',
   vimEnabled = true,
+  targetLine = null,
+  highlightActive = false,
   options = {}
 }: CodeEditorProps & { options?: monaco.editor.IStandaloneEditorConstructionOptions & { theme?: string } }) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const vimModeRef = useRef<{ dispose: () => void } | null>(null);
   const statusBarRef = useRef<HTMLDivElement>(null);
+  const decorationsRef = useRef<string[]>([]);
+
+  // Jump to specific line when targetLine is updated
+  useEffect(() => {
+    if (editorRef.current && targetLine) {
+      const editor = editorRef.current;
+      editor.revealLineInCenter(targetLine.line);
+      editor.setPosition({ lineNumber: targetLine.line, column: 1 });
+      editor.focus();
+
+      // Apply line highlight decoration
+      decorationsRef.current = editor.deltaDecorations(decorationsRef.current, [
+        {
+          range: new monaco.Range(targetLine.line, 1, targetLine.line, 1),
+          options: {
+            isWholeLine: true,
+            className: 'line-highlight-decoration'
+          }
+        }
+      ]);
+
+      // If highlightActive is FALSE, clear it after 2 seconds.
+      // Otherwise, do not clear it (it will stay until highlightActive becomes false).
+      if (!highlightActive) {
+        const timer = setTimeout(() => {
+          if (editorRef.current) {
+            decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, []);
+          }
+        }, 2000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [targetLine, highlightActive]);
+
+  // Handle clearing decorations when search is cleared (highlightActive becomes false)
+  useEffect(() => {
+    if (!highlightActive && decorationsRef.current.length > 0 && editorRef.current) {
+      decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, []);
+    }
+  }, [highlightActive]);
 
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
 
     // Focus the editor
     editor.focus();
+
+    if (targetLine) {
+      setTimeout(() => {
+        editor.revealLineInCenter(targetLine.line);
+        editor.setPosition({ lineNumber: targetLine.line, column: 1 });
+
+        decorationsRef.current = editor.deltaDecorations(decorationsRef.current, [
+          {
+            range: new monaco.Range(targetLine.line, 1, targetLine.line, 1),
+            options: {
+              isWholeLine: true,
+              className: 'line-highlight-decoration'
+            }
+          }
+        ]);
+
+        if (!highlightActive) {
+          setTimeout(() => {
+            if (editorRef.current) {
+              decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, []);
+            }
+          }, 2000);
+        }
+      }, 100);
+    }
 
     // Initialize Vim mode if enabled
     if (vimEnabled && statusBarRef.current) {
