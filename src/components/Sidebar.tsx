@@ -12,21 +12,22 @@ interface SidebarProps {
     onToggle: () => void;
     activeSection: string;
     onSectionChange: (section: string) => void;
-    onFileSelect: (content: string, path: string) => void;
+    onFileSelect: (content: string, path: string, line?: number) => void;
     onCreateFile: (path?: string) => void;
     rootPath?: string;
     onOpenFolder?: () => void;
     onRunFlow?: (agent: any, flow: any) => void;
     onOpenFlow?: (flow: any) => void;
     width?: number;
+    symbolSearchQuery: string;
+    setSymbolSearchQuery: (q: string) => void;
 }
 
-export function Sidebar({ isOpen, onToggle, activeSection, onFileSelect, onCreateFile, rootPath, onOpenFolder, onRunFlow, onOpenFlow, width = 260 }: SidebarProps) {
-    const handleNavigate = async (filePath: string) => {
+export function Sidebar({ isOpen, onToggle, activeSection, onFileSelect, onCreateFile, rootPath, onOpenFolder, onRunFlow, onOpenFlow, width = 260, symbolSearchQuery, setSymbolSearchQuery }: SidebarProps) {
+    const handleNavigate = async (filePath: string, line?: number) => {
         try {
             const content = await window.ipcRenderer.invoke('read-file', filePath);
-            onFileSelect(content, filePath);
-            // Optional: trigger editor component line focusing or highlights later if needed
+            onFileSelect(content, filePath, line);
         } catch (e) {
             console.error('Navigation read error:', e);
         }
@@ -58,6 +59,8 @@ export function Sidebar({ isOpen, onToggle, activeSection, onFileSelect, onCreat
                                 onCreateFile={onCreateFile}
                                 rootPath={rootPath}
                                 onOpenFolder={onOpenFolder}
+                                symbolSearchQuery={symbolSearchQuery}
+                                setSymbolSearchQuery={setSymbolSearchQuery}
                             />
                         )}
                         {activeSection === 'search' && (
