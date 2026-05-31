@@ -204,7 +204,18 @@ Make sure to preserve imports, type definitions, and enforce strict type safety 
             const rawContent = match[2];
             const cleanContent = rawContent.replace(/^\r?\n/, '').replace(/\r?\n\s*$/, '');
 
-            const absolutePath = path.resolve(relativePath);
+            const workspaceRoot = path.resolve(process.cwd());
+            const absolutePath = path.resolve(workspaceRoot, relativePath);
+
+            // Strict containment validation to prevent path traversal
+            const relative = path.relative(workspaceRoot, absolutePath);
+            const isContained = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+
+            if (!isContained) {
+                console.error(`[ExecutionLoopService] Safety Block: Out-of-bounds file edit rejected: ${relativePath} (Resolved: ${absolutePath})`);
+                return false;
+            }
+
             try {
                 const parentDir = path.dirname(absolutePath);
                 if (!fs.existsSync(parentDir)) {
