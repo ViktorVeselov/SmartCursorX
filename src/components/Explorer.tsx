@@ -9,10 +9,12 @@ interface FileItem {
 }
 
 interface ExplorerProps {
-    onFileSelect: (content: string, path: string) => void;
+    onFileSelect: (content: string, path: string, line?: number) => void;
     onCreateFile?: (path?: string) => void;
     rootPath?: string;
     onOpenFolder?: (path?: string) => void;
+    symbolSearchQuery: string;
+    setSymbolSearchQuery: (q: string) => void;
 }
 
 interface FileNodeProps {
@@ -217,9 +219,55 @@ function FileNode({ item, depth, expandedFolders, onToggleFolder, onFileClick, l
     );
 }
 
-export function Explorer({ onFileSelect, onCreateFile, rootPath = '.', onOpenFolder }: ExplorerProps) {
+export function Explorer({ onFileSelect, onCreateFile, rootPath = '.', onOpenFolder, symbolSearchQuery, setSymbolSearchQuery }: ExplorerProps) {
     const [rootItems, setRootItems] = useState<FileItem[]>([]);
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+
+    // Symbol Search and Outline State
+    const [workspaceOutline, setWorkspaceOutline] = useState<Array<{ filePath: string; outline: any }>>([]);
+    const [isLoadingOutline, setIsLoadingOutline] = useState(false);
+
+    const loadWorkspaceOutline = useCallback(async () => {
+        setIsLoadingOutline(true);
+        try {
+            const data = await window.ipcRenderer.invoke('code:get-workspace-outline', rootPath);
+            setWorkspaceOutline(data || []);
+        } catch (e) {
+            console.error('Failed to load symbols outline:', e);
+        } finally {
+            setIsLoadingOutline(false);
+        }
+    }, [rootPath]);
+
+    useEffect(() => {
+        loadWorkspaceOutline();
+    }, [loadWorkspaceOutline]);
+
+    const getFlattenedSymbols = useCallback((): Array<{ name: string; kind: 'class' | 'function' | 'interface' | 'method'; startLine: number; filePath: string }> => {
+        const list: Array<{ name: string; kind: 'class' | 'function' | 'interface' | 'method'; startLine: number; filePath: string }> = [];
+        workspaceOutline.forEach(item => {
+            const { classes = [], functions = [], interfaces = [] } = item.outline || {};
+            classes.forEach((c: any) => list.push({ name: c.name, kind: 'class', startLine: c.startLine, filePath: item.filePath }));
+            functions.forEach((f: any) => list.push({ name: f.name, kind: f.kind || 'function', startLine: f.startLine, filePath: item.filePath }));
+            interfaces.forEach((i: any) => list.push({ name: i.name, kind: 'interface', startLine: i.startLine, filePath: item.filePath }));
+        });
+        return list;
+    }, [workspaceOutline]);
+
+    const filteredSymbols = getFlattenedSymbols().filter(sym => {
+        const nameMatch = sym.name.toLowerCase().includes(symbolSearchQuery.toLowerCase());
+        const kindMatch = sym.kind.toLowerCase().includes(symbolSearchQuery.toLowerCase());
+        return nameMatch || kindMatch;
+    });
+
+    const handleSymbolClick = async (sym: { name: string; filePath: string; startLine: number }) => {
+        try {
+            const content = await window.ipcRenderer.invoke('read-file', sym.filePath);
+            onFileSelect(content, sym.filePath, sym.startLine);
+        } catch (err) {
+            console.error('Failed to navigate to symbol:', err);
+        }
+    };
 
     // Clone Dialog State
     const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
@@ -460,21 +508,144 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '.', onOpenFol
                 </div>
             </div>
 
-            <div className="file-list">
-                {rootItems.map((item) => (
-                    <FileNode
-                        key={item.path}
-                        item={item}
-                        depth={0}
-                        expandedFolders={expandedFolders}
-                        onToggleFolder={handleToggleFolder}
-                        onFileClick={handleFileClick}
-                        loadChildren={loadDir}
-                        onContextMenu={handleContextMenu}
-                    />
-                ))}
-                {rootItems.length === 0 && <div className="empty-msg">No files found</div>}
+            {/* Quick Symbol Finder */}
+            <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <div style={{ position: 'relative', display: 'flex', alignItems: 'center', flex: 1 }}>
+                        <span className="codicon codicon-search" style={{ position: 'absolute', left: 8, color: 'var(--text-secondary)', fontSize: 12 }} />
+                        <input
+                            type="text"
+                            placeholder="Quick symbol search..."
+                            value={symbolSearchQuery}
+                            onChange={e => setSymbolSearchQuery(e.target.value)}
+                            style={{
+                                width: '100%',
+                                padding: '5px 8px 5px 24px',
+                                background: 'var(--bg-input)',
+                                border: '1px solid var(--border-subtle)',
+                                borderRadius: 'var(--radius-sm)',
+                                color: 'var(--text-primary)',
+                                fontSize: '11px',
+                                outline: 'none',
+                                transition: 'border-color 0.2s ease'
+                            }}
+                        />
+                        {symbolSearchQuery && (
+                            <button
+                                onClick={() => setSymbolSearchQuery('')}
+                                style={{
+                                    position: 'absolute',
+                                    right: 6,
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--text-secondary)',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center'
+                                }}
+                            >
+                                <span className="codicon codicon-close" style={{ fontSize: 10 }} />
+                            </button>
+                        )}
+                    </div>
+                    <button
+                        onClick={loadWorkspaceOutline}
+                        title="Refresh symbols index"
+                        style={{
+                            color: 'var(--text-secondary)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: '6px',
+                            borderRadius: 'var(--radius-sm)',
+                            height: '24px',
+                            width: '24px',
+                            background: 'var(--bg-hover)',
+                            border: '1px solid var(--border-subtle)'
+                        }}
+                    >
+                        <span className={`codicon codicon-refresh ${isLoadingOutline ? 'loading-spin' : ''}`} style={{ fontSize: 11 }} />
+                    </button>
+                </div>
+                {isLoadingOutline && (
+                    <span style={{ fontSize: 10, color: 'var(--text-secondary)', fontStyle: 'italic', paddingLeft: 4 }}>
+                        Scanning symbols index...
+                    </span>
+                )}
             </div>
+
+            {symbolSearchQuery ? (
+                <div className="symbol-search-results" style={{ padding: '8px 0', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <div style={{ padding: '4px 10px', color: 'var(--text-secondary)', fontWeight: 500, fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        Matching Symbols ({filteredSymbols.length})
+                    </div>
+                    <div style={{ maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
+                        {filteredSymbols.map((sym, idx) => {
+                            const relativePath = sym.filePath.split(/[/\\]/).slice(-2).join('/');
+                            
+                            let icon = 'codicon-symbol-method';
+                            let iconColor = '#00add8';
+                            if (sym.kind === 'class') {
+                                icon = 'codicon-symbol-class';
+                                iconColor = '#a074c4';
+                            } else if (sym.kind === 'interface') {
+                                icon = 'codicon-symbol-interface';
+                                iconColor = '#42b883';
+                            }
+
+                            return (
+                                <div
+                                    key={idx}
+                                    onClick={() => handleSymbolClick(sym)}
+                                    className="sidebar-item symbol-item"
+                                    style={{
+                                        padding: '6px 12px',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: 2,
+                                        borderBottom: '1px solid rgba(255,255,255,0.02)'
+                                    }}
+                                >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                        <span className={`codicon ${icon}`} style={{ color: iconColor, fontSize: 13 }} />
+                                        <span style={{ fontWeight: 600, fontSize: 12, color: 'var(--text-primary)' }}>{sym.name}</span>
+                                        <span style={{ fontSize: 9, opacity: 0.6, background: 'var(--bg-active)', padding: '1px 4px', borderRadius: '3px', textTransform: 'uppercase' }}>{sym.kind}</span>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, paddingLeft: 19 }}>
+                                        <span className="codicon codicon-file" style={{ fontSize: 10, color: 'var(--text-secondary)' }} />
+                                        <span style={{ fontSize: 10, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {relativePath}:L{sym.startLine}
+                                        </span>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                        {filteredSymbols.length === 0 && (
+                            <div className="empty-msg" style={{ padding: '24px 12px', textAlign: 'center', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                No matching symbols found
+                            </div>
+                        )}
+                    </div>
+                </div>
+            ) : (
+                <div className="file-list">
+                    {rootItems.map((item) => (
+                        <FileNode
+                            key={item.path}
+                            item={item}
+                            depth={0}
+                            expandedFolders={expandedFolders}
+                            onToggleFolder={handleToggleFolder}
+                            onFileClick={handleFileClick}
+                            loadChildren={loadDir}
+                            onContextMenu={handleContextMenu}
+                        />
+                    ))}
+                    {rootItems.length === 0 && <div className="empty-msg">No files found</div>}
+                </div>
+            )}
 
             {contextMenu && (
                 <ContextMenu
