@@ -316,16 +316,13 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
             if (chosenNames.length > 0) {
                 // Show ONLY chosen models!
                 setAvailableModels(chosenNames);
-                if (!chosenNames.includes(activeModel)) {
+                if (!chosenNames.includes(activeModel) || !activeModel) {
                     setActiveModel(chosenNames[0]);
                 }
             } else {
-                // Fallback: Fetch all dynamic models
-                const list = await window.ipcRenderer.invoke('ai:get-models', activeProvider);
-                setAvailableModels(list || []);
-                if (list && list.length > 0 && !list.includes(activeModel)) {
-                    setActiveModel(list[0]);
-                }
+                // Do NOT fallback! Show empty workspace/model list
+                setAvailableModels([]);
+                setActiveModel('');
             }
         };
         queryModels();
@@ -392,6 +389,10 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
     };
 
     const handleSend = async () => {
+        if (!activeModel) {
+            setMessages(prev => [...prev, { role: 'system', content: '⚠️ No active model selected. Please search and register a model below or enable one in Settings.' }]);
+            return;
+        }
         if (!input.trim() && !attachedFile || isLoading) return;
 
         let finalContent = input;
@@ -974,7 +975,9 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                                     onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-active)'}
                                     onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
                                     onClick={() => setShowModelDropdown(!showModelDropdown)}>
-                                        <span style={{ fontWeight: 500 }}>{activeModel.toUpperCase()}</span>
+                                        <span style={{ fontWeight: 600, color: activeModel ? 'var(--text-primary)' : '#f59e0b' }}>
+                                            {activeModel ? activeModel.toUpperCase() : 'NO MODEL ACTIVE'}
+                                        </span>
                                         <span className="codicon codicon-chevron-down" style={{ fontSize: 10, opacity: 0.8 }} />
                                     </div>
                                     {showModelDropdown && (
@@ -1026,11 +1029,18 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
 
                                             {/* Scrollable models list */}
                                             <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 180 }}>
-                                                {availableModels
-                                                    .filter(m => m.toLowerCase().includes(inlineModelInput.toLowerCase()))
-                                                    .map(m => {
-                                                        const customMatch = customModels.find(cm => cm.model_name === m);
-                                                        const hasThinking = customMatch ? customMatch.has_thinking === 1 : (m.startsWith('o1-') || m.startsWith('o3-') || m.includes('deepseek-r1') || m.includes('reasoner'));
+                                                {availableModels.length === 0 ? (
+                                                    <div style={{ padding: '16px 12px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '11px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                                                        <span className="codicon codicon-warning" style={{ fontSize: 16, color: '#f59e0b' }} />
+                                                        <span>No active models added.</span>
+                                                        <span style={{ fontSize: '9px', opacity: 0.8 }}>Use the register input below or settings to add one!</span>
+                                                    </div>
+                                                ) : (
+                                                    availableModels
+                                                        .filter(m => m.toLowerCase().includes(inlineModelInput.toLowerCase()))
+                                                        .map(m => {
+                                                            const customMatch = customModels.find(cm => cm.model_name === m);
+                                                            const hasThinking = customMatch ? customMatch.has_thinking === 1 : (m.startsWith('o1-') || m.startsWith('o3-') || m.includes('deepseek-r1') || m.includes('reasoner'));
 
                                                         return (
                                                             <div
@@ -1114,7 +1124,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                                                                 </button>
                                                             </div>
                                                         );
-                                                    })}
+                                                    }))}
                                             </div>
                                         </div>
                                     )}
@@ -1187,20 +1197,20 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                                 {/* Dynamic rounded blue Arrow Send Button */}
                                 <button
                                     onClick={handleSend}
-                                    disabled={isLoading || !input.trim()}
+                                    disabled={isLoading || (!input.trim() && !attachedFile) || !activeModel}
                                     style={{
-                                        background: input.trim() ? '#0070f3' : 'var(--bg-hover)',
-                                        color: input.trim() ? 'white' : 'var(--text-secondary)',
+                                        background: (input.trim() && activeModel) ? '#0070f3' : 'var(--bg-hover)',
+                                        color: (input.trim() && activeModel) ? 'white' : 'var(--text-secondary)',
                                         border: 'none',
                                         borderRadius: '50%',
                                         width: 28,
                                         height: 28,
-                                        cursor: input.trim() ? 'pointer' : 'default',
+                                        cursor: (input.trim() && activeModel) ? 'pointer' : 'default',
                                         display: 'flex',
                                         alignItems: 'center',
                                         justifyContent: 'center',
                                         transition: 'var(--transition-smooth)',
-                                        transform: input.trim() ? 'scale(1.05)' : 'scale(1)',
+                                        transform: (input.trim() && activeModel) ? 'scale(1.05)' : 'scale(1)',
                                     }}
                                 >
                                     <span className="codicon codicon-arrow-up" style={{ fontSize: 13, fontWeight: 'bold' }} />

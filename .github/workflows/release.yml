@@ -1,0 +1,38 @@
+name: Compile & Publish Cross-Platform Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers the build automatically when pushing a version tag (e.g., v0.0.1-alpha)
+
+jobs:
+  publish:
+    name: Build & Publish Release
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Set up Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install Project Dependencies
+        run: npm ci
+
+      - name: Compile & Package Application
+        run: npm run build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && electron-builder",
+    "build:native": "npm --prefix native run build",
+    "build": "npm run build:native && tsc && vite build && electron-builder",
+    "build:all": "npm run build:native && tsc && vite build && electron-builder -w -m",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
