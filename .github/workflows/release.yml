@@ -30,7 +30,7 @@ jobs:
           toolchain: stable
 
       - name: Install Project Dependencies
-        run: npm ci
+        run: npm ci --legacy-peer-deps
 
       - name: Compile & Package Application
         run: npm run build
