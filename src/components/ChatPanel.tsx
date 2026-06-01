@@ -2,6 +2,23 @@ import { useState, useEffect, useRef } from 'react';
 import { executeWorkflow, WorkflowAction } from '../utils/workflowExecutor';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
+const DollarIcon = ({ active, width = 13, height = 13, marginRight = 0 }: { active: boolean; width?: number; height?: number; marginRight?: number }) => (
+    <svg 
+        width={width} 
+        height={height} 
+        viewBox="0 0 24 24" 
+        fill="currentColor" 
+        style={{ 
+            transition: "all 0.3s ease",
+            marginRight,
+            color: active ? "#a78bfa" : "var(--text-secondary)",
+            filter: active ? "drop-shadow(0 0 3px rgba(167, 139, 250, 0.6))" : "none"
+        }}
+    >
+        <path fillRule="evenodd" d="M9 15a6 6 0 1 1 12 0 6 6 0 0 1-12 0Zm3.845-1.855a2.4 2.4 0 0 1 1.2-1.226 1 1 0 0 1 1.992-.026c.426.15.809.408 1.111.749a1 1 0 1 1-1.496 1.327.682.682 0 0 0-.36-.213.997.997 0 0 1-.113-.032.4.4 0 0 0-.394.074.93.93 0 0 0 .455.254 2.914 2.914 0 0 1 1.504.9c.373.433.669 1.092.464 1.823a.996.996 0 0 1-.046.129c-.226.519-.627.94-1.132 1.192a1 1 0 0 1-1.956.093 2.68 2.68 0 0 1-1.227-.798 1 1 0 1 1 1.506-1.315.682.682 0 0 0 .363.216c.038.009.075.02.111.032a.4.4 0 0 0 .395-.074.93.93 0 0 0-.455-.254 2.91 2.91 0 0 1-1.503-.9c-.375-.433-.666-1.089-.466-1.817a.994.994 0 0 1 .047-.134Zm1.884.573.003.008c-.003-.005-.003-.008-.003-.008Zm.55 2.613s-.002-.002-.003-.007a.032.032 0 0 1 .003.007ZM4 14a1 1 0 0 1 1 1v4a1 1 0 1 1-2 0v-4a1 1 0 0 1 1-1Zm3-2a1 1 0 0 1 1 1v6a1 1 0 1 1-2 0v-6a1 1 0 0 1 1-1Zm6.5-8a1 1 0 0 1 1-1H18a1 1 0 0 1 1 1v3a1 1 0 1 1-2 0v-.796l-2.341 2.049a1 1 0 0 1-1.24.06l-2.894-2.066L6.614 9.29a1 1 0 1 1-1.228-1.578l4.5-3.5a1 1 0 0 1 1.195-.025l2.856 2.04L15.34 5h-.84a1 1 0 0 1-1-1Z" clipRule="evenodd"/>
+    </svg>
+);
+
 export interface AppAgent {
     id: number;
     name: string;
@@ -59,7 +76,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
     const [attachedFile, setAttachedFile] = useState<{ name: string; path: string; content: string } | null>(null);
 
     // Execution Modes: 'fast' | 'think'
-    const [executionMode, _setExecutionMode] = useState<'fast' | 'think'>('fast');
+    const [executionMode, setExecutionMode] = useState<'fast' | 'think'>('fast');
 
     // Plus button popover menu states
     const [showPlusMenu, setShowPlusMenu] = useState(false);
@@ -497,7 +514,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                         <button onClick={() => setShowSettings(!showSettings)} title="API Keys">
                             <span className="codicon codicon-key" />
                         </button>
-                        <button onClick={onClose}>
+                        <button onClick={onClose} title="Close Chat Panel">
                             <span className="codicon codicon-close" />
                         </button>
                     </div>
@@ -1062,7 +1079,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                                                                         const dbModels = await window.ipcRenderer.invoke('ai:get-custom-models', activeProvider);
                                                                         setCustomModels(dbModels || []);
                                                                     }}
-                                                                    title={hasThinking ? 'Reasoning/Thinking Active' : 'Reasoning/Thinking Inactive'}
+                                                                    title={hasThinking ? 'Disable Reasoning/Thinking for Model' : 'Enable Reasoning/Thinking for Model'}
                                                                     style={{
                                                                         background: 'none',
                                                                         border: 'none',
@@ -1070,11 +1087,30 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                                                                         display: 'flex',
                                                                         alignItems: 'center',
                                                                         padding: '2px',
-                                                                        color: hasThinking ? '#a78bfa' : 'var(--text-secondary)',
+                                                                        outline: 'none',
                                                                         transition: 'var(--transition-smooth)'
                                                                     }}
                                                                 >
-                                                                    <span className="codicon codicon-beaker" style={{ fontSize: 11 }} />
+                                                                    {/* Miniature Sliding Switch for Model Capability */}
+                                                                    <div style={{
+                                                                        width: 20,
+                                                                        height: 11,
+                                                                        borderRadius: 5.5,
+                                                                        background: hasThinking ? '#a78bfa' : 'rgba(255,255,255,0.15)',
+                                                                        position: 'relative',
+                                                                        transition: 'background 0.2s ease'
+                                                                    }}>
+                                                                        <div style={{
+                                                                            width: 7,
+                                                                            height: 7,
+                                                                            borderRadius: '50%',
+                                                                            background: '#ffffff',
+                                                                            position: 'absolute',
+                                                                            top: 2,
+                                                                            left: hasThinking ? 11 : 2,
+                                                                            transition: 'left 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
+                                                                        }} />
+                                                                    </div>
                                                                 </button>
                                                             </div>
                                                         );
@@ -1082,6 +1118,47 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                                             </div>
                                         </div>
                                     )}
+                                </div>
+
+                                {/* Thinking Mode Toggle Switch */}
+                                <div 
+                                    onClick={() => setExecutionMode(prev => prev === 'think' ? 'fast' : 'think')}
+                                    title="Toggle AI Thinking / Reasoning Mode"
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 6,
+                                        cursor: 'pointer',
+                                        userSelect: 'none',
+                                        padding: '4px 6px',
+                                        borderRadius: '8px',
+                                        transition: 'background 0.2s ease',
+                                    }}
+                                    onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
+                                    onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+                                >
+                                    <DollarIcon active={executionMode === 'think'} />
+                                    {/* Sleek Switch Toggle */}
+                                    <div style={{
+                                        width: 26,
+                                        height: 14,
+                                        borderRadius: 7,
+                                        background: executionMode === 'think' ? '#a78bfa' : 'rgba(255,255,255,0.15)',
+                                        position: 'relative',
+                                        transition: 'background 0.25s ease',
+                                        boxShadow: executionMode === 'think' ? '0 0 8px rgba(167, 139, 250, 0.4)' : 'none'
+                                    }}>
+                                        <div style={{
+                                            width: 10,
+                                            height: 10,
+                                            borderRadius: '50%',
+                                            background: '#ffffff',
+                                            position: 'absolute',
+                                            top: 2,
+                                            left: executionMode === 'think' ? 14 : 2,
+                                            transition: 'left 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+                                        }} />
+                                    </div>
                                 </div>
                             </div>
 
