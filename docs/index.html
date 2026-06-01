@@ -46,13 +46,20 @@
       
       <div class="cta-container">
         <!-- Direct release installer URL triggers automatically on setup draft -->
-        <a href="https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Windows-0.0.1-alpha-Setup.exe" class="btn-download">
+        <a id="btn-download-primary" href="https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Windows-0.0.1-alpha-Setup.exe" class="btn-download">
           <svg viewBox="0 0 20 20">
             <path d="M10 2a1 1 0 0 1 1 1v7.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 1.4-1.42l2.3 2.3V3a1 1 0 0 1 1-1zm-7 13a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1z"/>
           </svg>
-          Download for Windows (x64)
+          <span id="btn-download-text">Download for Windows (x64)</span>
         </a>
-        <div class="release-meta">Windows Setup • Version 0.0.1-alpha • Cleaned by Scan</div>
+        <div id="release-meta-text" class="release-meta">Windows Setup • Version 0.0.1-alpha • Cleaned by Scan</div>
+        
+        <!-- Cross-platform alternative selectors -->
+        <div style="margin-top: 12px; font-size: 13px; color: var(--text-secondary);">
+          Looking for other platforms? Download for 
+          <a href="https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Windows-0.0.1-alpha-Setup.exe" style="color: var(--color-accent); text-decoration: none; margin: 0 4px; border-bottom: 1px dashed rgba(6,182,212,0.4);">Windows (.exe)</a> or 
+          <a href="https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Mac-0.0.1-alpha-Installer.dmg" style="color: var(--color-accent); text-decoration: none; margin: 0 4px; border-bottom: 1px dashed rgba(6,182,212,0.4);">macOS (.dmg)</a>
+        </div>
       </div>
     </div>
   </section>
@@ -199,10 +206,20 @@
         <div class="step-num">2</div>
         <div class="step-content">
           <h3 class="step-title">Locate Setup Package</h3>
-          <p class="step-desc">The secure executable will be generated inside the local releases directory:</p>
+          <p class="step-desc">The secure executable or DMG package will be generated inside the local releases directory depending on your build host:</p>
+          
+          <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">Windows Setup Path:</div>
+          <div class="codeblock-container" style="margin-bottom: 12px;">
+            <div class="codeblock" id="cmd-release-win">.\release\0.0.1-alpha\SmartCursorX-Windows-0.0.1-alpha-Setup.exe</div>
+            <button class="btn-copy" onclick="copyText('cmd-release-win')" aria-label="Copy code">
+              <svg viewBox="0 0 24 24"><path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z"/></svg>
+            </button>
+          </div>
+
+          <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">macOS DMG Path:</div>
           <div class="codeblock-container">
-            <div class="codeblock" id="cmd-release">.\release\0.0.1-alpha\SmartCursorX-Windows-0.0.1-alpha-Setup.exe</div>
-            <button class="btn-copy" onclick="copyText('cmd-release')" aria-label="Copy code">
+            <div class="codeblock" id="cmd-release-mac">.\release\0.0.1-alpha\SmartCursorX-Mac-0.0.1-alpha-Installer.dmg</div>
+            <button class="btn-copy" onclick="copyText('cmd-release-mac')" aria-label="Copy code">
               <svg viewBox="0 0 24 24"><path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z"/></svg>
             </button>
           </div>
@@ -212,8 +229,18 @@
       <div class="step-item">
         <div class="step-num">3</div>
         <div class="step-content">
-          <h3 class="step-title">Publish GitHub Release</h3>
-          <p class="step-desc">Simply push your commits to GitHub and upload your generated executable `.exe` as a release asset in a release tagged `v1.0.0`. The download link on this page will instantly activate.</p>
+          <h3 class="step-title">Publish GitHub Release & macOS Security Bypass</h3>
+          <p class="step-desc">Push your commits to GitHub and upload the generated <code>.exe</code> or <code>.dmg</code> file as a release asset under tag <code>v0.0.1-alpha</code>.</p>
+          <div style="background: rgba(6, 182, 212, 0.08); border: 1px solid rgba(6, 182, 212, 0.2); border-radius: var(--radius-sm); padding: 14px 18px; margin-top: 10px; font-size: 13px;">
+            <strong style="color: var(--color-accent); display: block; margin-bottom: 4px;">💡 macOS Gatekeeper Quarantine Bypass:</strong>
+            Because this alpha build is self-packaged and unsigned, Gatekeeper will prevent launch on macOS. After dragging the app to your <code>/Applications</code> folder, run the following command in your terminal to bypass:
+            <div class="codeblock-container" style="margin-top: 8px; background: #060608; padding: 10px 14px;">
+              <div class="codeblock" id="cmd-xattr" style="color: #38bdf8;">xattr -cr /Applications/SmartCursorX.app</div>
+              <button class="btn-copy" onclick="copyText('cmd-xattr')" aria-label="Copy code" style="color: var(--text-muted);">
+                <svg viewBox="0 0 24 24" style="width: 16px; height: 16px;"><path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z"/></svg>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       
