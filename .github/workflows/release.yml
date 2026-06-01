@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*' # Triggers the build automatically when pushing a version tag (e.g., v0.0.1-alpha)
 
+permissions:
+  contents: write
+
 jobs:
   publish:
     name: Build & Publish Release
