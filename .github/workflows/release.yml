@@ -32,6 +32,9 @@ jobs:
       - name: Install Project Dependencies
         run: npm ci --legacy-peer-deps
 
+      - name: Install Native Dependencies
+        run: npm ci --prefix native --legacy-peer-deps
+
       - name: Compile & Package Application
         run: npm run build
         env:
