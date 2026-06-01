@@ -33,7 +33,7 @@ function App() {
   const [files, setFiles] = useState<OpenFile[]>([]);
   const [activeFilePath, setActiveFilePath] = useState('');
   const [vimEnabled, setVimEnabled] = useState(true);
-  const [rootPath, setRootPath] = useState('.');
+  const [rootPath, setRootPath] = useState('');
 
   // Panel states
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -76,6 +76,12 @@ function App() {
 
   useEffect(() => {
     loadAppSettings();
+    const isMac = navigator.userAgent.includes('Macintosh');
+    if (isMac) {
+      document.body.classList.add('platform-mac');
+    } else {
+      document.body.classList.add('platform-win');
+    }
   }, []);
 
   const handleRunFlow = (agent: AppAgent, flow: AppFlow) => {
@@ -470,84 +476,86 @@ function App() {
           onOpenSettings={() => setSettingsOpen(true)}
         />
 
-        <div className="editor-terminal-container" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-          <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            {activeSection === 'search' ? (
-              <div className="editor-wrapper" style={{ height: '100%', width: '100%' }}>
-                <SearchPanel />
-              </div>
-            ) : (
-              <div className="editor-wrapper" style={{ height: '100%', width: '100%', flex: 1 }}>
-                {activeFile ? (
-                  activeFile.type === 'flow' ? (
-                    <VisualWorkflowEditor
-                      initialNodes={activeFile.flowData?.nodes}
-                      initialEdges={activeFile.flowData?.edges}
-                      onSave={(nodes, edges) => {
-                        // Update local file state
-                        const newData = { nodes, edges };
-                        setFiles(files.map(f => f.path === activeFilePath ? { ...f, flowData: newData, isDirty: true } : f));
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden', minWidth: 0 }}>
+          <div className="editor-terminal-container" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+            <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              {activeSection === 'search' ? (
+                <div className="editor-wrapper" style={{ height: '100%', width: '100%' }}>
+                  <SearchPanel />
+                </div>
+              ) : (
+                <div className="editor-wrapper" style={{ height: '100%', width: '100%', flex: 1 }}>
+                  {activeFile ? (
+                    activeFile.type === 'flow' ? (
+                      <VisualWorkflowEditor
+                        initialNodes={activeFile.flowData?.nodes}
+                        initialEdges={activeFile.flowData?.edges}
+                        onSave={(nodes, edges) => {
+                          // Update local file state
+                          const newData = { nodes, edges };
+                          setFiles(files.map(f => f.path === activeFilePath ? { ...f, flowData: newData, isDirty: true } : f));
 
-                        // Auto-save to DB?
-                        // Needed: A way to save back. For now, rely on Ctrl+S or Auto.
-                        // We'll implement handleSave for flows next.
-                      }}
-                    />
+                          // Auto-save to DB?
+                          // Needed: A way to save back. For now, rely on Ctrl+S or Auto.
+                          // We'll implement handleSave for flows next.
+                        }}
+                      />
+                    ) : (
+                      <CodeEditor
+                        value={activeFile.content}
+                        onChange={handleContentChange}
+                        language={getFileSettings(activeFile.name).language}
+                        vimEnabled={vimEnabled}
+                        targetLine={editorTargetLine}
+                        highlightActive={!!symbolSearchQuery}
+                        options={{
+                          tabSize: getFileSettings(activeFile.name).tabSize,
+                          insertSpaces: true,
+                          fontSize: appFontSize,
+                          theme: appTheme === 'light' ? 'light' : 'vs-dark'
+                        }}
+                      />
+                    )
                   ) : (
-                    <CodeEditor
-                      value={activeFile.content}
-                      onChange={handleContentChange}
-                      language={getFileSettings(activeFile.name).language}
-                      vimEnabled={vimEnabled}
-                      targetLine={editorTargetLine}
-                      highlightActive={!!symbolSearchQuery}
-                      options={{
-                        tabSize: getFileSettings(activeFile.name).tabSize,
-                        insertSpaces: true,
-                        fontSize: appFontSize,
-                        theme: appTheme === 'light' ? 'light' : 'vs-dark'
-                      }}
-                    />
-                  )
-                ) : (
-                  <div className="empty-state">
-                    <p>No file open. Click + or select a file from sidebar.</p>
-                  </div>
-                )}
-              </div>
+                    <div className="empty-state">
+                      <p>No file open. Click + or select a file from sidebar.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {terminalOpen && (
+              <>
+                {/* Resizer */}
+                <div
+                  className="resize-handle-horizontal"
+                  onMouseDown={startResizeTerminal}
+                  style={{ height: 4, cursor: 'row-resize', background: '#333', flexShrink: 0 }}
+                />
+                <div style={{ height: terminalHeight, position: 'relative', flexShrink: 0 }}>
+                  <TerminalPanel isOpen={terminalOpen} height="100%" />
+                </div>
+              </>
             )}
           </div>
 
-          {terminalOpen && (
-            <>
-              {/* Resizer */}
-              <div
-                className="resize-handle-horizontal"
-                onMouseDown={startResizeTerminal}
-                style={{ height: 4, cursor: 'row-resize', background: '#333', flexShrink: 0 }}
+          {/* Chat Panel - Nesting here inside the flex-row under TopBar to respect layout boundaries */}
+          {chatOpen && (
+            <ErrorBoundary>
+              <ChatPanel
+                isOpen={chatOpen}
+                onClose={() => setChatOpen(false)}
+                onApplyCode={handleApplyCode}
+                executionContext={executionContext}
+                settingsSavedTrigger={settingsSavedTrigger}
               />
-              <div style={{ height: terminalHeight, position: 'relative', flexShrink: 0 }}>
-                <TerminalPanel isOpen={terminalOpen} height="100%" />
-              </div>
-            </>
+            </ErrorBoundary>
           )}
         </div>
 
         <StatusBar vimEnabled={vimEnabled} />
       </div>
-
-      {/* Chat Panel - Now inline, not overlay wrapped in ErrorBoundary */}
-      {chatOpen && (
-        <ErrorBoundary>
-          <ChatPanel
-            isOpen={chatOpen}
-            onClose={() => setChatOpen(false)}
-            onApplyCode={handleApplyCode}
-            executionContext={executionContext}
-            settingsSavedTrigger={settingsSavedTrigger}
-          />
-        </ErrorBoundary>
-      )}
 
       {/* New File Dialog */}
       {newFileDialogOpen && (
