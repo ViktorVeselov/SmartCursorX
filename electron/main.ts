@@ -43,6 +43,12 @@ function createWindow() {
   console.log(' [Main] Creating Window...');
   win = new BrowserWindow({
     icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#121214',
+      symbolColor: '#f3f4f6',
+      height: 40
+    },
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       // Security: Context Isolation is true by default in Electron 12+
@@ -50,6 +56,10 @@ function createWindow() {
       contextIsolation: true,
     },
   })
+
+  if (process.platform !== 'darwin') {
+    win.removeMenu();
+  }
 
   // Test active push message to Renderer-process.
   win.webContents.on('did-finish-load', () => {
