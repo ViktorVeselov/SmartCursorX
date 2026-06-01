@@ -15,7 +15,7 @@ Thumbs.db
 .idea/
 
 # Secrets / configs
-.env
-.env.local
+.env*
+!.env.example
 *.pem
 *.key
