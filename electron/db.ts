@@ -25,7 +25,11 @@ export class DatabaseService {
             this.db = new Database(this.dbPath, {});
             this.db.pragma('journal_mode = WAL');
             
-            sqliteVec.load(this.db);
+            let vecPath = sqliteVec.getLoadablePath();
+            if (app.isPackaged) {
+                vecPath = vecPath.replace('app.asar', 'app.asar.unpacked');
+            }
+            this.db.loadExtension(vecPath);
             const versionRow = this.db.prepare('SELECT vec_version() AS version').get();
             console.log(`[DatabaseService] sqlite-vec loaded successfully. v${versionRow ? versionRow.version : 'unknown'}`);
 
