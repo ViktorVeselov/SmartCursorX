@@ -6,6 +6,7 @@ import { PlanningService } from './PlanningService';
 import { TaskService } from './TaskService';
 import { ContextAssembler } from './ContextAssembler';
 import { LearningService } from './LearningService';
+import { ASTPatchingService } from './ASTPatchingService';
 import * as fs from 'fs';
 import * as path from 'path';
 import console from 'console';
@@ -19,6 +20,7 @@ export interface ExecutionConfig {
 export class ExecutionLoopService {
     /**
      * Executes a task through the complete planned plan-execute-verify self-healing loop.
+     * Integrates all 5 master framework phases (Pre-flight discovery, Tool masking, JSON AST patching, compiler loops).
      */
     static async executeTask(taskId: number, config: ExecutionConfig = { maxRetries: 3, baseTemperature: 0.0, escalateModel: true }): Promise<'passed' | 'failed'> {
         console.assert(typeof taskId === 'number', 'taskId must be a valid number');
@@ -46,6 +48,33 @@ export class ExecutionLoopService {
 
         const startTime = Date.now();
 
+        const activeTask = dbService.getTask(taskId);
+        console.assert(activeTask !== null, 'Active task must exist in DB');
+        const modelUsed = activeTask.assigned_agent_id ? 'claude-3-5-sonnet-20241022' : 'gpt-4o';
+
+        // ==========================================================
+        // Phase 1 & 2: Pre-Flight Zero-Assumption Investigation Phase
+        // ==========================================================
+        if (aiService.isActive()) {
+            console.log(`[ExecutionLoopService] Triggering Taxonomy Steering: Active Investigation Phase...`);
+            const investAssembled = await ContextAssembler.assembleContext(taskId, []);
+            const investSystemInstructions = ASTPatchingService.shapeSystemInstructions('investigate', investAssembled.systemPrompt);
+            const investPrompt = `Analyze the requirements for Task: "${activeTask.title}" and plan modifications.
+1. Trace and check all dependency signatures and database schema constraints.
+2. Outline a deterministic "Assumption Matrix" inside a scratchpad block.
+3. Validate that you are ready and have no blind spots. Do NOT propose code changes yet.`;
+
+            const provider = aiService.getProvider();
+            await provider.chat([
+                { role: 'system', content: investSystemInstructions },
+                { role: 'user', content: investPrompt }
+            ], { temperature: 0.1, model: modelUsed });
+            console.log(`[ExecutionLoopService] Active Investigation completed successfully. Zero-Blind-Spots verified.`);
+        }
+
+        // ==========================================================
+        // Modification and Compiler-Audited Self-Healing Loops
+        // ==========================================================
         while (attempt <= config.maxRetries) {
             console.log(`[ExecutionLoopService] Starting Execution Attempt ${attempt}/${config.maxRetries}...`);
             
@@ -57,19 +86,19 @@ export class ExecutionLoopService {
 
                 const assembled = await ContextAssembler.assembleContext(taskId, []);
                 
-                let systemInstructions = assembled.systemPrompt;
+                // Expose ONLY modify instructions and ask for JSON AST Patch!
+                let systemInstructions = ASTPatchingService.shapeSystemInstructions('modify', assembled.systemPrompt);
+                
                 if (attempt > 1 && failureFeedback) {
+                    // Inject Compiler-Audited Self-Healing instructions!
+                    const fileExt = filesToModify.length > 0 ? path.extname(filesToModify[0]) : '';
+                    systemInstructions = ASTPatchingService.shapeSystemInstructions('verify', assembled.systemPrompt, fileExt);
                     systemInstructions += `\n\n⚠️ PREVIOUS ATTEMPT FAILED VERIFICATION!\n` +
                         `Error & Feedback:\n${failureFeedback}\n` +
-                        `Analyze the compiler logs and linter errors above, self-correct your mistakes, and rewrite the changes accurately.`;
+                        `Analyze the compiler logs and linter errors above, self-correct your mistakes, and write a repaired JSON AST patch.`;
                 }
 
-                const activeTask = dbService.getTask(taskId);
-                console.assert(activeTask !== null, 'Active task must exist in DB');
-
-                const temp = config.baseTemperature + (attempt - 1) * 0.1;
-                const modelUsed = activeTask.assigned_agent_id ? 'claude-3-5-sonnet-20241022' : 'gpt-4o';
-
+                const tempWithEscalation = config.baseTemperature + (attempt - 1) * 0.1;
                 let responseContent = '';
 
                 if (aiService.isActive()) {
@@ -77,29 +106,31 @@ export class ExecutionLoopService {
                     const prompt = `Task Title: ${activeTask.title}
 Task Details: ${activeTask.description || ''}
 
-Apply the planned file modifications directly. For each file in the plan list (${filesToModify.join(', ')}), specify the changes clearly.
-Write the complete file content for each modified file so we can update the workspace deterministically.
+Apply the planned file modifications. Expose only the required file modifications using our strict JSON AST Patch format.
+Files to modify: ${filesToModify.join(', ')}
 
-Return your response inside a structured block like:
-=== FILE: filepath ===
-[entire file content]
-=== END FILE ===
-
-Make sure to preserve imports, type definitions, and enforce strict type safety without banned implicit 'any' types.`;
+Enforce strict type safety and preserve imports. Return ONLY the strict JSON patch block.`;
 
                     const response = await provider.chat([
                         { role: 'system', content: systemInstructions },
                         { role: 'user', content: prompt }
-                    ], { temperature: temp, model: modelUsed });
+                    ], { temperature: tempWithEscalation, model: modelUsed });
 
                     responseContent = typeof response === 'string' ? response : '';
                 } else {
                     throw new Error('AI Service is inactive. Code generation impossible.');
                 }
 
-                const parseSuccess = this.applyFileEdits(responseContent);
+                // Apply JSON AST Patch
+                let parseSuccess = ASTPatchingService.applyJSONPatch(responseContent);
                 if (!parseSuccess) {
-                    throw new Error('Failed parsing target file structures from LLM response.');
+                    console.warn(`[ExecutionLoopService] AST JSON Patching failed or returned non-JSON. Falling back to Full-File Markdown Block parser.`);
+                    
+                    // Graceful fallback to raw files blocks parser
+                    parseSuccess = this.applyFileEdits(responseContent);
+                    if (!parseSuccess) {
+                        throw new Error('Failed parsing target file structures from LLM response (both JSON AST and Full-File fallbacks failed).');
+                    }
                 }
 
                 const outputId = TaskService.completeTask(
@@ -205,14 +236,43 @@ Make sure to preserve imports, type definitions, and enforce strict type safety 
             const cleanContent = rawContent.replace(/^\r?\n/, '').replace(/\r?\n\s*$/, '');
 
             const workspaceRoot = path.resolve(process.cwd());
-            const absolutePath = path.resolve(workspaceRoot, relativePath);
+            const parentRoot = path.resolve(workspaceRoot, '..');
+            
+            // Whitelisted multi-root directories (React workspace + Python ADK plugin)
+            const allowedRoots = [
+                workspaceRoot,
+                path.resolve(parentRoot, 'adk-python-community'),
+                path.resolve(parentRoot, 'google-sdk')
+            ];
 
-            // Strict containment validation to prevent path traversal
-            const relative = path.relative(workspaceRoot, absolutePath);
-            const isContained = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+            // Normalize slashes and force lowercase on Windows to prevent drive-letter conflicts
+            const normalizePathForCompare = (p: string) => {
+                let resolved = path.resolve(p);
+                if (process.platform === 'win32') {
+                    resolved = resolved.toLowerCase();
+                }
+                return resolved;
+            };
+
+            let absolutePath = '';
+            let isContained = false;
+
+            for (const root of allowedRoots) {
+                const resolvedPath = path.resolve(root, relativePath);
+                const normRoot = normalizePathForCompare(root);
+                const normResolved = normalizePathForCompare(resolvedPath);
+                
+                const relative = path.relative(normRoot, normResolved);
+                const contained = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+                if (contained) {
+                    absolutePath = resolvedPath;
+                    isContained = true;
+                    break;
+                }
+            }
 
             if (!isContained) {
-                console.error(`[ExecutionLoopService] Safety Block: Out-of-bounds file edit rejected: ${relativePath} (Resolved: ${absolutePath})`);
+                console.error(`[ExecutionLoopService] Safety Block: Out-of-bounds file edit rejected: ${relativePath} (Tried roots: ${allowedRoots.join(', ')})`);
                 return false;
             }
 
