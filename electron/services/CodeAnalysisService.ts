@@ -27,6 +27,8 @@ export interface CallHierarchyNode {
 }
 
 export class CodeAnalysisService {
+    private static outlineCache: Map<string, { mtimeMs: number; outline: { classes: CodeSymbol[]; functions: CodeSymbol[]; interfaces: CodeSymbol[] } }> = new Map();
+
     /**
      * Extracts classes, functions, interfaces, and methods from a file using precise regex scanning and block boundaries.
      */
@@ -40,22 +42,35 @@ export class CodeAnalysisService {
             return { classes, functions, interfaces };
         }
 
-        const ext = path.extname(filePath);
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const lines = content.split(/\r?\n/);
+        try {
+            const stat = fs.statSync(filePath);
+            const cached = this.outlineCache.get(filePath);
+            if (cached && cached.mtimeMs === stat.mtimeMs) {
+                return cached.outline;
+            }
 
-        // Simple and robust scanning for TS/JS files
-        if (['.ts', '.tsx', '.js', '.jsx'].includes(ext)) {
-            this.parseTypeScriptSymbols(lines, classes, functions, interfaces);
-        } else if (ext === '.py') {
-            this.parsePythonSymbols(lines, classes, functions);
-        } else if (ext === '.rs') {
-            this.parseRustSymbols(lines, classes, functions, interfaces);
-        } else {
-            this.parseGenericSymbols(lines, classes, functions, interfaces, ext);
+            const ext = path.extname(filePath);
+            const content = fs.readFileSync(filePath, 'utf-8');
+            const lines = content.split(/\r?\n/);
+
+            // Simple and robust scanning for TS/JS files
+            if (['.ts', '.tsx', '.js', '.jsx'].includes(ext)) {
+                this.parseTypeScriptSymbols(lines, classes, functions, interfaces);
+            } else if (ext === '.py') {
+                this.parsePythonSymbols(lines, classes, functions);
+            } else if (ext === '.rs') {
+                this.parseRustSymbols(lines, classes, functions, interfaces);
+            } else {
+                this.parseGenericSymbols(lines, classes, functions, interfaces, ext);
+            }
+
+            const parsedResult = { classes, functions, interfaces };
+            this.outlineCache.set(filePath, { mtimeMs: stat.mtimeMs, outline: parsedResult });
+            return parsedResult;
+        } catch (e) {
+            console.error('[CodeAnalysisService] Failed parsing outline, fallback to empty:', e);
+            return { classes, functions, interfaces };
         }
-
-        return { classes, functions, interfaces };
     }
 
     private static parseTypeScriptSymbols(
