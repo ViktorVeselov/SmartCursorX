@@ -5,8 +5,44 @@ import { dbService } from '../db';
 import console from 'console';
 
 export class SnapshotService {
+    private static getWhitelistedRoots(): string[] {
+        const workspaceRoot = path.resolve(process.cwd());
+        const parentRoot = path.resolve(workspaceRoot, '..');
+        return [
+            workspaceRoot,
+            path.resolve(parentRoot, 'adk-python-community'),
+            path.resolve(parentRoot, 'google-sdk')
+        ];
+    }
+
+    private static normalizePathForCompare(p: string): string {
+        let resolved = path.resolve(p);
+        if (process.platform === 'win32') {
+            resolved = resolved.toLowerCase();
+        }
+        return resolved;
+    }
+
+    private static resolveToAllowedRoot(relativePath: string): string | null {
+        const roots = this.getWhitelistedRoots();
+        for (const root of roots) {
+            const resolvedPath = path.isAbsolute(relativePath)
+                ? relativePath
+                : path.resolve(root, relativePath);
+            const normRoot = this.normalizePathForCompare(root);
+            const normResolved = this.normalizePathForCompare(resolvedPath);
+            
+            const relative = path.relative(normRoot, normResolved);
+            const contained = relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+            if (contained) {
+                return resolvedPath;
+            }
+        }
+        return null;
+    }
+
     /**
-     * Captures a full snapshot of the specified files and saves them to the DB as version control blobs.
+     * Captures a full snapshot of the specified files across allowed roots and saves them to the DB as version control blobs.
      */
     static captureSnapshot(taskId: number, filePaths: string[], name: string): number {
         console.assert(typeof taskId === 'number', 'taskId must be a valid number');
@@ -20,21 +56,21 @@ export class SnapshotService {
         console.assert(snapshotId > 0, 'Snapshot ID must be a positive integer');
 
         for (const file of filePaths) {
-            const absolutePath = path.resolve(file);
-            if (fs.existsSync(absolutePath)) {
+            const absolutePath = this.resolveToAllowedRoot(file);
+            if (absolutePath && fs.existsSync(absolutePath)) {
                 try {
                     const content = fs.readFileSync(absolutePath, 'utf-8');
                     const hash = crypto.createHash('sha256').update(content).digest('hex');
 
                     dbService.addBlob(hash, content);
-                    dbService.addSnapshotFile(snapshotId, file, hash);
+                    dbService.addSnapshotFile(snapshotId, absolutePath, hash);
                     
-                    console.log(`[SnapshotService] Snapshotted file: ${file} (hash: ${hash.substring(0, 8)})`);
+                    console.log(`[SnapshotService] Snapshotted file: ${file} (resolved: ${absolutePath}, hash: ${hash.substring(0, 8)})`);
                 } catch (err) {
                     console.error(`[SnapshotService] Failed snapshotting file ${file}:`, err);
                 }
             } else {
-                console.warn(`[SnapshotService] Target file ${file} does not exist. Skipping blob generation.`);
+                console.warn(`[SnapshotService] Target file ${file} does not exist or is out of bounds. Skipping blob generation.`);
             }
         }
 
@@ -42,7 +78,7 @@ export class SnapshotService {
     }
 
     /**
-     * Restores the workspace files precisely back to the captured state of a given snapshot ID.
+     * Restores the workspace files precisely back to the captured state of a given snapshot ID, strictly enforcing allowed root containment boundaries.
      */
     static rollbackToSnapshot(snapshotId: number): void {
         console.assert(typeof snapshotId === 'number' && snapshotId > 0, 'snapshotId must be a positive number');
@@ -55,24 +91,31 @@ export class SnapshotService {
         }
 
         for (const f of files) {
-            const relativePath = f.file_path;
+            const absolutePath = f.file_path;
             const content = f.content;
-            const absolutePath = path.resolve(relativePath);
+
+            // Security/containment check during rollback to prevent directory traversal
+            const resolvedPath = this.resolveToAllowedRoot(absolutePath);
+            if (!resolvedPath) {
+                console.error(`[SnapshotService] Safety Block: Out-of-bounds rollback attempt rejected for path: ${absolutePath}`);
+                throw new Error(`Rollback safety violation on path: ${absolutePath}`);
+            }
 
             try {
-                const parentDir = path.dirname(absolutePath);
+                const parentDir = path.dirname(resolvedPath);
                 if (!fs.existsSync(parentDir)) {
                     fs.mkdirSync(parentDir, { recursive: true });
                 }
 
-                fs.writeFileSync(absolutePath, content, 'utf-8');
-                console.log(`[SnapshotService] Restored file: ${relativePath}`);
+                fs.writeFileSync(resolvedPath, content, 'utf-8');
+                console.log(`[SnapshotService] Restored file: ${resolvedPath}`);
             } catch (err) {
-                console.error(`[SnapshotService] Failed restoring file ${relativePath} during rollback:`, err);
-                throw new Error(`Rollback failed on file ${relativePath}: ${err}`);
+                console.error(`[SnapshotService] Failed restoring file ${resolvedPath} during rollback:`, err);
+                throw new Error(`Rollback failed on file ${resolvedPath}: ${err}`);
             }
         }
 
         console.log('[SnapshotService] Rollback completed successfully.');
     }
 }
+
