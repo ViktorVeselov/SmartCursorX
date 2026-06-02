@@ -77,23 +77,54 @@ export class DiffVerificationService {
             details += `✅ Code Quality Rules: Checked. Banned typings or placeholders absent.\n`;
         }
 
-        const workspacePath = path.resolve('cursor-replacer');
-        if (fs.existsSync(path.join(workspacePath, 'tsconfig.json'))) {
-            try {
-                details += `⚡ Running project compilation check (tsc --noEmit)...\n`;
-                const tscResult = await this.runTscCheck(workspacePath);
-                if (!tscResult.success) {
-                    compiles = false;
-                    details += `❌ Compilation Check: Failed.\nCompiler Logs:\n${tscResult.output}\n`;
-                } else {
-                    details += `✅ Compilation Check: Passed. Project builds perfectly with zero errors.\n`;
+        const hasTsFiles = modifiedFiles.some(f => ['.ts', '.tsx'].includes(path.extname(f)));
+        const hasPyFiles = modifiedFiles.some(f => ['.py'].includes(path.extname(f)));
+
+        const workspaceRoot = path.resolve(process.cwd());
+        const parentRoot = path.resolve(workspaceRoot, '..');
+
+        // Compile checks for TypeScript (React/Electron project)
+        if (hasTsFiles) {
+            const tsconfigPath = path.join(workspaceRoot, 'tsconfig.json');
+            if (fs.existsSync(tsconfigPath)) {
+                try {
+                    details += `⚡ Running TypeScript compilation check (tsc --noEmit)...\n`;
+                    const tscResult = await this.runTscCheck(workspaceRoot);
+                    if (!tscResult.success) {
+                        compiles = false;
+                        details += `❌ TypeScript Compilation Check failed:\n${tscResult.output}\n`;
+                    } else {
+                        details += `✅ TypeScript Compilation Check passed.\n`;
+                    }
+                } catch (err: any) {
+                    console.error('[DiffVerificationService] Failed to spawn tsc check:', err);
+                    details += `⚠️ TS Compilation Check skipped: ${err.message || err}\n`;
                 }
-            } catch (err: any) {
-                console.error('[DiffVerificationService] Failed to spawn tsc check:', err);
-                details += `⚠️ Compilation Check: Skipped due to execution environment limits (${err.message || err}).\n`;
             }
-        } else {
-            details += `ℹ️ Compilation Check: Skipped. No tsconfig.json found at ${workspacePath}.\n`;
+        }
+
+        // Compile checks for Python (ADK community project)
+        if (hasPyFiles) {
+            const pythonWorkspace = path.resolve(parentRoot, 'adk-python-community');
+            if (fs.existsSync(pythonWorkspace)) {
+                try {
+                    details += `⚡ Running Python syntax verification (py_compile)...\n`;
+                    const pyFiles = modifiedFiles
+                        .filter(f => path.extname(f) === '.py')
+                        .map(f => path.resolve(workspaceRoot, f)); // Resolve absolute
+                    
+                    const pyCompileResult = await this.runPythonCheck(pythonWorkspace, pyFiles);
+                    if (!pyCompileResult.success) {
+                        compiles = false;
+                        details += `❌ Python Compilation Check failed:\n${pyCompileResult.output}\n`;
+                    } else {
+                        details += `✅ Python Compilation Check passed.\n`;
+                    }
+                } catch (err: any) {
+                    console.error('[DiffVerificationService] Failed to spawn python check:', err);
+                    details += `⚠️ Python Compilation Check skipped: ${err.message || err}\n`;
+                }
+            }
         }
 
         return {
@@ -107,6 +138,50 @@ export class DiffVerificationService {
     private static runTscCheck(cwd: string): Promise<{ success: boolean; output: string }> {
         return new Promise((resolve) => {
             const proc = spawn('npx', ['tsc', '--noEmit'], {
+                cwd,
+                shell: true
+            });
+
+            let output = '';
+            proc.stdout?.on('data', (d) => output += d.toString());
+            proc.stderr?.on('data', (d) => output += d.toString());
+
+            proc.on('close', (code) => {
+                resolve({
+                    success: code === 0,
+                    output: output.trim()
+                });
+            });
+
+            proc.on('error', (err) => {
+                resolve({
+                    success: false,
+                    output: `Process execution error: ${err.message}`
+                });
+            });
+        });
+    }
+
+    private static runPythonCheck(cwd: string, files: string[]): Promise<{ success: boolean; output: string }> {
+        return new Promise(async (resolve) => {
+            const relativeFiles = files.map(f => path.relative(cwd, f));
+            
+            // Attempt with 'python' command first
+            let result = await this.executePythonCommand('python', relativeFiles, cwd);
+            
+            // Fallback to 'python3' if 'python' command fails with execution spawn error
+            if (!result.success && result.output.includes('Process execution error')) {
+                console.log('[DiffVerificationService] "python" command unavailable. Retrying with "python3"...');
+                result = await this.executePythonCommand('python3', relativeFiles, cwd);
+            }
+            
+            resolve(result);
+        });
+    }
+
+    private static executePythonCommand(command: string, args: string[], cwd: string): Promise<{ success: boolean; output: string }> {
+        return new Promise((resolve) => {
+            const proc = spawn(command, ['-m', 'py_compile', ...args], {
                 cwd,
                 shell: true
             });
