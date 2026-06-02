@@ -395,6 +395,86 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
         }
         if (!input.trim() && !attachedFile || isLoading) return;
 
+        // Command parser input hooks
+        if (input.trim().startsWith('/')) {
+            const command = input.trim();
+            setInput('');
+            
+            if (command.startsWith('/focus ')) {
+                const target = command.substring(7).trim();
+                const taskId = parseInt(target, 10);
+                if (!isNaN(taskId)) {
+                    try {
+                        await window.ipcRenderer.invoke('task:start', taskId);
+                        setMessages(prev => [...prev, 
+                            { role: 'user', content: command },
+                            { role: 'system', content: `🎯 **Focus set to Task ID ${taskId}**. Status transitioned to **In Progress**.` }
+                        ]);
+                    } catch (e: any) {
+                        setMessages(prev => [...prev, 
+                            { role: 'user', content: command },
+                            { role: 'system', content: `❌ **Failed to focus task:** ${e.message}` }
+                        ]);
+                    }
+                } else {
+                    setMessages(prev => [...prev, 
+                        { role: 'user', content: command },
+                        { role: 'system', content: `⚠️ **Invalid Task ID.** Usage: \`/focus [task_id]\`` }
+                    ]);
+                }
+                return;
+            }
+            
+            if (command.startsWith('/todo ')) {
+                const todoText = command.substring(6).trim();
+                if (todoText) {
+                    try {
+                        const taskTree = await window.ipcRenderer.invoke('task:get-tree');
+                        let parentId: number | null = null;
+                        const activeTask = taskTree.find((t: any) => t.status === 'in_progress');
+                        if (activeTask) {
+                            parentId = activeTask.id;
+                        }
+                        
+                        const newTaskId = await window.ipcRenderer.invoke('task:create', todoText, null, parentId);
+                        setMessages(prev => [...prev, 
+                            { role: 'user', content: command },
+                            { role: 'system', content: `📝 **Subtask created successfully:** "${todoText}" (ID: ${newTaskId}${parentId ? `, Parent ID: ${parentId}` : ''})` }
+                        ]);
+                    } catch (e: any) {
+                        setMessages(prev => [...prev, 
+                            { role: 'user', content: command },
+                            { role: 'system', content: `❌ **Failed to create subtask:** ${e.message}` }
+                        ]);
+                    }
+                } else {
+                    setMessages(prev => [...prev, 
+                        { role: 'user', content: command },
+                        { role: 'system', content: `⚠️ **Usage:** \`/todo [subtask title]\`` }
+                    ]);
+                }
+                return;
+            }
+            
+            if (command.startsWith('/checkpoint')) {
+                const checkpointName = command.substring(11).trim() || `checkpoint_${Date.now()}`;
+                try {
+                    const rootPath = await window.ipcRenderer.invoke('resolve-path', '.');
+                    const snapshotId = await window.ipcRenderer.invoke('vc-create-snapshot', checkpointName, rootPath);
+                    setMessages(prev => [...prev, 
+                        { role: 'user', content: command },
+                        { role: 'system', content: `💾 **Checkpoint "${checkpointName}" captured successfully!** (Snapshot ID: ${snapshotId})` }
+                    ]);
+                } catch (e: any) {
+                    setMessages(prev => [...prev, 
+                        { role: 'user', content: command },
+                        { role: 'system', content: `❌ **Failed to capture checkpoint:** ${e.message}` }
+                    ]);
+                }
+                return;
+            }
+        }
+
         let finalContent = input;
         if (attachedFile) {
             finalContent = `[Attached File: ${attachedFile.name}]\n\`\`\`\n${attachedFile.content}\n\`\`\`\n\n${input}`;
@@ -512,6 +592,22 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                 <div className="chat-header">
                     <h3><span className="codicon codicon-hubot" style={{ marginRight: 8 }} />AI Assistant</h3>
                     <div className="chat-actions">
+                        <button 
+                            onClick={() => {
+                                const systemMsg = messages.find(m => m.role === 'system') || { role: 'system', content: 'You are a helpful coding assistant.' };
+                                const lastMsg = messages.length > 1 ? messages[messages.length - 1] : null;
+                                const newMsgs = [systemMsg];
+                                if (lastMsg) {
+                                    newMsgs.push({ role: 'system', content: `[Parent Thread Context Summary]:\n${lastMsg.content.slice(0, 1000)}` });
+                                }
+                                setMessages(newMsgs);
+                                setMessages(prev => [...prev, { role: 'system', content: '🥞 **Sub-Thread Forked!** Older conversation history pruned to prevent context drift and slash token usage.' }]);
+                            }} 
+                            title="Fork Sub-Thread"
+                            style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', marginRight: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        >
+                            <span className="codicon codicon-git-fork-private" />
+                        </button>
                         <button onClick={() => setShowSettings(!showSettings)} title="API Keys">
                             <span className="codicon codicon-key" />
                         </button>
