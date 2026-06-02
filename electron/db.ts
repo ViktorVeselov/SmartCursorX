@@ -24,6 +24,9 @@ export class DatabaseService {
         try {
             this.db = new Database(this.dbPath, {});
             this.db.pragma('journal_mode = WAL');
+            this.db.pragma('synchronous = NORMAL');
+            this.db.pragma('temp_store = MEMORY');
+            this.db.pragma('cache_size = -64000'); // 64MB RAM page cache allocation
             
             let vecPath = sqliteVec.getLoadablePath();
             if (app.isPackaged) {
@@ -334,6 +337,32 @@ export class DatabaseService {
 
         const stmt = this.db.prepare(query);
         return type ? stmt.all(type) : stmt.all();
+    }
+
+    /**
+     * Search memories using keyword matching
+     */
+    searchMemories(query: string, limit: number = 5) {
+        if (!this.db) return [];
+        const terms = query.split(/\s+/).filter(t => t.length > 2);
+        if (terms.length === 0) {
+            return this.db.prepare('SELECT * FROM memories ORDER BY updated_at DESC LIMIT ?').all(limit);
+        }
+        
+        const conditions = terms.map(() => 'content LIKE ? OR type LIKE ?').join(' OR ');
+        const params: any[] = [];
+        for (const t of terms) {
+            params.push(`%${t}%`, `%${t}%`);
+        }
+        params.push(limit);
+
+        const stmt = this.db.prepare(`
+            SELECT * FROM memories 
+            WHERE ${conditions}
+            ORDER BY updated_at DESC
+            LIMIT ?
+        `);
+        return stmt.all(...params);
     }
 
     /**
