@@ -1,6 +1,8 @@
 import { dbService } from '../db';
 import { CodeAnalysisService } from './CodeAnalysisService';
 import console from 'console';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export interface ContextBudget {
     taskContext: number;
@@ -93,23 +95,53 @@ export class ContextAssembler {
             
             for (const file of uniquePaths) {
                 try {
-                    const parsed = CodeAnalysisService.parseFileSymbols(file);
+                    const absolutePath = this.resolveToAllowedRoot(file);
+                    if (!absolutePath || !fs.existsSync(absolutePath)) {
+                        console.warn(`[ContextAssembler] AST Pruning: File ${file} not found in whitelisted roots. Skipping.`);
+                        continue;
+                    }
+                    const parsed = CodeAnalysisService.parseFileSymbols(absolutePath);
                     
                     if (parsed.classes.length > 0 || parsed.functions.length > 0 || parsed.interfaces.length > 0) {
-                        const classNames = parsed.classes.map(c => c.name).join(', ');
-                        const funcNames = parsed.functions.map(f => f.name).join(', ');
-                        const interfaceNames = parsed.interfaces.map(i => i.name).join(', ');
+                        let fileSummary = `=== AST STRUCTURE OF ${path.basename(absolutePath)} (${file}) ===\n`;
+                        
+                        if (parsed.classes.length > 0) {
+                            fileSummary += `Classes:\n`;
+                            for (const c of parsed.classes) {
+                                fileSummary += `  class ${c.name} {\n`;
+                                if (c.docstring) {
+                                    fileSummary += `    /**\n     * ${c.docstring.replace(/\r?\n/g, '\n     * ')}\n     */\n`;
+                                }
+                                fileSummary += `  }\n`;
+                            }
+                        }
 
-                        let fileSummary = `File outline for ${file}:\n`;
-                        if (classNames) fileSummary += `  Classes: ${classNames}\n`;
-                        if (funcNames) fileSummary += `  Functions: ${funcNames}\n`;
-                        if (interfaceNames) fileSummary += `  Interfaces: ${interfaceNames}\n`;
+                        if (parsed.interfaces.length > 0) {
+                            fileSummary += `Interfaces:\n`;
+                            for (const i of parsed.interfaces) {
+                                fileSummary += `  interface ${i.name} {\n`;
+                                if (i.docstring) {
+                                    fileSummary += `    /**\n     * ${i.docstring.replace(/\r?\n/g, '\n     * ')}\n     */\n`;
+                                }
+                                fileSummary += `  }\n`;
+                            }
+                        }
+
+                        if (parsed.functions.length > 0) {
+                            fileSummary += `Functions / Methods / Signatures:\n`;
+                            for (const fn of parsed.functions) {
+                                if (fn.docstring) {
+                                    fileSummary += `  /**\n   * ${fn.docstring.replace(/\r?\n/g, '\n   * ')}\n   */\n`;
+                                }
+                                fileSummary += `  ${fn.signature}\n`;
+                            }
+                        }
 
                         if (parsed.functions.length > 0) {
                             const mainFunc = parsed.functions[0].name;
-                            const callHierarchy = CodeAnalysisService.getCallHierarchy(mainFunc, '.', 'incoming');
+                            const callHierarchy = CodeAnalysisService.getCallHierarchy(mainFunc, path.dirname(absolutePath), 'incoming');
                             if (callHierarchy.length > 0) {
-                                fileSummary += `  Incoming Callers to ${mainFunc}: ${callHierarchy.map(h => `${h.symbol} (${h.filePath})`).join(', ')}\n`;
+                                fileSummary += `Incoming Callers to ${mainFunc}: ${callHierarchy.map(h => `${h.symbol} (${path.basename(h.filePath)})`).join(', ')}\n`;
                             }
                         }
 
@@ -178,9 +210,36 @@ export class ContextAssembler {
 
         tokenUsage.total = tokenUsage.taskContext + tokenUsage.ragResults + tokenUsage.codeSymbols + tokenUsage.chatHistory;
 
+        // Load Ground-Truth Architecture Blueprint (project-context.md)
+        let blueprintBlock = '';
+        try {
+            const blueprintPath = path.resolve(process.cwd(), '../memory/project-context.md');
+            if (fs.existsSync(blueprintPath)) {
+                blueprintBlock = `\n=== GROUND-TRUTH SYSTEM ARCHITECTURE BLUEPRINT ===\n${fs.readFileSync(blueprintPath, 'utf-8')}\n=== END BLUEPRINT ===\n`;
+            }
+        } catch (e) {
+            console.warn('[ContextAssembler] Failed to read project-context.md blueprint:', e);
+        }
+
+        // Query matched memories vector/keyword logs from SQLite
+        let matchedMemoriesBlock = '';
+        try {
+            const queryText = `${activeTask.title} ${activeTask.description || ''}`;
+            const matched = dbService.searchMemories(queryText, 4);
+            if (matched.length > 0) {
+                matchedMemoriesBlock = `\n=== RETRIEVED ARCHITECTURAL DECISIONS & MEMORIES ===\n` +
+                    matched.map((m: any) => `[Type: ${m.type} (Updated: ${m.updated_at})]\nRule: ${m.content}`).join('\n---\n') +
+                    `\n=== END MEMORIES ===\n`;
+            }
+        } catch (e) {
+            console.error('[ContextAssembler] Failed to search memories:', e);
+        }
+
         const systemPrompt = `You are Cursor Replacer's high-reliability agentic assistant. Follow strict safety-critical guidelines.
 Ensure 100% accurate edits. Verify syntax and types, and do not introduce implicit 'any' values.
 
+${blueprintBlock}
+${matchedMemoriesBlock}
 ${taskContextBlock}
 ${symbolContextBlock}
 ${ragBlock}
@@ -201,5 +260,41 @@ Execute the active task effectively using the predefined plan.`;
     private static estimateTokens(text: string): number {
         if (!text) return 0;
         return Math.ceil(text.length / 4);
+    }
+
+    private static getWhitelistedRoots(): string[] {
+        const workspaceRoot = path.resolve(process.cwd());
+        const parentRoot = path.resolve(workspaceRoot, '..');
+        return [
+            workspaceRoot,
+            path.resolve(parentRoot, 'adk-python-community'),
+            path.resolve(parentRoot, 'google-sdk')
+        ];
+    }
+
+    private static normalizePathForCompare(p: string): string {
+        let resolved = path.resolve(p);
+        if (process.platform === 'win32') {
+            resolved = resolved.toLowerCase();
+        }
+        return resolved;
+    }
+
+    private static resolveToAllowedRoot(relativePath: string): string | null {
+        const roots = this.getWhitelistedRoots();
+        for (const root of roots) {
+            const resolvedPath = path.isAbsolute(relativePath)
+                ? relativePath
+                : path.resolve(root, relativePath);
+            const normRoot = this.normalizePathForCompare(root);
+            const normResolved = this.normalizePathForCompare(resolvedPath);
+            
+            const relative = path.relative(normRoot, normResolved);
+            const contained = relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+            if (contained) {
+                return resolvedPath;
+            }
+        }
+        return null;
     }
 }
