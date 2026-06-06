@@ -40,6 +40,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Default/dynamic shape for Windows platforms
     btnDownload.href = "https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Windows-0.0.2-alpha-Setup.exe";
     btnText.textContent = "Download for Windows (x64)";
-    releaseMeta.textContent = "Windows Setup • Version 0.0.1-alpha • Cleaned by Scan";
+    releaseMeta.textContent = "Windows Setup • Version 0.0.2-alpha • Cleaned by Scan";
   }
 });
