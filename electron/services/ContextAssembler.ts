@@ -27,10 +27,22 @@ export class ContextAssembler {
     static async assembleContext(
         taskId: number,
         recentMessages: Array<{ role: string; content: string }>,
-        budget: ContextBudget = { taskContext: 3000, ragResults: 3000, codeSymbols: 3000, chatHistory: 3000, total: 12000 }
+        budget: ContextBudget = { taskContext: 3000, ragResults: 3000, codeSymbols: 3000, chatHistory: 3000, total: 12000 },
+        conversationId?: string
     ): Promise<AssembledContext> {
         console.assert(typeof taskId === 'number', 'Task ID is required');
         console.assert(Array.isArray(recentMessages), 'Messages must be a valid array');
+
+        if (conversationId) {
+            let hash = 5381;
+            for (let i = 0; i < conversationId.length; i++) {
+                hash = (hash * 33) ^ conversationId.charCodeAt(i);
+            }
+            const expectedTaskId = Math.abs(hash) || 1;
+            if (taskId !== expectedTaskId) {
+                throw new Error(`[ContextAssembler] Plan security violation: Task ID ${taskId} does not match active conversation ${conversationId}`);
+            }
+        }
 
         const tokenUsage: Record<string, number> = {
             taskContext: 0,
