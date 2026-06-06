@@ -1,7 +1,10 @@
 import path from 'path';
 import { app } from 'electron';
 import { createRequire } from 'module';
+import { Buffer } from 'node:buffer';
 import { secureStore } from './secureStore';
+
+import { CostEstimatorService } from './services/CostEstimatorService';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -38,6 +41,7 @@ export class DatabaseService {
 
             this.runMigrations();
             this.migrateKeysToSecureStore();
+            this.migrateTaskIds();
             console.log(`Database initialized at ${this.dbPath}`);
         } catch (err) {
             console.error('Failed to initialize database:', err);
@@ -289,7 +293,107 @@ export class DatabaseService {
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         `).run();
+
+        try {
+            this.db.prepare('ALTER TABLE model_performance ADD COLUMN input_tokens INTEGER DEFAULT 0').run();
+        } catch (e) {}
+        try {
+            this.db.prepare('ALTER TABLE model_performance ADD COLUMN output_tokens INTEGER DEFAULT 0').run();
+        } catch (e) {}
+
+        this.db.prepare(`
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                model TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `).run();
+
+        try {
+            this.db.prepare("ALTER TABLE conversations ADD COLUMN model TEXT NOT NULL DEFAULT 'gpt-4o'").run();
+        } catch (e) {}
+        try {
+            this.db.prepare("ALTER TABLE conversations ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai'").run();
+        } catch (e) {}
+
+        this.db.prepare(`
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            )
+        `).run();
+
+        this.db.prepare(`
+            CREATE TABLE IF NOT EXISTS agent_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `).run();
+
+        this.db.prepare(`
+            INSERT OR IGNORE INTO agent_rules (id, name, content, is_active)
+            VALUES (1, 'Assumption Validator', 'This agent is dedicated to rigorous verification and the elimination of groundless assumptions. It ensures that every claim is backed by evidence and every requirement is clarified.
+
+Core Principles:
+1. Evidence-Based: No claim should be made without a direct citation from the codebase, documentation, or tool output.
+2. Assumption Identification: Active scanning for words like "probably", "likely", "should", "standard", or "usually" which often hide assumptions.
+3. Explicit Uncertainty: If something is unknown, it must be stated as unknown rather than guessed.
+4. Source Verification: Double-check that information extracted from one source doesn''t conflict with another.
+
+Instructions:
+When planning:
+1. Inventory: List all "facts" extracted from the current context.
+2. Challenge: For each fact, identify the source. If no source exists, mark it as an ASSUMPTION.
+3. Risk Assessment: Rank assumptions by their potential impact on the project (High/Medium/Low).
+4. Verification Plan: Propose specific steps (e.g., "Run grep", "Ask the user") to convert each assumption into a fact.', 1)
+        `).run();
     }
+
+    getAgentRules() {
+        if (!this.db) return [];
+        return this.db.prepare('SELECT * FROM agent_rules ORDER BY created_at DESC').all();
+    }
+
+    addAgentRule(name: string, content: string, isActive: number = 1) {
+        console.assert(name && typeof name === 'string', 'Rule name must be a valid string');
+        console.assert(content && typeof content === 'string', 'Rule content must be a valid string');
+        if (!this.db) throw new Error('DB not initialized');
+        const stmt = this.db.prepare('INSERT INTO agent_rules (name, content, is_active) VALUES (?, ?, ?)');
+        const info = stmt.run(name, content, isActive);
+        return info.lastInsertRowid;
+    }
+
+    updateAgentRule(id: number, name: string, content: string, isActive: number) {
+        console.assert(typeof id === 'number', 'Rule ID must be a number');
+        console.assert(name && typeof name === 'string', 'Rule name must be a valid string');
+        console.assert(content && typeof content === 'string', 'Rule content must be a valid string');
+        if (!this.db) throw new Error('DB not initialized');
+        this.db.prepare('UPDATE agent_rules SET name = ?, content = ?, is_active = ? WHERE id = ?')
+            .run(name, content, isActive, id);
+    }
+
+    deleteAgentRule(id: number) {
+        console.assert(typeof id === 'number', 'Rule ID must be a number');
+        if (!this.db) throw new Error('DB not initialized');
+        this.db.prepare('DELETE FROM agent_rules WHERE id = ?').run(id);
+    }
+
+    toggleAgentRule(id: number, isActive: number) {
+        console.assert(typeof id === 'number', 'Rule ID must be a number');
+        if (!this.db) throw new Error('DB not initialized');
+        this.db.prepare('UPDATE agent_rules SET is_active = ? WHERE id = ?').run(isActive, id);
+    }
+
     
     private migrateKeysToSecureStore() {
         if (!this.db) return;
@@ -299,7 +403,7 @@ export class DatabaseService {
                 console.log(`[DatabaseService] Found ${providers.length} custom providers with plaintext API keys in SQLite. Migrating...`);
                 for (const p of providers) {
                     if (p.api_key && p.api_key.trim().length > 0) {
-                        secureStore.setApiKey(p.id, p.api_key);
+                        secureStore.setCustomProviderKey(p.id, p.api_key);
                         console.log(`[DatabaseService] Securely migrated API key for custom provider: ${p.id}`);
                     }
                 }
@@ -309,6 +413,66 @@ export class DatabaseService {
             }
         } catch (e) {
             console.error('[DatabaseService] Failed to run custom provider API key migration:', e);
+        }
+    }
+
+    private migrateTaskIds() {
+        if (!this.db) return;
+        console.log('[DatabaseService] Checking for legacy taskId migrations...');
+        try {
+            const conversations = this.db.prepare('SELECT id FROM conversations').all();
+            
+            const getLegacyId = (convId: string): number => {
+                if (!convId) return 1;
+                const match = convId.match(/conv_(\d+)/);
+                if (match) return parseInt(match[1], 10);
+                let hash = 0;
+                for (let i = 0; i < convId.length; i++) {
+                    hash = (hash * 31 + convId.charCodeAt(i)) & 0xffffffff;
+                }
+                return Math.abs(hash) || 1;
+            };
+
+            const getNewId = (convId: string): number => {
+                if (!convId) return 1;
+                let hash = 5381;
+                for (let i = 0; i < convId.length; i++) {
+                    hash = (hash * 33) ^ convId.charCodeAt(i);
+                }
+                return Math.abs(hash) || 1;
+            };
+
+            const runTx = this.db.transaction(() => {
+                for (const conv of conversations) {
+                    const legacyId = getLegacyId(conv.id);
+                    const newId = getNewId(conv.id);
+
+                    if (legacyId !== newId) {
+                        const hasLegacyTask = this.db.prepare('SELECT id FROM tasks WHERE id = ?').get(legacyId);
+                        if (hasLegacyTask) {
+                            console.log(`[DatabaseService] Migrating legacy taskId ${legacyId} to new taskId ${newId} for conversation ${conv.id}`);
+                            const hasNewTask = this.db.prepare('SELECT id FROM tasks WHERE id = ?').get(newId);
+                            if (hasNewTask) {
+                                this.db.prepare('DELETE FROM task_plans WHERE task_id = ?').run(legacyId);
+                                this.db.prepare('DELETE FROM tasks WHERE id = ?').run(legacyId);
+                            } else {
+                                this.db.pragma('foreign_keys = OFF');
+                                this.db.prepare('UPDATE tasks SET id = ? WHERE id = ?').run(newId, legacyId);
+                                this.db.prepare('UPDATE task_plans SET task_id = ? WHERE task_id = ?').run(newId, legacyId);
+                                this.db.prepare('UPDATE task_outputs SET task_id = ? WHERE task_id = ?').run(newId, legacyId);
+                                this.db.prepare('UPDATE execution_attempts SET task_id = ? WHERE task_id = ?').run(newId, legacyId);
+                                this.db.prepare('UPDATE task_docs SET task_id = ? WHERE task_id = ?').run(newId, legacyId);
+                                this.db.pragma('foreign_keys = ON');
+                            }
+                        }
+                    }
+                }
+            });
+
+            runTx();
+            console.log('[DatabaseService] Task ID migration check complete.');
+        } catch (err) {
+            console.error('[DatabaseService] Task ID migration failed:', err);
         }
     }
 
@@ -511,7 +675,7 @@ export class DatabaseService {
         
         // Save the API key securely using secureStore
         if (apiKey && apiKey.trim().length > 0) {
-            secureStore.setApiKey(id, apiKey);
+            secureStore.setCustomProviderKey(id, apiKey);
         }
         
         this.db.prepare('INSERT OR REPLACE INTO custom_providers (id, name, base_url, api_key, is_local) VALUES (?, ?, ?, NULL, ?)')
@@ -535,7 +699,7 @@ export class DatabaseService {
         this.db.prepare('DELETE FROM custom_models WHERE provider_id = ?').run(id);
         
         // Delete API key from secureStore
-        secureStore.deleteApiKey(id);
+        secureStore.deleteCustomProviderKey(id);
     }
 
     /**
@@ -673,6 +837,77 @@ export class DatabaseService {
     }
 
     /**
+     * Retrieves the most recent implementation plan for a given task.
+     */
+    getTaskPlan(taskId: number) {
+        console.assert(typeof taskId === 'number', 'Task ID must be a number');
+        if (!this.db) return null;
+        return this.db.prepare('SELECT * FROM task_plans WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(taskId);
+    }
+
+    /**
+     * Creates or updates the JSON representation of a task plan.
+     * If a plan already exists for the task, it updates the existing row;
+     * otherwise it inserts a new record. Ensures task exists before inserting.
+     */
+    updateTaskPlanJson(taskId: number, planJson: string, status: string = 'draft', confidence?: number) {
+        console.assert(typeof taskId === 'number', 'Task ID must be a number');
+        console.assert(typeof planJson === 'string', 'Plan JSON must be a string');
+        if (!this.db) throw new Error('DB not initialized');
+        
+        // Ensure parent task exists in tasks table before inserting to prevent Foreign Key errors
+        const taskRow = this.db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId);
+        if (!taskRow) {
+            this.db.prepare("INSERT INTO tasks (id, title, description, status) VALUES (?, 'Chat Plan Task', 'Auto-created task from chat planning session', 'in_progress')")
+                .run(taskId);
+        }
+
+        const existing = this.db.prepare('SELECT id FROM task_plans WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(taskId);
+        if (existing) {
+            this.db.prepare('UPDATE task_plans SET plan_json = ?, status = ?, confidence = ? WHERE id = ?')
+                .run(planJson, status, confidence !== undefined ? confidence : null, existing.id);
+        } else {
+            this.db.prepare('INSERT INTO task_plans (task_id, plan_json, status, confidence) VALUES (?, ?, ?, ?)')
+                .run(taskId, planJson, status, confidence !== undefined ? confidence : 1.0);
+        }
+        return true;
+    }
+
+    /**
+     * Checks for a duplicate plan title within a task.
+     * Expects the plan JSON to contain a top‑level "title" property.
+     */
+    findPlanByTitle(taskId: number, title: string) {
+        console.assert(typeof taskId === 'number', 'Task ID must be a number');
+        console.assert(typeof title === 'string', 'Title must be a string');
+        if (!this.db) return null;
+        const rows = this.db.prepare('SELECT * FROM task_plans WHERE task_id = ?').all(taskId);
+        for (const row of rows) {
+            try {
+                const json = JSON.parse(row.plan_json);
+                if (json.title && json.title === title) {
+                    return row;
+                }
+            } catch (e) {
+                // ignore malformed JSON
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Rolls back (deletes) the most recent plan for a task.
+     */
+    rollbackTaskPlan(taskId: number) {
+        console.assert(typeof taskId === 'number', 'Task ID must be a number');
+        if (!this.db) throw new Error('DB not initialized');
+        const latest = this.db.prepare('SELECT id FROM task_plans WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(taskId);
+        if (latest && latest.id) {
+            this.db.prepare('DELETE FROM task_plans WHERE id = ?').run(latest.id);
+        }
+    }
+
+    /**
      * Retrieves a single task output block.
      */
     getTaskOutput(id: number) {
@@ -753,7 +988,7 @@ export class DatabaseService {
                     INSERT INTO vec_knowledge (chunk_id, embedding)
                     VALUES (?, ?)
                 `);
-                vecStmt.run(chunkId, embData.buffer);
+                vecStmt.run(BigInt(chunkId), Buffer.from(embData.buffer, embData.byteOffset, embData.byteLength));
             }
             return chunkId;
         });
@@ -792,7 +1027,7 @@ export class DatabaseService {
             ORDER BY v.distance ASC
         `);
 
-        const results = stmt.all(floatArray.buffer, limit);
+        const results = stmt.all(Buffer.from(floatArray.buffer, floatArray.byteOffset, floatArray.byteLength), limit);
         return results.map((r: any) => ({
             ...r,
             metadata: r.metadata ? JSON.parse(r.metadata) : {}
@@ -853,14 +1088,7 @@ export class DatabaseService {
         this.db.prepare('UPDATE task_plans SET status = ? WHERE id = ?').run(status, planId);
     }
 
-    /**
-     * Retrieves the active execution plan generated for a task ID.
-     */
-    getTaskPlan(taskId: number) {
-        console.assert(typeof taskId === 'number', 'Task ID must be a number');
-        if (!this.db) return null;
-        return this.db.prepare('SELECT * FROM task_plans WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(taskId);
-    }
+
 
     /**
      * Registers execution loop retry statistics.
@@ -890,16 +1118,19 @@ export class DatabaseService {
     /**
      * Logs model performance statistics.
      */
-    addModelPerformance(model: string, provider: string, taskType: string | null, success: number, attemptNumber: number, tokenCount: number, latencyMs: number) {
+    addModelPerformance(model: string, provider: string, taskType: string | null, success: number, attemptNumber: number, tokenCount: number, latencyMs: number, inputTokens: number = 0, outputTokens: number = 0) {
         console.assert(typeof model === 'string', 'Model must be a string');
         console.assert(typeof provider === 'string', 'Provider must be a string');
         if (!this.db) throw new Error('DB not initialized');
 
+        const inputVal = inputTokens || Math.round(tokenCount * 0.8);
+        const outputVal = outputTokens || (tokenCount - inputVal);
+
         const stmt = this.db.prepare(`
-            INSERT INTO model_performance (model, provider, task_type, success, attempt_number, token_count, latency_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO model_performance (model, provider, task_type, success, attempt_number, token_count, latency_ms, input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
-        const info = stmt.run(model, provider, taskType, success, attemptNumber, tokenCount, latencyMs);
+        const info = stmt.run(model, provider, taskType, success, attemptNumber, tokenCount, latencyMs, inputVal, outputVal);
         return info.lastInsertRowid;
     }
 
@@ -913,6 +1144,170 @@ export class DatabaseService {
             FROM model_performance
             GROUP BY model, provider
         `).all();
+    }
+
+    /**
+     * Aggregates token usage and estimated cost from model_performance.
+     */
+    getUsageStats() {
+        if (!this.db) return { totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0, breakdowns: [] };
+
+        const rows = this.db.prepare(`
+            SELECT model, provider, COUNT(*) as total_runs, SUM(token_count) as total_tokens, SUM(input_tokens) as total_input, SUM(output_tokens) as total_output
+            FROM model_performance
+            GROUP BY model, provider
+        `).all();
+
+        let totalTokens = 0;
+        let totalInputTokens = 0;
+        let totalOutputTokens = 0;
+        let totalCost = 0;
+        const breakdowns = rows.map((row: any) => {
+            const tokens = row.total_tokens || 0;
+            const inputTokens = row.total_input || 0;
+            const outputTokens = row.total_output || 0;
+            
+            totalTokens += tokens;
+            totalInputTokens += inputTokens;
+            totalOutputTokens += outputTokens;
+
+            const cost = CostEstimatorService.estimateCost(row.model, inputTokens, outputTokens, row.provider);
+            totalCost += cost;
+
+            return {
+                model: row.model,
+                provider: row.provider,
+                runs: row.total_runs,
+                tokens,
+                inputTokens,
+                outputTokens,
+                cost: Number(cost.toFixed(6))
+            };
+        });
+
+        return {
+            totalTokens,
+            totalInputTokens,
+            totalOutputTokens,
+            totalCost: Number(totalCost.toFixed(4)),
+            breakdowns
+        };
+    }
+
+    /**
+     * Resets the model performance usage metrics table.
+     */
+    clearUsageStats() {
+        if (!this.db) throw new Error('DB not initialized');
+        this.db.prepare('DELETE FROM model_performance').run();
+        return true;
+    }
+
+    /**
+     * Creates a new chat conversation.
+     */
+    createConversation(id: string, title: string, model: string, provider: string) {
+        console.assert(typeof id === 'string', 'id must be a string');
+        console.assert(typeof title === 'string', 'title must be a string');
+        if (!this.db) throw new Error('DB not initialized');
+        this.db.prepare('INSERT OR REPLACE INTO conversations (id, title, model, provider) VALUES (?, ?, ?, ?)')
+            .run(id, title, model, provider);
+        return id;
+    }
+
+    /**
+     * Retrieves all chat conversations, sorted by update date.
+     */
+    getConversations() {
+        if (!this.db) return [];
+        return this.db.prepare('SELECT * FROM conversations ORDER BY updated_at DESC').all();
+    }
+
+    /**
+     * Retrieves all messages for a specific conversation.
+     */
+    getConversationMessages(conversationId: string) {
+        if (!this.db) return [];
+        return this.db.prepare('SELECT id, role, content, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id ASC')
+            .all(conversationId);
+    }
+
+    /**
+     * Appends a message to a conversation.
+     */
+    addChatMessage(conversationId: string, role: string, content: string) {
+        if (!this.db) throw new Error('DB not initialized');
+        
+        // Ensure conversation exists to prevent Foreign Key constraint failures
+        const conv = this.db.prepare('SELECT id FROM conversations WHERE id = ?').get(conversationId);
+        if (!conv) {
+            console.warn(`[DatabaseService] Conversation ${conversationId} does not exist. Skipping message save.`);
+            return false;
+        }
+        
+        // Save the message
+        const info = this.db.prepare('INSERT INTO chat_messages (conversation_id, role, content) VALUES (?, ?, ?)')
+            .run(conversationId, role, content);
+            
+        // Touch the conversation updated_at timestamp
+        this.db.prepare("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .run(conversationId);
+            
+        return info.lastInsertRowid;
+    }
+
+    /**
+     * Updates the content of a specific chat message.
+     */
+    updateChatMessage(conversationId: string, messageId: number, content: string) {
+        if (!this.db) throw new Error('DB not initialized');
+
+        const result = this.db.prepare('UPDATE chat_messages SET content = ? WHERE conversation_id = ? AND id = ?')
+            .run(content, conversationId, messageId);
+
+        if (result.changes > 0) {
+            this.db.prepare('UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+                .run(conversationId);
+        }
+
+        return result.changes > 0;
+    }
+
+    /**
+     * Truncates chat messages for a conversation up to a specific message ID.
+     */
+    truncateChatMessages(conversationId: string, messageId: number) {
+        if (!this.db) throw new Error('DB not initialized');
+        this.db.prepare('DELETE FROM chat_messages WHERE conversation_id = ? AND id > ?')
+            .run(conversationId, messageId);
+    }
+
+    /**
+     * Updates updated_at timestamp on a conversation.
+     */
+    touchConversation(conversationId: string) {
+        if (!this.db) throw new Error('DB not initialized');
+        this.db.prepare('UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .run(conversationId);
+    }
+
+    /**
+     * Deletes a conversation and its messages.
+     */
+    deleteConversation(conversationId: string) {
+        if (!this.db) throw new Error('DB not initialized');
+        this.db.prepare('DELETE FROM conversations WHERE id = ?').run(conversationId);
+        return true;
+    }
+
+    /**
+     * Updates the conversation title.
+     */
+    updateConversationTitle(conversationId: string, title: string) {
+        if (!this.db) throw new Error('DB not initialized');
+        this.db.prepare('UPDATE conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+            .run(title, conversationId);
+        return true;
     }
 }
 
