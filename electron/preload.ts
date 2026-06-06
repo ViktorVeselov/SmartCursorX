@@ -22,17 +22,24 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'get-general-settings', 'save-general-settings', 'openclaw:check-installed',
   'openclaw:get-status', 'openclaw:start-gateway', 'openclaw:stop-gateway',
   'openclaw:run-doctor', 'openclaw:approve-pairing', 'openclaw:run-agent',
-  'openclaw:get-logs'
+  'openclaw:get-logs', 'ai:get-usage-stats', 'ai:clear-usage-stats',
+  'chat:create-conv', 'chat:get-convs', 'chat:get-messages', 'chat:add-message', 'chat:update-message',
+  'chat:delete-conv', 'chat:update-title', 'chat:truncate-from-message', 'chat:fork-conv', 'plan:get', 'plan:save', 'secure:list-keys', 'test:secure-run',
+  'db:get-rules', 'db:add-rule', 'db:update-rule', 'db:delete-rule', 'db:toggle-rule'
 ]);
 
 const ALLOWED_SEND_CHANNELS = new Set([
-  'ai:chat-start'
+  'ai:chat-start',
+  'ai:chat-abort'
 ]);
 
 const ALLOWED_ON_CHANNELS = new Set([
   'terminal-incoming', 'terminal-exit', 'git-clone-progress', 'ai:chat-chunk',
   'ai:chat-end', 'openclaw:agent-stream', 'openclaw:agent-complete', 'main-process-message'
 ]);
+
+// Map to track active subscription wrappers to ensure ipcRenderer.off can correctly unregister them
+const subscriptionMap = new Map<(...args: any[]) => void, (event: any, ...args: any[]) => void>();
 
 // --------- Expose some API to the Renderer process ---------
 contextBridge.exposeInMainWorld('ipcRenderer', {
@@ -41,19 +48,30 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
       console.warn(`[Preload Security] Blocked listener registration on unauthorized IPC channel: ${channel}`);
       return () => {};
     }
-    const subscription = (event: any, ...args: any[]) => listener(event, ...args)
-    ipcRenderer.on(channel, subscription)
+    let subscription = subscriptionMap.get(listener);
+    if (!subscription) {
+      subscription = (event: any, ...args: any[]) => listener(event, ...args);
+      subscriptionMap.set(listener, subscription);
+    }
+    ipcRenderer.on(channel, subscription);
     // Return a disposer function to remove the listener
     return () => {
-      ipcRenderer.removeListener(channel, subscription)
-    }
+      ipcRenderer.removeListener(channel, subscription!);
+      subscriptionMap.delete(listener);
+    };
   },
   off(channel: string, listener: (...args: any[]) => void) {
     if (!ALLOWED_ON_CHANNELS.has(channel)) {
       console.warn(`[Preload Security] Blocked listener removal on unauthorized IPC channel: ${channel}`);
       return;
     }
-    return ipcRenderer.off(channel, listener)
+    const subscription = subscriptionMap.get(listener);
+    if (subscription) {
+      ipcRenderer.removeListener(channel, subscription);
+      subscriptionMap.delete(listener);
+    } else {
+      ipcRenderer.off(channel, listener);
+    }
   },
   send(channel: string, ...args: any[]) {
     if (!ALLOWED_SEND_CHANNELS.has(channel)) {
