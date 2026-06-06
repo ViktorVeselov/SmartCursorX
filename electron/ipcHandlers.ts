@@ -32,6 +32,7 @@ export class IpcManager {
     private ptyProcesses: Map<string, IPty> = new Map();
     private mainWindow: BrowserWindow | null = null;
     private native: any = null;
+    private activeStreamAborted = false;
 
     constructor(nativeModule: any) {
         console.log('[IpcManager] Constructor');
@@ -58,6 +59,7 @@ export class IpcManager {
         this.registerRAGHandlers();
         this.registerVerificationHandlers();
         this.registerDocumentationHandlers();
+        this.registerPlanHandlers();
         console.log('[IpcManager] Handlers Registered Complete');
     }
 
@@ -70,6 +72,50 @@ export class IpcManager {
         ipcMain.handle('doc:get', async (_event, taskId: number) => {
             console.assert(typeof taskId === 'number', 'taskId must be a number');
             return dbService.getTaskDocs(taskId);
+        });
+    }
+
+    /**
+     * Registers plan persistence IPC handlers.
+     * plan:get  — retrieves the latest plan JSON for a task ID
+     * plan:save — upserts the plan JSON for a task ID
+     * secure:list-keys — returns encryption status per provider for the Settings modal
+     */
+    private registerPlanHandlers() {
+        ipcMain.handle('plan:get', async (_event, taskId: number) => {
+            console.assert(typeof taskId === 'number', '[plan:get] taskId must be a number');
+            const row = dbService.getTaskPlan(taskId);
+            if (!row) return null;
+            return row; // Contains plan_json string; renderer parses it
+        });
+
+        ipcMain.handle('plan:save', async (_event, taskId: number, planJson: string) => {
+            console.assert(typeof taskId === 'number', '[plan:save] taskId must be a number');
+            console.assert(typeof planJson === 'string', '[plan:save] planJson must be a string');
+            // Validate JSON before persisting to prevent corrupt state
+            try {
+                JSON.parse(planJson);
+            } catch (e) {
+                throw new Error(`[plan:save] Invalid JSON payload: ${(e as Error).message}`);
+            }
+            return dbService.updateTaskPlanJson(taskId, planJson);
+        });
+
+        ipcMain.handle('secure:list-keys', async () => {
+            const { listEncryptedKeys } = await import('./secureStore');
+            return listEncryptedKeys();
+        });
+
+        ipcMain.handle('test:secure-run', async () => {
+            try {
+                // @ts-ignore
+                const { runTests } = await import('../scripts/test-secure-store.js');
+                await runTests(secureStore, dbService);
+                return { success: true };
+            } catch (e: any) {
+                console.error('[test:secure-run] Error running tests:', e);
+                return { success: false, error: e.message };
+            }
         });
     }
 
@@ -139,8 +185,8 @@ export class IpcManager {
             return TaskService.getHierarchicalTasks();
         });
 
-        ipcMain.handle('task:assemble-context', async (_event, taskId: number, messages: any[], budget?: any) => {
-            return ContextAssembler.assembleContext(taskId, messages, budget);
+        ipcMain.handle('task:assemble-context', async (_event, taskId: number, messages: any[], budget?: any, conversationId?: string) => {
+            return ContextAssembler.assembleContext(taskId, messages, budget, conversationId);
         });
     }
 
@@ -172,7 +218,14 @@ export class IpcManager {
     private registerNativeHandlers() {
         ipcMain.handle('native-search', async (_event, options) => {
             if (!this.native) throw new Error('Native module not loaded');
-            return this.native.searchFiles(options);
+            const result = await this.native.searchFiles(options);
+            _event.sender.send('main-process-message', {
+                type: 'file-search',
+                query: options.query || options.pattern || '',
+                resultsCount: Array.isArray(result) ? result.length : (result && Array.isArray(result.results) ? result.results.length : 0),
+                timestamp: Date.now()
+            });
+            return result;
         });
 
         ipcMain.handle('native-health-check', async () => {
@@ -209,6 +262,11 @@ export class IpcManager {
         ipcMain.handle('read-file', async (_event, filePath) => {
             if (typeof filePath !== 'string') throw new Error('Invalid path argument');
             try {
+                _event.sender.send('main-process-message', {
+                    type: 'file-read',
+                    path: filePath,
+                    timestamp: Date.now()
+                });
                 return await fs.readFile(filePath, 'utf-8');
             } catch (err) {
                 console.error('Error reading file:', err);
@@ -221,7 +279,35 @@ export class IpcManager {
             if (typeof content !== 'string') throw new Error('Invalid content');
 
             try {
+                let additions = 0;
+                let deletions = 0;
+                try {
+                    const prevContent = await fs.readFile(filePath, 'utf-8');
+                    const prevLines = prevContent.split('\n');
+                    const newLines = content.split('\n');
+                    
+                    const prevSet = new Set(prevLines.map((l: string) => l.trim()));
+                    const newSet = new Set(newLines.map((l: string) => l.trim()));
+                    
+                    for (const line of newLines) {
+                        if (!prevSet.has(line.trim())) additions++;
+                    }
+                    for (const line of prevLines) {
+                        if (!newSet.has(line.trim())) deletions++;
+                    }
+                } catch (e) {
+                    additions = content.split('\n').length;
+                }
+
                 await fs.writeFile(filePath, content, 'utf-8');
+
+                _event.sender.send('main-process-message', {
+                    type: 'file-write',
+                    path: filePath,
+                    additions,
+                    deletions,
+                    timestamp: Date.now()
+                });
                 return true;
             } catch (err) {
                 console.error('Error writing file:', err);
@@ -400,6 +486,11 @@ export class IpcManager {
         });
         ipcMain.handle('ai:get-provider-key', (_event, providerId: string) => {
             console.assert(typeof providerId === 'string', 'providerId must be a string');
+            const customProviders = dbService.getCustomProviders();
+            const isCustom = customProviders.some((p: any) => p.id === providerId);
+            if (isCustom) {
+                return secureStore.getCustomProviderKey(providerId);
+            }
             return secureStore.getApiKey(providerId);
         });
         ipcMain.handle('ai:add-custom-provider', (_event, id: string, name: string, baseUrl: string, apiKey?: string, isLocal?: boolean) => {
@@ -441,6 +532,94 @@ export class IpcManager {
         ipcMain.handle('litellm:start', async (_event, config) => {
             console.assert(config !== null && typeof config === 'object', 'Proxy config must be an object');
             return await liteLLMService.startProxy(config);
+        });
+
+        // Usage & Token tracking
+        ipcMain.handle('ai:get-usage-stats', () => {
+            return dbService.getUsageStats();
+        });
+        ipcMain.handle('ai:clear-usage-stats', () => {
+            return dbService.clearUsageStats();
+        });
+
+        // Agent Rules CRUD
+        ipcMain.handle('db:get-rules', () => {
+            return dbService.getAgentRules();
+        });
+        ipcMain.handle('db:add-rule', (_event, name: string, content: string, isActive: number) => {
+            return dbService.addAgentRule(name, content, isActive);
+        });
+        ipcMain.handle('db:update-rule', (_event, id: number, name: string, content: string, isActive: number) => {
+            return dbService.updateAgentRule(id, name, content, isActive);
+        });
+        ipcMain.handle('db:delete-rule', (_event, id: number) => {
+            dbService.deleteAgentRule(id);
+            return true;
+        });
+        ipcMain.handle('db:toggle-rule', (_event, id: number, isActive: number) => {
+            dbService.toggleAgentRule(id, isActive);
+            return true;
+        });
+
+        // Chat Conversation History
+        ipcMain.handle('chat:create-conv', (_event, id: string, title: string, model: string, provider: string) => {
+            return dbService.createConversation(id, title, model, provider);
+        });
+        ipcMain.handle('chat:get-convs', () => {
+            return dbService.getConversations();
+        });
+        ipcMain.handle('chat:get-messages', (_event, conversationId: string) => {
+            return dbService.getConversationMessages(conversationId);
+        });
+        ipcMain.handle('chat:add-message', (_event, conversationId: string, role: string, content: string) => {
+            return dbService.addChatMessage(conversationId, role, content);
+        });
+        ipcMain.handle('chat:update-message', (_event, conversationId: string, messageId: number, content: string) => {
+            console.assert(typeof conversationId === 'string', 'conversationId must be a string');
+            console.assert(typeof messageId === 'number', 'messageId must be a number');
+            console.assert(typeof content === 'string', 'content must be a string');
+            return dbService.updateChatMessage(conversationId, messageId, content);
+        });
+        ipcMain.handle('chat:fork-conv', async (_event, conversationId: string) => {
+            const originalMessages = dbService.getConversationMessages(conversationId);
+            const conversations = dbService.getConversations();
+            const originalConv = conversations.find((c: any) => c.id === conversationId);
+            if (!originalConv) {
+                throw new Error('Original conversation not found');
+            }
+            const forkId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const forkTitle = `[Fork] ${originalConv.title || 'Untitled Chat'}`;
+            // Create new conversation
+            dbService.createConversation(forkId, forkTitle, originalConv.model, originalConv.provider);
+            // Copy messages
+            for (const msg of originalMessages) {
+                dbService.addChatMessage(forkId, msg.role, msg.content);
+            }
+            // Fork plan if any
+            try {
+                const originalTaskId = getNumericTaskId(conversationId);
+                const originalPlan = dbService.getTaskPlan(originalTaskId);
+                if (originalPlan) {
+                    const forkTaskId = getNumericTaskId(forkId);
+                    dbService.updateTaskPlanJson(forkTaskId, originalPlan.plan_json);
+                }
+            } catch (planErr) {
+                console.error('Failed to fork associated task plan:', planErr);
+            }
+            return forkId;
+        });
+        ipcMain.handle('chat:delete-conv', (_event, conversationId: string) => {
+            return dbService.deleteConversation(conversationId);
+        });
+        ipcMain.handle('chat:update-title', (_event, conversationId: string, title: string) => {
+            return dbService.updateConversationTitle(conversationId, title);
+        });
+        ipcMain.handle('chat:truncate-from-message', async (_event, conversationId: string, messageId: number) => {
+            console.assert(typeof conversationId === 'string', 'conversationId must be a string');
+            console.assert(typeof messageId === 'number', 'messageId must be a number');
+            dbService.truncateChatMessages(conversationId, messageId);
+            dbService.touchConversation(conversationId);
+            return dbService.getConversationMessages(conversationId);
         });
     }
 
@@ -696,10 +875,17 @@ export class IpcManager {
             }
         });
 
+        ipcMain.on('ai:chat-abort', () => {
+            console.log('[IpcManager] Received ai:chat-abort signal');
+            this.activeStreamAborted = true;
+        });
+
         // ============================================
         // AI Chat Handler (Streaming)
         // ============================================
         ipcMain.on('ai:chat-start', async (event, { messages, providerId, model }) => {
+            this.activeStreamAborted = false;
+            const startTime = Date.now();
             try {
                 console.assert(Array.isArray(messages), 'messages must be a valid array');
                 const targetProvider = providerId || secureStore.getActiveProvider();
@@ -719,7 +905,7 @@ export class IpcManager {
 
                 if (custom) {
                     if (!apiKey) {
-                        apiKey = custom.api_key || '';
+                        apiKey = secureStore.getCustomProviderKey(targetProvider) || custom.api_key || '';
                     }
                     baseUrl = custom.base_url;
                 }
@@ -749,18 +935,57 @@ export class IpcManager {
                     }
                 }
 
+                // Estimate prompt tokens (approx 4 chars per token)
+                const promptText = finalMessages.map(m => m.content || '').join('\n');
+                const inputTokens = Math.max(1, Math.ceil(promptText.length / 4));
+
                 const stream = await provider.chat(finalMessages, {
                     stream: true,
                     model: targetModel,
                     temperature: 0.7
                 });
 
+                if (this.activeStreamAborted) {
+                    console.log('[IpcManager] Stream request cancelled before start');
+                    event.sender.send('ai:chat-end');
+                    return;
+                }
+
+                let responseText = '';
                 if (typeof stream === 'string') {
+                    responseText = stream;
                     event.sender.send('ai:chat-chunk', stream);
                 } else {
                     for await (const chunk of stream) {
+                        if (this.activeStreamAborted) {
+                            console.log('[IpcManager] Stream iteration aborted by user');
+                            break;
+                        }
+                        responseText += chunk;
                         event.sender.send('ai:chat-chunk', chunk);
                     }
+                }
+
+                // Estimate output tokens (approx 4 chars per token)
+                const outputTokens = Math.max(1, Math.ceil(responseText.length / 4));
+                const totalTokens = inputTokens + outputTokens;
+                const latency = Date.now() - startTime;
+
+                // Log performance metrics
+                try {
+                    dbService.addModelPerformance(
+                        targetModel,
+                        targetProvider,
+                        'chat',
+                        1, // success
+                        1, // single run
+                        totalTokens,
+                        latency,
+                        inputTokens,
+                        outputTokens
+                    );
+                } catch (dbErr) {
+                    console.error('Failed to save chat performance metrics to DB:', dbErr);
                 }
 
                 event.sender.send('ai:chat-end');
@@ -776,7 +1001,13 @@ export class IpcManager {
         ipcMain.handle('ai:save-config', async (_, config) => {
             console.assert(config && typeof config.providerId === 'string', 'config.providerId must be a valid string');
             if (config.apiKey) {
-                secureStore.setApiKey(config.providerId, config.apiKey);
+                const customProviders = dbService.getCustomProviders();
+                const isCustom = customProviders.some((p: any) => p.id === config.providerId);
+                if (isCustom) {
+                    secureStore.setCustomProviderKey(config.providerId, config.apiKey);
+                } else {
+                    secureStore.setApiKey(config.providerId, config.apiKey);
+                }
             }
             secureStore.setActiveProvider(config.providerId);
             return true;
@@ -810,7 +1041,7 @@ export class IpcManager {
 
             if (custom) {
                 if (!apiKey) {
-                    apiKey = custom.api_key || '';
+                    apiKey = secureStore.getCustomProviderKey(providerId) || custom.api_key || '';
                 }
                 baseUrl = custom.base_url;
             }
@@ -994,3 +1225,12 @@ export class IpcManager {
     }
 }
 
+function getNumericTaskId(conversationId: string): number {
+    if (!conversationId) return 1;
+    // Generate a stable 32-bit integer hash from the entire conversation ID string using DJB2
+    let hash = 5381;
+    for (let i = 0; i < conversationId.length; i++) {
+        hash = (hash * 33) ^ conversationId.charCodeAt(i);
+    }
+    return Math.abs(hash) || 1;
+}
