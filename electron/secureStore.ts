@@ -4,7 +4,7 @@
  * - macOS: Uses Keychain
  * - Linux: Uses Secret Service API / libsecret
  */
-import { safeStorage } from 'electron';
+import { safeStorage, app } from 'electron';
 import Store from 'electron-store';
 import console from 'console';
 
@@ -258,8 +258,71 @@ export const secureStore = {
     setWindowBounds(bounds: { width: number; height: number }): void {
         console.assert(bounds && typeof bounds.width === 'number', 'Window bounds must be valid');
         store.set('windowBounds', bounds);
+    },
+
+    setCustomProviderKey(providerId: string, key: string): void {
+        console.assert(typeof providerId === 'string', 'providerId must be a string');
+        checkEncryptionGuard();
+        store.set(`customProvider_${providerId}_encrypted` as any, encryptValue(key));
+    },
+    getCustomProviderKey(providerId: string): string | undefined {
+        console.assert(typeof providerId === 'string', 'providerId must be a string');
+        const encrypted = store.get(`customProvider_${providerId}_encrypted` as any) as string | undefined;
+        if (!encrypted) return undefined;
+        try {
+            return decryptValue(encrypted);
+        } catch (e) {
+            console.error(`[SecureStore] Failed to decrypt key for custom provider ${providerId}`, e);
+            return undefined;
+        }
+    },
+    deleteCustomProviderKey(providerId: string): void {
+        console.assert(typeof providerId === 'string', 'providerId must be a string');
+        store.delete(`customProvider_${providerId}_encrypted` as any);
     }
 };
+
+// Helper to guard encryption availability in development mode
+function checkEncryptionGuard() {
+    if (!safeStorage.isEncryptionAvailable()) {
+        const isDev = !app.isPackaged || process.env.NODE_ENV === 'development';
+        if (isDev) {
+            throw new Error('[SecureStore] OS-level encryption is not available in development.');
+        }
+    }
+}
+
+// Override existing setters to enforce the encryption guard
+const originalSetApiKey = secureStore.setApiKey;
+secureStore.setApiKey = function(providerId: string, key: string): void {
+    checkEncryptionGuard();
+    originalSetApiKey.call(secureStore, providerId, key);
+};
+
+const originalSetGitHubToken = secureStore.setGitHubToken;
+secureStore.setGitHubToken = function(token: string): void {
+    checkEncryptionGuard();
+    originalSetGitHubToken.call(secureStore, token);
+};
+
+// Export listEncryptedKeys separately
+export function listEncryptedKeys() {
+    const knownProviders = ['openai', 'anthropic', 'ollama', 'github'];
+    const encryptionAvailable = safeStorage.isEncryptionAvailable();
+    return knownProviders.map(id => {
+        let hasKey = false;
+        if (id === 'github') {
+            hasKey = !!secureStore.getGitHubToken();
+        } else {
+            hasKey = !!secureStore.getApiKey(id);
+        }
+        return {
+            providerId: id,
+            hasKey,
+            encryptionAvailable
+        };
+    });
+}
 
 // Export raw store for settings reset/inspect
 export { store };
