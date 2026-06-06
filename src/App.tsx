@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { DiffEditor } from '@monaco-editor/react';
 // Custom implementation to avoid build errors with 'react-resizable-panels'
 import { CodeEditor } from './components/Editor';
 import { ChatPanel, AppAgent, AppFlow, AppExecutionContext } from './components/ChatPanel';
@@ -13,13 +14,15 @@ import { SettingsModal } from './components/SettingsModal';
 import './App.css';
 
 import { VisualWorkflowEditor } from './components/VisualWorkflowEditor';
+import { InteractivePlanEditor } from './components/InteractivePlanEditor';
 
 interface OpenFile {
   path: string;
   name: string;
   content: string; // If flow, this stores description or raw JSON string
   isDirty?: boolean;
-  type?: 'code' | 'flow';
+  type?: 'code' | 'flow' | 'plan' | 'diff';
+  originalContent?: string;
   flowId?: number;
   flowData?: {
     nodes: any[];
@@ -74,6 +77,90 @@ function App() {
     }
   };
 
+  const handleOpenDiff = (filePath: string, originalContent: string, proposedContent: string) => {
+    const diffPath = `diff://${filePath}`;
+    const name = filePath.split(/[/\\]/).pop() || filePath;
+    const existing = files.find(f => f.path === diffPath);
+    if (existing) {
+      setActiveFilePath(diffPath);
+      return;
+    }
+
+    const newFile: OpenFile = {
+      path: diffPath,
+      name: `Diff: ${name}`,
+      content: proposedContent,
+      originalContent,
+      type: 'diff',
+      isDirty: false
+    };
+    setFiles(prev => [...prev, newFile]);
+    setActiveFilePath(diffPath);
+  };
+
+  const handleAcceptDiff = async (diffFile: OpenFile) => {
+    const actualPath = diffFile.path.substring(7);
+    try {
+      await window.ipcRenderer.invoke('write-file', actualPath, diffFile.content);
+
+      setFiles(prevFiles => {
+        const filtered = prevFiles.filter(f => f.path !== diffFile.path);
+        
+        const updated = filtered.map(f => {
+          if (f.path === actualPath) {
+            return { ...f, content: diffFile.content, isDirty: false };
+          }
+          return f;
+        });
+
+        setActiveFilePath(prevActive => {
+          if (prevActive === diffFile.path) {
+            return actualPath;
+          }
+          return prevActive;
+        });
+
+        return updated;
+      });
+
+      showNotification(`Accepted changes for ${diffFile.name.replace('Diff: ', '')}`);
+
+      window.dispatchEvent(new CustomEvent('proposal-status-changed', {
+        detail: { filePath: actualPath, status: 'accepted' }
+      }));
+    } catch (err) {
+      console.error('Failed to accept changes:', err);
+      alert('Failed to save changes to disk');
+    }
+  };
+
+  const handleRejectDiff = (diffFile: OpenFile) => {
+    const actualPath = diffFile.path.substring(7);
+    setFiles(prevFiles => {
+      const filtered = prevFiles.filter(f => f.path !== diffFile.path);
+      
+      setActiveFilePath(prevActive => {
+        if (prevActive === diffFile.path) {
+          return filtered.length > 0 ? filtered[filtered.length - 1].path : '';
+        }
+        return prevActive;
+      });
+
+      return filtered;
+    });
+
+    showNotification(`Rejected changes for ${diffFile.name.replace('Diff: ', '')}`);
+
+    window.dispatchEvent(new CustomEvent('proposal-status-changed', {
+      detail: { filePath: actualPath, status: 'rejected' }
+    }));
+  };
+
+  const handleOpenDiffRef = useRef(handleOpenDiff);
+  useEffect(() => {
+    handleOpenDiffRef.current = handleOpenDiff;
+  }, []);
+
   useEffect(() => {
     loadAppSettings();
     const isMac = navigator.userAgent.includes('Macintosh');
@@ -82,6 +169,109 @@ function App() {
     } else {
       document.body.classList.add('platform-win');
     }
+
+    const handleOpenWorkspaceFile = async (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const filePath = customEvent.detail.path;
+      if (filePath.startsWith('plan://')) {
+        const taskIdStr = filePath.substring(7);
+        const taskId = parseInt(taskIdStr, 10);
+        if (!isNaN(taskId)) {
+          handleOpenPlan(taskId, `Task #${taskId}`);
+        }
+      } else if (filePath.startsWith('diff://')) {
+        const actualPath = filePath.substring(7);
+        const proposedContent = customEvent.detail.proposedContent || '';
+        try {
+          let originalContent = '';
+          try {
+            originalContent = await window.ipcRenderer.invoke('read-file', actualPath);
+          } catch (readErr) {
+            originalContent = '';
+          }
+          handleOpenDiffRef.current(actualPath, originalContent, proposedContent);
+        } catch (err) {
+          console.error('Failed to open diff view:', err);
+        }
+      } else {
+        try {
+          const line = customEvent.detail.line;
+          const content = await window.ipcRenderer.invoke('read-file', filePath);
+          handleFileSelectRef.current(content, filePath, line);
+        } catch (err) {
+          console.error('Failed to open file from link:', err);
+        }
+      }
+    };
+    const handleAcceptProposal = async (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const { filePath, proposedContent } = customEvent.detail;
+      try {
+        await window.ipcRenderer.invoke('write-file', filePath, proposedContent);
+
+        setFiles(prevFiles => {
+          const diffPath = `diff://${filePath}`;
+          const filtered = prevFiles.filter(f => f.path !== diffPath);
+          const updated = filtered.map(f => {
+            if (f.path === filePath) {
+              return { ...f, content: proposedContent, isDirty: false };
+            }
+            return f;
+          });
+
+          setActiveFilePath(prevActive => {
+            if (prevActive === diffPath) {
+              return filePath;
+            }
+            return prevActive;
+          });
+
+          return updated;
+        });
+
+        showNotification(`Accepted proposed changes for ${filePath.split(/[/\\]/).pop()}`);
+
+        window.dispatchEvent(new CustomEvent('proposal-status-changed', {
+          detail: { filePath, status: 'accepted' }
+        }));
+      } catch (err) {
+        console.error('Failed to accept proposal:', err);
+      }
+    };
+
+    const handleRejectProposal = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const { filePath } = customEvent.detail;
+      const diffPath = `diff://${filePath}`;
+
+      setFiles(prevFiles => {
+        const filtered = prevFiles.filter(f => f.path !== diffPath);
+
+        setActiveFilePath(prevActive => {
+          if (prevActive === diffPath) {
+            return filtered.length > 0 ? filtered[filtered.length - 1].path : '';
+          }
+          return prevActive;
+        });
+
+        return filtered;
+      });
+
+      showNotification(`Rejected proposed changes for ${filePath.split(/[/\\]/).pop()}`);
+
+      window.dispatchEvent(new CustomEvent('proposal-status-changed', {
+        detail: { filePath, status: 'rejected' }
+      }));
+    };
+
+    window.addEventListener('open-workspace-file', handleOpenWorkspaceFile);
+    window.addEventListener('accept-file-proposal', handleAcceptProposal);
+    window.addEventListener('reject-file-proposal', handleRejectProposal);
+    return () => {
+      window.removeEventListener('open-workspace-file', handleOpenWorkspaceFile);
+      window.removeEventListener('accept-file-proposal', handleAcceptProposal);
+      window.removeEventListener('reject-file-proposal', handleRejectProposal);
+    };
   }, []);
 
   const handleRunFlow = (agent: AppAgent, flow: AppFlow) => {
@@ -108,6 +298,26 @@ function App() {
       type: 'flow',
       flowId: flow.id,
       flowData: flow.steps || { nodes: [], edges: [] },
+      isDirty: false
+    };
+    setFiles([...files, newFile]);
+    setActiveFilePath(path);
+  };
+
+  const handleOpenPlan = (taskId: number, taskTitle: string) => {
+    const path = `plan://${taskId}`;
+    const existing = files.find(f => f.path === path);
+    if (existing) {
+      setActiveFilePath(path);
+      return;
+    }
+
+    const newFile: OpenFile = {
+      path,
+      name: `Plan: ${taskTitle}`,
+      content: '',
+      type: 'plan',
+      flowId: taskId,
       isDirty: false
     };
     setFiles([...files, newFile]);
@@ -141,6 +351,11 @@ function App() {
       setEditorTargetLine({ line, timestamp: Date.now() });
     }
   };
+
+  const handleFileSelectRef = useRef(handleFileSelect);
+  useEffect(() => {
+    handleFileSelectRef.current = handleFileSelect;
+  }, [handleFileSelect]);
 
   // New file dialog state
   const [newFileDialogOpen, setNewFileDialogOpen] = useState(false);
@@ -441,6 +656,7 @@ function App() {
               onOpenFolder={handleOpenFolder}
               onRunFlow={handleRunFlow}
               onOpenFlow={handleOpenFlow}
+              onOpenPlan={handleOpenPlan}
               width={sidebarWidth}
               symbolSearchQuery={symbolSearchQuery}
               setSymbolSearchQuery={setSymbolSearchQuery}
@@ -500,6 +716,96 @@ function App() {
                           // We'll implement handleSave for flows next.
                         }}
                       />
+                    ) : activeFile.type === 'plan' ? (
+                      <InteractivePlanEditor
+                        taskId={activeFile.flowId || 0}
+                      />
+                    ) : activeFile.type === 'diff' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', background: 'var(--bg-secondary)' }}>
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '8px 16px',
+                          background: 'rgba(255,255,255,0.02)',
+                          borderBottom: '1px solid var(--border-subtle)',
+                          flexShrink: 0
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span className="codicon codicon-diff" style={{ color: 'var(--accent-primary)', fontSize: 16 }} />
+                            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Comparing Changes: {activeFile.name.replace('Diff: ', '')}</span>
+                            <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontFamily: 'monospace' }}>({activeFile.path.substring(7)})</span>
+                          </div>
+                          <div style={{ display: 'flex', gap: 10 }}>
+                            <button
+                              onClick={() => handleRejectDiff(activeFile)}
+                              style={{
+                                background: 'rgba(244, 63, 94, 0.1)',
+                                border: '1px solid rgba(244, 63, 94, 0.2)',
+                                color: '#f43f5e',
+                                padding: '4px 12px',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '12px',
+                                fontWeight: 500,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                transition: 'all 0.2s'
+                              }}
+                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(244, 63, 94, 0.2)'}
+                              onMouseOut={(e) => e.currentTarget.style.background = 'rgba(244, 63, 94, 0.1)'}
+                            >
+                              <span className="codicon codicon-close" style={{ fontSize: 12 }} /> Discard
+                            </button>
+                            <button
+                              onClick={() => handleAcceptDiff(activeFile)}
+                              style={{
+                                background: 'rgba(52, 211, 153, 0.15)',
+                                border: '1px solid rgba(52, 211, 153, 0.3)',
+                                color: '#34d399',
+                                padding: '4px 12px',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '12px',
+                                fontWeight: 500,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                transition: 'all 0.2s'
+                              }}
+                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(52, 211, 153, 0.25)'}
+                              onMouseOut={(e) => e.currentTarget.style.background = 'rgba(52, 211, 153, 0.15)'}
+                            >
+                              <span className="codicon codicon-check" style={{ fontSize: 12 }} /> Accept Changes
+                            </button>
+                          </div>
+                        </div>
+                        <div style={{ flex: 1, minHeight: 0 }}>
+                          <DiffEditor
+                            height="100%"
+                            language={getFileSettings(activeFile.name.replace('Diff: ', '')).language}
+                            original={activeFile.originalContent || ''}
+                            modified={activeFile.content}
+                            theme={appTheme === 'light' ? 'light' : 'vs-dark'}
+                            options={{
+                              readOnly: true,
+                              fontSize: appFontSize,
+                              renderSideBySide: true,
+                              minimap: { enabled: false },
+                              scrollBeyondLastLine: false,
+                              automaticLayout: true
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ) : activeFile.name.endsWith('.html') ? (
+                      <iframe
+                        srcDoc={activeFile.content}
+                        style={{ width: '100%', height: '100%', border: 'none', background: '#1e1e1e' }}
+                        title={activeFile.name}
+                        sandbox="allow-scripts allow-same-origin"
+                      />
                     ) : (
                       <CodeEditor
                         value={activeFile.content}
@@ -549,6 +855,7 @@ function App() {
                 onApplyCode={handleApplyCode}
                 executionContext={executionContext}
                 settingsSavedTrigger={settingsSavedTrigger}
+                onOpenPlan={handleOpenPlan}
               />
             </ErrorBoundary>
           )}
