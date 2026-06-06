@@ -18,6 +18,17 @@ export interface ExecutionPlan {
     filesToModify: string[];
     verificationCriteria: string[];
     confidence: number;
+    tradeoffs?: {
+        task: string;
+        considerations: string;
+        decision: string;
+    }[];
+    consequences?: {
+        failureMode: string;
+        consequence: string;
+        harm: string;
+        mitigation: string;
+    }[];
 }
 
 export class PlanningService {
@@ -45,6 +56,11 @@ export class PlanningService {
 Generate a highly structured, deterministic, multi-step Execution Plan for the active task.
 Your goal is 100% accuracy and safety. Plan all reads, analyses, modifications, and testing steps before executing.
 
+=== ZERO-ASSUMPTION PLANNING POLICY ===
+1. Evidence-Based: Base your plan steps on facts/code files that you have explicitly verified. No guessing.
+2. Assumption Identification: Scrutinize all assumptions (e.g., assuming a file exists, assuming a function signature).
+3. Explicit Uncertainty: List files to read first to resolve any uncertainty before planning code modifications.
+
 Task Information:
 Title: ${task.title}
 Description: ${task.description || 'No description provided'}
@@ -68,7 +84,29 @@ interface ExecutionPlan {
     filesToModify: string[];
     verificationCriteria: string[];
     confidence: number;
+    tradeoffs: Array<{
+        task: string;
+        considerations: string;
+        decision: string;
+    }>;
+    consequences: Array<{
+        failureMode: string;
+        consequence: string;
+        harm: string;
+        mitigation: string;
+    }>;
 }
+
+For "tradeoffs": You MUST create/simulate internal evaluation tasks (representing distinct architectural/implementation paths considered), think through their pros and cons, and write down these tradeoffs including:
+- task: The name of the option or architectural choice evaluated
+- considerations: Key considerations (pros, cons, security implications) thought about
+- decision: The final decision and rationale.
+
+For "consequences": You MUST analyze what can or will go wrong if parts of the plan/implementation are incorrect, exposed, security risks, how it hurts the user or the company, etc. Document:
+- failureMode: Part of plan/implementation that fails or is incorrect
+- consequence: What goes wrong (exposure, security leak, data loss, state corruption)
+- harm: How it hurts the user (credential exposure, data theft) or company (reputational/financial harm)
+- mitigation: How this plan or design mitigates or guards against this failure mode.
 
 JSON Response:`;
 
@@ -161,6 +199,24 @@ JSON Response:`;
             console.assert(['read', 'analyze', 'modify', 'create', 'delete', 'run_command'].includes(step.action), `Invalid step action: ${step.action}`);
             console.assert(typeof step.target === 'string' && step.target.length > 0, 'Step target must be a non-empty string');
             console.assert(typeof step.rationale === 'string', 'Step rationale must be a string');
+        }
+
+        if (plan.tradeoffs) {
+            console.assert(Array.isArray(plan.tradeoffs), 'tradeoffs must be an array');
+            for (const t of plan.tradeoffs) {
+                console.assert(typeof t.task === 'string', 'tradeoff task must be a string');
+                console.assert(typeof t.considerations === 'string', 'tradeoff considerations must be a string');
+                console.assert(typeof t.decision === 'string', 'tradeoff decision must be a string');
+            }
+        }
+        if (plan.consequences) {
+            console.assert(Array.isArray(plan.consequences), 'consequences must be an array');
+            for (const c of plan.consequences) {
+                console.assert(typeof c.failureMode === 'string', 'consequence failureMode must be a string');
+                console.assert(typeof c.consequence === 'string', 'consequence must be a string');
+                console.assert(typeof c.harm === 'string', 'consequence harm must be a string');
+                console.assert(typeof c.mitigation === 'string', 'consequence mitigation must be a string');
+            }
         }
     }
 }
