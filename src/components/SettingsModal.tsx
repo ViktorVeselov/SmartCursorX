@@ -5,7 +5,7 @@ interface SettingsModalProps {
     onClose: () => void;
 }
 
-type SettingsTab = 'general' | 'models' | 'agent' | 'openclaw' | 'local';
+type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'openclaw' | 'local' | 'usage';
 
 const getIpc = () => (window as any).ipcRenderer;
 
@@ -25,6 +25,13 @@ const DollarIcon = ({ active, width = 13, height = 13, marginRight = 0 }: { acti
         <path fillRule="evenodd" d="M9 15a6 6 0 1 1 12 0 6 6 0 0 1-12 0Zm3.845-1.855a2.4 2.4 0 0 1 1.2-1.226 1 1 0 0 1 1.992-.026c.426.15.809.408 1.111.749a1 1 0 1 1-1.496 1.327.682.682 0 0 0-.36-.213.997.997 0 0 1-.113-.032.4.4 0 0 0-.394.074.93.93 0 0 0 .455.254 2.914 2.914 0 0 1 1.504.9c.373.433.669 1.092.464 1.823a.996.996 0 0 1-.046.129c-.226.519-.627.94-1.132 1.192a1 1 0 0 1-1.956.093 2.68 2.68 0 0 1-1.227-.798 1 1 0 1 1 1.506-1.315.682.682 0 0 0 .363.216c.038.009.075.02.111.032a.4.4 0 0 0 .395-.074.93.93 0 0 0-.455-.254 2.91 2.91 0 0 1-1.503-.9c-.375-.433-.666-1.089-.466-1.817a.994.994 0 0 1 .047-.134Zm1.884.573.003.008c-.003-.005-.003-.008-.003-.008Zm.55 2.613s-.002-.002-.003-.007a.032.032 0 0 1 .003.007ZM4 14a1 1 0 0 1 1 1v4a1 1 0 1 1-2 0v-4a1 1 0 0 1 1-1Zm3-2a1 1 0 0 1 1 1v6a1 1 0 1 1-2 0v-6a1 1 0 0 1 1-1Zm6.5-8a1 1 0 0 1 1-1H18a1 1 0 0 1 1 1v3a1 1 0 1 1-2 0v-.796l-2.341 2.049a1 1 0 0 1-1.24.06l-2.894-2.066L6.614 9.29a1 1 0 1 1-1.228-1.578l4.5-3.5a1 1 0 0 1 1.195-.025l2.856 2.04L15.34 5h-.84a1 1 0 0 1-1-1Z" clipRule="evenodd"/>
     </svg>
 );
+
+interface AgentRule {
+    id?: number;
+    name: string;
+    content: string;
+    is_active: number;
+}
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
@@ -60,6 +67,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [customModelsList, setCustomModelsList] = useState<any[]>([]);
     const [modelSearchQuery, setModelSearchQuery] = useState('');
 
+    // Usage Tracking states
+    const [usageStats, setUsageStats] = useState<{ totalTokens: number, totalInputTokens: number, totalOutputTokens: number, totalCost: number, breakdowns: any[] }>({ totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0, breakdowns: [] });
+
     // LiteLLM Local Proxy states
     const [enableLiteLLMProxy, setEnableLiteLLMProxy] = useState(false);
     const [liteLLMConfigPath, setLiteLLMConfigPath] = useState('');
@@ -89,6 +99,22 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [pairingCode, setPairingCode] = useState('');
     const [pairingStatus, setPairingStatus] = useState<{ type: 'idle' | 'success' | 'error', message: string }>({ type: 'idle', message: '' });
     const [isPairingRunning, setIsPairingRunning] = useState(false);
+
+    // Agent Rules states
+    const [rules, setRules] = useState<AgentRule[]>([]);
+    const [editingRule, setEditingRule] = useState<AgentRule | null>(null);
+    const [ruleName, setRuleName] = useState('');
+    const [ruleContent, setRuleContent] = useState('');
+    const [isRuleActive, setIsRuleActive] = useState(true);
+
+    const loadRules = async () => {
+        try {
+            const list = await getIpc().invoke('db:get-rules');
+            setRules(list || []);
+        } catch (e) {
+            console.error('Failed to load rules:', e);
+        }
+    };
 
     // Load initial settings securely
     useEffect(() => {
@@ -146,6 +172,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             // Check if local proxy is actively running
             const proxyStatus = await getIpc().invoke('litellm:get-status');
             setIsProxyRunning(!!proxyStatus?.isActive);
+
+            // Load rules
+            await loadRules();
         };
         loadSettings();
     }, [isOpen]);
@@ -172,6 +201,23 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         checkStatus();
         const interval = setInterval(checkStatus, 2000);
         return () => clearInterval(interval);
+    }, [isOpen, activeTab]);
+
+    // Usage Metrics Loader
+    useEffect(() => {
+        if (!isOpen) return;
+        
+        const fetchUsage = async () => {
+            const stats = await getIpc().invoke('ai:get-usage-stats');
+            if (stats) setUsageStats(stats);
+        };
+
+        if (activeTab === 'usage') {
+            fetchUsage();
+            // Poll for updates every 3 seconds to keep it live
+            const interval = setInterval(fetchUsage, 3000);
+            return () => clearInterval(interval);
+        }
     }, [isOpen, activeTab]);
 
     // Load dynamic models list and provider specifics when provider or customProviders change
@@ -319,7 +365,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         Settings
                     </div>
                     {(() => {
-                        const baseTabs = ['general', 'models', 'agent', 'openclaw'];
+                        const baseTabs = ['general', 'models', 'agent', 'rules', 'openclaw', 'usage'];
                         const isLocalProvider = modelProvider === 'ollama' || modelProvider === 'litellm' || customProviders.some((p: any) => p.id === modelProvider && (p.isLocal || p.is_local));
                         if (isLocalProvider) baseTabs.push('local');
                         return baseTabs.map(tab => (
@@ -336,7 +382,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     fontSize: 13
                                 }}
                             >
-                                {tab === 'openclaw' ? '🦞 OpenClaw' : tab === 'local' ? 'Local LLMs' : tab}
+                                {tab === 'openclaw' ? '🦞 OpenClaw' : tab === 'local' ? 'Local LLMs' : tab === 'usage' ? '📊 Usage & Costs' : tab === 'rules' ? '📜 Rules' : tab}
                             </div>
                         ));
                     })()}
@@ -1039,6 +1085,250 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         </div>
                     )}
 
+                    {activeTab === 'rules' && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <span className="codicon codicon-checklist" style={{ color: 'var(--accent-primary)' }} />
+                                    Agent Instructions & Rules
+                                </h3>
+                                {!editingRule && (
+                                    <button
+                                        onClick={() => {
+                                            setEditingRule({ name: '', content: '', is_active: 1 });
+                                            setRuleName('');
+                                            setRuleContent('');
+                                            setIsRuleActive(true);
+                                        }}
+                                        style={{
+                                            background: 'var(--accent-primary)',
+                                            border: 'none',
+                                            color: '#ffffff',
+                                            padding: '6px 14px',
+                                            borderRadius: 'var(--radius-md)',
+                                            fontSize: 12,
+                                            fontWeight: 600,
+                                            cursor: 'pointer',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 4
+                                        }}
+                                    >
+                                        <span className="codicon codicon-add" /> Add Rule
+                                    </button>
+                                )}
+                            </div>
+
+                            <p style={{ margin: '0 0 10px 0', fontSize: 12, color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                                Create system-level rules and instructions that your agents must follow during code planning, execution, and chat conversations. Active rules are automatically injected into the system prompt.
+                            </p>
+
+                            {editingRule ? (
+                                <div style={{
+                                    background: 'var(--bg-tertiary)',
+                                    borderRadius: 'var(--radius-lg)',
+                                    border: '1px solid var(--border-subtle)',
+                                    padding: 20,
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: 16
+                                }}>
+                                    <h4 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>
+                                        {editingRule.id ? 'Edit Rule' : 'New Instruction / Rule'}
+                                    </h4>
+
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                        <label style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Rule Name</label>
+                                        <input
+                                            type="text"
+                                            value={ruleName}
+                                            onChange={e => setRuleName(e.target.value)}
+                                            placeholder="e.g. Avoid using git commands"
+                                            style={{
+                                                width: '100%',
+                                                padding: '8px 12px',
+                                                background: 'var(--bg-input)',
+                                                border: '1px solid var(--border-subtle)',
+                                                color: 'var(--text-primary)',
+                                                borderRadius: 'var(--radius-md)',
+                                                fontSize: 12,
+                                                outline: 'none',
+                                                boxSizing: 'border-box'
+                                            }}
+                                        />
+                                    </div>
+
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                        <label style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Instructions Content</label>
+                                        <textarea
+                                            rows={6}
+                                            value={ruleContent}
+                                            onChange={e => setRuleContent(e.target.value)}
+                                            placeholder="Specify exact rules, e.g., 'Never propose git checkout or push commands...'"
+                                            style={{
+                                                width: '100%',
+                                                padding: '10px 12px',
+                                                background: 'var(--bg-input)',
+                                                border: '1px solid var(--border-subtle)',
+                                                color: 'var(--text-primary)',
+                                                borderRadius: 'var(--radius-md)',
+                                                fontSize: 12,
+                                                outline: 'none',
+                                                boxSizing: 'border-box',
+                                                resize: 'vertical',
+                                                fontFamily: 'monospace'
+                                            }}
+                                        />
+                                    </div>
+
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                        <input
+                                            type="checkbox"
+                                            id="rule-active-check"
+                                            checked={isRuleActive}
+                                            onChange={e => setIsRuleActive(e.target.checked)}
+                                        />
+                                        <label htmlFor="rule-active-check" style={{ fontSize: 12, userSelect: 'none', cursor: 'pointer' }}>
+                                            Enable rule immediately
+                                        </label>
+                                    </div>
+
+                                    <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 8 }}>
+                                        <button
+                                            onClick={() => setEditingRule(null)}
+                                            style={{
+                                                background: 'transparent',
+                                                border: '1px solid var(--border-color)',
+                                                color: 'var(--text-primary)',
+                                                padding: '6px 14px',
+                                                borderRadius: 'var(--radius-md)',
+                                                fontSize: 12,
+                                                cursor: 'pointer'
+                                            }}
+                                        >
+                                            Cancel
+                                        </button>
+                                        <button
+                                            onClick={async () => {
+                                                if (!ruleName.trim() || !ruleContent.trim()) return;
+                                                const activeVal = isRuleActive ? 1 : 0;
+                                                if (editingRule.id) {
+                                                    await getIpc().invoke('db:update-rule', editingRule.id, ruleName.trim(), ruleContent.trim(), activeVal);
+                                                } else {
+                                                    await getIpc().invoke('db:add-rule', ruleName.trim(), ruleContent.trim(), activeVal);
+                                                }
+                                                setEditingRule(null);
+                                                loadRules();
+                                            }}
+                                            style={{
+                                                background: 'var(--accent-primary)',
+                                                border: 'none',
+                                                color: '#ffffff',
+                                                padding: '6px 14px',
+                                                borderRadius: 'var(--radius-md)',
+                                                fontSize: 12,
+                                                fontWeight: 600,
+                                                cursor: 'pointer'
+                                            }}
+                                        >
+                                            Save Rule
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                    {rules.length === 0 ? (
+                                        <div style={{
+                                            padding: 40,
+                                            textAlign: 'center',
+                                            background: 'var(--bg-tertiary)',
+                                            borderRadius: 'var(--radius-lg)',
+                                            border: '1px solid var(--border-subtle)',
+                                            color: 'var(--text-secondary)',
+                                            fontSize: 12
+                                        }}>
+                                            <span className="codicon codicon-info" style={{ fontSize: 24, display: 'block', marginBottom: 8, color: 'var(--accent-primary)' }} />
+                                            No active workspace rules set. Click "+ Add Rule" to set system-level guidelines.
+                                        </div>
+                                    ) : (
+                                        rules.map(rule => (
+                                            <div
+                                                key={rule.id}
+                                                style={{
+                                                    background: 'var(--bg-tertiary)',
+                                                    borderRadius: 'var(--radius-lg)',
+                                                    border: '1px solid var(--border-subtle)',
+                                                    padding: '12px 16px',
+                                                    display: 'flex',
+                                                    flexDirection: 'column',
+                                                    gap: 8,
+                                                    position: 'relative'
+                                                }}
+                                            >
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={rule.is_active === 1}
+                                                            onChange={async (e) => {
+                                                                await getIpc().invoke('db:toggle-rule', rule.id, e.target.checked ? 1 : 0);
+                                                                loadRules();
+                                                            }}
+                                                            style={{ cursor: 'pointer' }}
+                                                        />
+                                                        <span style={{ fontWeight: 600, fontSize: 13, color: rule.is_active === 1 ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
+                                                            {rule.name}
+                                                        </span>
+                                                    </div>
+                                                    <div style={{ display: 'flex', gap: 8 }}>
+                                                        <button
+                                                            onClick={() => {
+                                                                setEditingRule(rule);
+                                                                setRuleName(rule.name);
+                                                                setRuleContent(rule.content);
+                                                                setIsRuleActive(rule.is_active === 1);
+                                                            }}
+                                                            style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '2px' }}
+                                                            title="Edit Rule"
+                                                        >
+                                                            <span className="codicon codicon-edit" />
+                                                        </button>
+                                                        <button
+                                                            onClick={async () => {
+                                                                if (confirm(`Are you sure you want to delete "${rule.name}"?`)) {
+                                                                    await getIpc().invoke('db:delete-rule', rule.id);
+                                                                    loadRules();
+                                                                }
+                                                            }}
+                                                            style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '2px' }}
+                                                            title="Delete Rule"
+                                                        >
+                                                            <span className="codicon codicon-trash" />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <div style={{
+                                                    fontSize: 11,
+                                                    color: 'var(--text-secondary)',
+                                                    whiteSpace: 'pre-wrap',
+                                                    fontFamily: 'monospace',
+                                                    background: 'rgba(0,0,0,0.1)',
+                                                    padding: 8,
+                                                    borderRadius: 'var(--radius-sm)',
+                                                    border: '1px solid rgba(255,255,255,0.02)',
+                                                    maxHeight: 100,
+                                                    overflowY: 'auto'
+                                                }}>
+                                                    {rule.content}
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {activeTab === 'openclaw' && (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1432,6 +1722,112 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     </div>
                                 </div>
                             )}
+                        </div>
+                    )}
+
+                    {activeTab === 'usage' && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <h3 style={{ marginTop: 0, marginBottom: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+                                    <span style={{ fontSize: 20 }}>📊</span> Usage & Costs
+                                </h3>
+                                <button
+                                    onClick={async () => {
+                                        if (confirm('Are you sure you want to reset all token usage logs? This cannot be undone.')) {
+                                            await getIpc().invoke('ai:clear-usage-stats');
+                                            setUsageStats({ totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0, breakdowns: [] });
+                                        }
+                                    }}
+                                    style={{
+                                        padding: '4px 10px',
+                                        background: 'rgba(239, 68, 68, 0.1)',
+                                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                                        color: '#ef4444',
+                                        borderRadius: 'var(--radius-md)',
+                                        cursor: 'pointer',
+                                        fontSize: 11,
+                                        fontWeight: 500
+                                    }}
+                                >
+                                    Reset Usage Logs
+                                </button>
+                            </div>
+
+                            {/* Summary Metrics Cards */}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+                                <div style={{ padding: 16, background: 'var(--bg-tertiary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500 }}>Total Estimated Cost</div>
+                                    <div style={{ fontSize: 24, fontWeight: 700, color: '#10b981' }}>${usageStats.totalCost.toFixed(4)}</div>
+                                </div>
+                                <div style={{ padding: 16, background: 'var(--bg-tertiary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500 }}>Total Tokens Consumed</div>
+                                    <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--text-primary)' }}>{usageStats.totalTokens.toLocaleString()}</div>
+                                    <div style={{ fontSize: 9, color: 'var(--text-secondary)', marginTop: 4 }}>In: {usageStats.totalInputTokens?.toLocaleString() || 0} | Out: {usageStats.totalOutputTokens?.toLocaleString() || 0}</div>
+                                </div>
+                                <div style={{ padding: 16, background: 'var(--bg-tertiary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500 }}>Most Active Model</div>
+                                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--accent-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 6 }} title={
+                                        usageStats.breakdowns.reduce((max, curr) => curr.tokens > max.tokens ? curr : max, { model: 'None', tokens: 0 }).model
+                                    }>
+                                        {usageStats.breakdowns.reduce((max, curr) => curr.tokens > max.tokens ? curr : max, { model: 'None', tokens: 0 }).model}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Breakdown List */}
+                            <div style={{ marginTop: 8 }}>
+                                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <span className="codicon codicon-graph" />
+                                    <span>Model Breakdowns</span>
+                                </div>
+
+                                {usageStats.breakdowns.length === 0 ? (
+                                    <div style={{
+                                        padding: 30,
+                                        background: 'var(--bg-tertiary)',
+                                        border: '1px solid var(--border-subtle)',
+                                        borderRadius: 'var(--radius-lg)',
+                                        textAlign: 'center',
+                                        fontSize: 13,
+                                        color: 'var(--text-secondary)',
+                                        fontStyle: 'italic'
+                                    }}>
+                                        No usage stats logged yet. Chat with models or run tasks to generate metrics!
+                                    </div>
+                                ) : (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 220, overflowY: 'auto', paddingRight: 4 }}>
+                                        {usageStats.breakdowns.map((item, idx) => {
+                                            const pct = usageStats.totalTokens > 0 ? (item.tokens / usageStats.totalTokens) * 100 : 0;
+                                            return (
+                                                <div key={idx} style={{
+                                                    background: 'var(--bg-secondary)',
+                                                    border: '1px solid var(--border-subtle)',
+                                                    borderRadius: 'var(--radius-lg)',
+                                                    padding: 12,
+                                                    display: 'flex',
+                                                    flexDirection: 'column',
+                                                    gap: 8
+                                                }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
+                                                        <div>
+                                                            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{item.model}</span>
+                                                            <span style={{ fontSize: 10, color: 'var(--text-secondary)', marginLeft: 8, textTransform: 'uppercase' }}>({item.provider})</span>
+                                                        </div>
+                                                        <div style={{ display: 'flex', gap: 16 }}>
+                                                            <span style={{ color: 'var(--text-secondary)' }}>{item.tokens.toLocaleString()} tokens <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>(In: {item.inputTokens?.toLocaleString() || 0} | Out: {item.outputTokens?.toLocaleString() || 0})</span></span>
+                                                            <span style={{ fontWeight: 600, color: '#10b981' }}>${item.cost.toFixed(4)}</span>
+                                                        </div>
+                                                    </div>
+                                                    {/* Progress bar */}
+                                                    <div style={{ width: '100%', height: 6, background: 'var(--bg-input)', borderRadius: 3, overflow: 'hidden' }}>
+                                                        <div style={{ width: `${pct}%`, height: '100%', background: 'var(--accent-primary)', borderRadius: 3 }} />
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
                 </div>
