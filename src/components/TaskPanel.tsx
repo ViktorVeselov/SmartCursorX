@@ -16,7 +16,11 @@ export interface TaskNode {
     children?: TaskNode[];
 }
 
-export function TaskPanel() {
+interface TaskPanelProps {
+    onOpenPlan?: (taskId: number, taskTitle: string) => void;
+}
+
+export function TaskPanel({ onOpenPlan }: TaskPanelProps) {
     const [tasks, setTasks] = useState<TaskNode[]>([]);
     const [selectedTask, setSelectedTask] = useState<TaskNode | null>(null);
     const [newTaskTitle, setNewTaskTitle] = useState('');
@@ -213,6 +217,15 @@ export function TaskPanel() {
                             onClick={() => { setIsDecomposing(selectedTask.id); setSubtaskInputs(''); }}
                             style={{ padding: '4px 8px', background: 'var(--bg-hover)', border: '1px solid var(--border-subtle)', borderRadius: '4px', color: 'var(--text-primary)', cursor: 'pointer' }}
                         >Decompose</button>
+                        {onOpenPlan && (
+                            <button 
+                                onClick={() => onOpenPlan(selectedTask.id, selectedTask.title)}
+                                style={{ padding: '4px 8px', background: 'rgba(129, 140, 248, 0.15)', border: '1px solid rgba(129, 140, 248, 0.3)', borderRadius: '4px', color: '#a5b4fc', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                            >
+                                <span className="codicon codicon-project" />
+                                Roadmap
+                            </button>
+                        )}
                     </div>
 
                     {isDecomposing === selectedTask.id && (
