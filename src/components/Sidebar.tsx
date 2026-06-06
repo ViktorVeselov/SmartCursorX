@@ -18,12 +18,13 @@ interface SidebarProps {
     onOpenFolder?: () => void;
     onRunFlow?: (agent: any, flow: any) => void;
     onOpenFlow?: (flow: any) => void;
+    onOpenPlan?: (taskId: number, taskTitle: string) => void;
     width?: number;
     symbolSearchQuery: string;
     setSymbolSearchQuery: (q: string) => void;
 }
 
-export function Sidebar({ isOpen, onToggle, activeSection, onFileSelect, onCreateFile, rootPath, onOpenFolder, onRunFlow, onOpenFlow, width = 260, symbolSearchQuery, setSymbolSearchQuery }: SidebarProps) {
+export function Sidebar({ isOpen, onToggle, activeSection, onFileSelect, onCreateFile, rootPath, onOpenFolder, onRunFlow, onOpenFlow, onOpenPlan, width = 260, symbolSearchQuery, setSymbolSearchQuery }: SidebarProps) {
     const handleNavigate = async (filePath: string, line?: number) => {
         try {
             const content = await window.ipcRenderer.invoke('read-file', filePath);
@@ -73,7 +74,7 @@ export function Sidebar({ isOpen, onToggle, activeSection, onFileSelect, onCreat
                             />
                         )}
                         {activeSection === 'tasks' && (
-                            <TaskPanel />
+                            <TaskPanel onOpenPlan={onOpenPlan} />
                         )}
                         {activeSection === 'memory' && (
                             <MemoryPanel />
