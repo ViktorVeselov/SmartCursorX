@@ -66,6 +66,14 @@ export class ASTPatchingService {
   3. Filling out your active scratchpad with zero-blind-spots proof.
 - Available cognitive actions: GREP, READ_FILE, VIEW_OUTLINE, FIND_REFERENCES.
 - Restricted actions: WRITE_FILE, APPLY_EDITS (HIDDEN/BLOCKED).
+
+=== ASSUMPTION VALIDATOR POLICY ===
+- Evidence-Based: No claim should be made without a direct citation or grep from the codebase, documentation, or tool output.
+- Assumption Identification: Scan actively for words like "probably", "likely", "should", "standard", or "usually" and treat them as assumptions.
+- Explicit Uncertainty: If something is unknown, state it clearly as unknown.
+- Report Format:
+  1. Confirmed Facts: [Fact] -> [Source]
+  2. Critical Assumptions: [Assumption] -> [Why it's a risk] -> [How to verify]
 `;
         } else if (phase === 'modify') {
             steeringDirectives = `
