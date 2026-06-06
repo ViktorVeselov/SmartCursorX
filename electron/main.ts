@@ -1,6 +1,6 @@
 import { app, BrowserWindow, Menu } from 'electron'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 // import { store } from './store'
 import { dbService } from './db'
@@ -165,6 +165,24 @@ app.whenReady().then(async () => {
     console.log(' [Main] Initializing DB...');
     await dbService.init()
     console.log(' [Main] DB Initialized');
+
+    if (process.argv.includes('--test-secure-store')) {
+      console.log(' [Main] Running test-secure-store integration test...');
+      try {
+        const testPath = path.join(process.cwd(), 'scripts/test-secure-store.js');
+        const testUrl = pathToFileURL(testPath).href;
+        // @ts-ignore
+        const { runTests } = await import(testUrl);
+        const { secureStore } = await import('./secureStore');
+        await runTests(secureStore, dbService);
+        app.quit();
+        return;
+      } catch (testErr) {
+        console.error(' [Main] Test execution failed:', testErr);
+        app.exit(1);
+        return;
+      }
+    }
 
     // Start Admin HTTP server
     console.log(' [Main] Starting Admin REST API Server...');
