@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { ContextMenu } from './ContextMenu';
+import { OpenFile } from '../types/appTypes';
 
 interface TopBarProps {
     activeSection: string;
-    files: any[]; // Ideally strict OpenFile type
+    files: OpenFile[];
     activeFilePath: string;
     setActiveFilePath: (path: string) => void;
     handleCloseFile: (e: React.MouseEvent, path: string) => void;
@@ -36,9 +37,9 @@ export function TopBar({
     setVimEnabled,
     onOpenSettings
 }: TopBarProps) {
-    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, file: any } | null>(null);
+    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, file: OpenFile } | null>(null);
 
-    const handleContextMenu = (e: React.MouseEvent, file: any) => {
+    const handleContextMenu = (e: React.MouseEvent, file: OpenFile) => {
         e.preventDefault();
         setContextMenu({ x: e.clientX, y: e.clientY, file });
     };

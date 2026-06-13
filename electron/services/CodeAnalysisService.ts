@@ -270,7 +270,7 @@ export class CodeAnalysisService {
 
         for (let i = startIdx; i < lines.length; i++) {
             const line = lines[i];
-            for (let char of line) {
+            for (const char of line) {
                 if (char === '{') {
                     braceCount++;
                     foundBrace = true;

@@ -1,9 +1,9 @@
 declare module 'prismjs' {
-    const Prism: any;
+    const Prism: unknown;
     export default Prism;
 }
 
 declare module 'prismjs/components/*' {
-    const value: any;
+    const value: unknown;
     export default value;
 }

@@ -60,7 +60,7 @@ export function VisualWorkflowEditor({ initialNodes, initialEdges, onSave }: Vis
 
     const addNode = (type: 'agent' | 'tool' | 'planner' | 'task' | 'openclaw' | 'codesearch' | 'verify') => {
         const id = `${type}-${nodes.length + 1}`;
-        let data: any = { label: `New ${type === 'openclaw' ? 'OpenClaw' : type}` };
+        const data: Record<string, unknown> = { label: `New ${type === 'openclaw' ? 'OpenClaw' : type}` };
 
         if (type === 'agent') data.prompt = 'System Prompt...';
         if (type === 'tool') data.description = 'Tool config...';

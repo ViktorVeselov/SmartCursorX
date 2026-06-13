@@ -4,10 +4,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 // import { store } from './store'
 import { dbService } from './db'
-import { IpcManager } from './ipcHandlers'
+import { registerAllHandlers } from './ipcHandlers'
+import type { IpcHandlerContext } from './ipcHandlers'
 import { adminApiService } from './services/AdminApiService'
 
 console.log(' [Main] Starting Electron Main Process...');
+
+// Suppress AI SDK warnings (Gemini structured output fallback, etc.)
+(globalThis as any).AI_SDK_LOG_WARNINGS = false;
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -171,7 +175,6 @@ app.whenReady().then(async () => {
       try {
         const testPath = path.join(process.cwd(), 'scripts/test-secure-store.js');
         const testUrl = pathToFileURL(testPath).href;
-        // @ts-ignore
         const { runTests } = await import(testUrl);
         const { secureStore } = await import('./secureStore');
         await runTests(secureStore, dbService);
@@ -188,16 +191,16 @@ app.whenReady().then(async () => {
     console.log(' [Main] Starting Admin REST API Server...');
     adminApiService.start();
 
-    // Initialize IPC Manager
-    const ipcManager = new IpcManager(native);
-    ipcManager.registerHandlers();
+    // Initialize IPC Handlers
+    const ipcContext: IpcHandlerContext = { mainWindow: null, native, ptyProcesses: new Map(), activeStreamAborted: false };
+    registerAllHandlers(ipcContext);
     console.log(' [Main] Handlers Registered');
 
     // Create Window
     createWindow();
 
     if (win) {
-      ipcManager.setWindow(win);
+      ipcContext.mainWindow = win;
     }
   } catch (err) {
     console.error(' [Main] Error during startup:', err);

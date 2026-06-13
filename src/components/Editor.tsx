@@ -1,12 +1,7 @@
 import { useRef, useEffect } from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
-
-// Monaco-vim types
-declare function initVimMode(
-  editor: monaco.editor.IStandaloneCodeEditor,
-  statusBarElement: HTMLElement
-): { dispose: () => void };
+import { assertNonNull } from '../helpers/invariant';
 
 interface CodeEditorProps {
   value: string;
@@ -72,6 +67,7 @@ export function CodeEditor({
 
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
+    assertNonNull(editor, 'editor in handleEditorMount');
 
     // Focus the editor
     editor.focus();

@@ -1,5 +1,6 @@
 import { dbService } from '../db';
 import { CodeAnalysisService } from './CodeAnalysisService';
+import { EmbeddingService } from './EmbeddingService';
 import console from 'console';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -28,10 +29,13 @@ export class ContextAssembler {
         taskId: number,
         recentMessages: Array<{ role: string; content: string }>,
         budget: ContextBudget = { taskContext: 3000, ragResults: 3000, codeSymbols: 3000, chatHistory: 3000, total: 12000 },
-        conversationId?: string
+        conversationId?: string,
+        passedWorkspacePath?: string
     ): Promise<AssembledContext> {
         console.assert(typeof taskId === 'number', 'Task ID is required');
         console.assert(Array.isArray(recentMessages), 'Messages must be a valid array');
+
+        const workspacePath = passedWorkspacePath || dbService.getWorkspacePathForTask(taskId) || undefined;
 
         if (conversationId) {
             let hash = 5381;
@@ -107,7 +111,7 @@ export class ContextAssembler {
             
             for (const file of uniquePaths) {
                 try {
-                    const absolutePath = this.resolveToAllowedRoot(file);
+                    const absolutePath = this.resolveToAllowedRoot(file, workspacePath);
                     if (!absolutePath || !fs.existsSync(absolutePath)) {
                         console.warn(`[ContextAssembler] AST Pruning: File ${file} not found in whitelisted roots. Skipping.`);
                         continue;
@@ -177,7 +181,6 @@ export class ContextAssembler {
         let ragBlock = '';
         const relevantChunks: string[] = [];
         try {
-            const { EmbeddingService } = require('./EmbeddingService');
             const queryText = `${activeTask.title} ${activeTask.description || ''}`;
             if (queryText.trim().length > 0) {
                 const results = await EmbeddingService.searchSimilarity(queryText, 3);
@@ -225,9 +228,11 @@ export class ContextAssembler {
         // Load Ground-Truth Architecture Blueprint (project-context.md)
         let blueprintBlock = '';
         try {
-            const blueprintPath = path.resolve(process.cwd(), '../memory/project-context.md');
-            if (fs.existsSync(blueprintPath)) {
-                blueprintBlock = `\n=== GROUND-TRUTH SYSTEM ARCHITECTURE BLUEPRINT ===\n${fs.readFileSync(blueprintPath, 'utf-8')}\n=== END BLUEPRINT ===\n`;
+            if (workspacePath) {
+                const blueprintPath = path.resolve(workspacePath, 'memory/project-context.md');
+                if (fs.existsSync(blueprintPath)) {
+                    blueprintBlock = `\n=== GROUND-TRUTH SYSTEM ARCHITECTURE BLUEPRINT ===\n${fs.readFileSync(blueprintPath, 'utf-8')}\n=== END BLUEPRINT ===\n`;
+                }
             }
         } catch (e) {
             console.warn('[ContextAssembler] Failed to read project-context.md blueprint:', e);
@@ -274,14 +279,17 @@ Execute the active task effectively using the predefined plan.`;
         return Math.ceil(text.length / 4);
     }
 
-    private static getWhitelistedRoots(): string[] {
-        const workspaceRoot = path.resolve(process.cwd());
-        const parentRoot = path.resolve(workspaceRoot, '..');
-        return [
-            workspaceRoot,
-            path.resolve(parentRoot, 'adk-python-community'),
-            path.resolve(parentRoot, 'google-sdk')
-        ];
+    private static getWhitelistedRoots(workspacePath?: string | null): string[] {
+        if (workspacePath && workspacePath.trim().length > 0) {
+            const workspaceRoot = path.resolve(workspacePath);
+            const parentRoot = path.resolve(workspaceRoot, '..');
+            return [
+                workspaceRoot,
+                path.resolve(parentRoot, 'adk-python-community'),
+                path.resolve(parentRoot, 'google-sdk')
+            ];
+        }
+        return [];
     }
 
     private static normalizePathForCompare(p: string): string {
@@ -292,8 +300,8 @@ Execute the active task effectively using the predefined plan.`;
         return resolved;
     }
 
-    private static resolveToAllowedRoot(relativePath: string): string | null {
-        const roots = this.getWhitelistedRoots();
+    private static resolveToAllowedRoot(relativePath: string, workspacePath?: string | null): string | null {
+        const roots = this.getWhitelistedRoots(workspacePath);
         for (const root of roots) {
             const resolvedPath = path.isAbsolute(relativePath)
                 ? relativePath

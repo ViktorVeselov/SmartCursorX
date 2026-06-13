@@ -1,0 +1,81 @@
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+}
+
+.main-content {
+  height: 100%;
+  width: 100%;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* Prevent overflow */
+}
+
+.editor-terminal-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  height: 100%;
+  /* Important for panel filling */
+}
+
+.editor-wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  height: 100%;
+}
+
+/* Editor Container (Monaco + Vim status) */
+.editor-container {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Platform specific adjustments for custom titlebars */
+.platform-mac .tab-bar {
+  padding-left: 70px; /* Leave space for macOS traffic light window controls */
+}
+
+.platform-win .top-bar-actions {
+  margin-right: 140px; /* Leave space for Windows native window controls overlay */
+}
+
+/* Resize Handles */
+.resize-handle-vertical {
+  width: 4px;
+  background-color: var(--bg-primary);
+  border-left: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  cursor: col-resize;
+  transition: background-color 0.2s;
+  flex-shrink: 0;
+}
+
+.resize-handle-vertical:hover,
+.resize-handle-vertical:active {
+  background-color: var(--accent-primary);
+}
+
+.resize-handle-horizontal {
+  height: 4px;
+  background-color: var(--bg-primary);
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  cursor: row-resize;
+  transition: background-color 0.2s;
+  flex-shrink: 0;
+}
+
+.resize-handle-horizontal:hover,
+.resize-handle-horizontal:active {
+  background-color: var(--accent-primary);
+}

@@ -4,7 +4,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'doc:generate', 'doc:get', 'verify:run', 'verify:get-rules', 'verify:add-rule',
   'verify:get-results', 'verify:human-review', 'rag:search', 'rag:index-content',
   'task:create', 'task:decompose', 'task:start', 'task:complete', 'task:fail',
-  'task:get-tree', 'task:assemble-context', 'code:get-symbols', 'code:find-references',
+  'task:get-tree', 'task:assemble-context', 'task:get-execution-details', 'code:get-symbols', 'code:find-references',
   'code:get-call-hierarchy', 'code:get-workspace-outline', 'native-search',
   'native-health-check', 'read-dir', 'read-file', 'write-file', 'delete-path',
   'rename-path', 'create-directory', 'resolve-path', 'dialog-open-folder',
@@ -18,7 +18,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'litellm:get-status', 'litellm:stop', 'litellm:start', 'term-init',
   'term-input', 'term-resize', 'term-close', 'vc-create-snapshot',
   'vc-get-snapshots', 'vc-restore-snapshot', 'git-status', 'git-branch',
-  'git-clone', 'git-diff', 'ai:save-config', 'ai:get-config', 'ai:get-models',
+  'git-clone', 'git-diff', 'ai:save-config', 'ai:get-config', 'ai:get-models', 'ai:get-zen-models-info',
   'get-general-settings', 'save-general-settings', 'openclaw:check-installed',
   'openclaw:get-status', 'openclaw:start-gateway', 'openclaw:stop-gateway',
   'openclaw:run-doctor', 'openclaw:approve-pairing', 'openclaw:run-agent',
@@ -30,12 +30,15 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
 
 const ALLOWED_SEND_CHANNELS = new Set([
   'ai:chat-start',
-  'ai:chat-abort'
+  'ai:chat-abort',
+  'ai:plan-start',
+  'renderer:log'
 ]);
 
 const ALLOWED_ON_CHANNELS = new Set([
   'terminal-incoming', 'terminal-exit', 'git-clone-progress', 'ai:chat-chunk',
-  'ai:chat-end', 'openclaw:agent-stream', 'openclaw:agent-complete', 'main-process-message'
+  'ai:chat-end', 'ai:plan-chunk', 'ai:plan-end',
+  'openclaw:agent-stream', 'openclaw:agent-complete', 'main-process-message'
 ]);
 
 // Map to track active subscription wrappers to ensure ipcRenderer.off can correctly unregister them
@@ -85,5 +88,20 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
       return Promise.reject(new Error(`[Preload Security] Blocked invoke on unauthorized IPC channel: ${channel}`));
     }
     return ipcRenderer.invoke(channel, ...args)
+  },
+  once(channel: string, listener: (...args: any[]) => void) {
+    if (!ALLOWED_ON_CHANNELS.has(channel)) {
+      console.warn(`[Preload Security] Blocked one-time listener registration on unauthorized IPC channel: ${channel}`);
+      return;
+    }
+    let subscription = subscriptionMap.get(listener);
+    if (!subscription) {
+      subscription = (_event: any, ...args: any[]) => {
+        subscriptionMap.delete(listener);
+        listener(...args);
+      };
+      subscriptionMap.set(listener, subscription);
+    }
+    ipcRenderer.once(channel, subscription);
   },
 })

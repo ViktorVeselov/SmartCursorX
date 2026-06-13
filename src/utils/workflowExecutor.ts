@@ -14,7 +14,7 @@ export interface WorkflowAction {
     actions?: WorkflowAction[];
 }
 
-export async function* executeWorkflow(nodes: Node[], edges: Edge[], initialContext: any): AsyncGenerator<WorkflowAction, void, any> {
+export async function* executeWorkflow(nodes: Node[], edges: Edge[], initialContext: Record<string, unknown>): AsyncGenerator<WorkflowAction, void, unknown> {
     const startNode = nodes.find(n => n.type === 'input' || n.data?.label?.toLowerCase().includes('start'));
 
     if (!startNode) {
@@ -34,7 +34,7 @@ export async function* executeWorkflow(nodes: Node[], edges: Edge[], initialCont
         const labels = frontier.map(n => n.data.label).join(', ');
         yield { type: 'log', message: `Executing Node(s): ${labels}` };
 
-        let responses: any[];
+        let responses: unknown[];
 
         if (frontier.length === 1) {
             const node = frontier[0];
@@ -78,7 +78,7 @@ export async function* executeWorkflow(nodes: Node[], edges: Edge[], initialCont
         }
 
         // Advance frontier to all outgoing nodes of current frontier
-        let nextFrontier: Node[] = [];
+        const nextFrontier: Node[] = [];
         for (let i = 0; i < frontier.length; i++) {
             const node = frontier[i];
             const resp = responses[i] !== undefined ? responses[i] : 'Task Completed';

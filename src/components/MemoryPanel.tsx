@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 interface Memory {
     id: number;
@@ -13,11 +13,7 @@ export function MemoryPanel() {
     const [activeType, setActiveType] = useState('project_context');
     const [loading, setLoading] = useState(false);
 
-    useEffect(() => {
-        loadMemories();
-    }, [activeType]);
-
-    const loadMemories = async () => {
+    const loadMemories = useCallback(async () => {
         setLoading(true);
         try {
             const data = await window.ipcRenderer.invoke('db-get-memories', activeType);
@@ -27,7 +23,11 @@ export function MemoryPanel() {
         } finally {
             setLoading(false);
         }
-    };
+    }, [activeType]);
+
+    useEffect(() => {
+        loadMemories();
+    }, [loadMemories]);
 
     const handleAdd = async () => {
         if (!newContent.trim()) return;

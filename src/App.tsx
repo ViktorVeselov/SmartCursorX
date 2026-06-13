@@ -1,36 +1,29 @@
 import { useState, useEffect, useRef } from 'react';
-import { DiffEditor } from '@monaco-editor/react';
 // Custom implementation to avoid build errors with 'react-resizable-panels'
-import { CodeEditor } from './components/Editor';
 import { ChatPanel, AppAgent, AppFlow, AppExecutionContext } from './components/ChatPanel';
 import { ErrorBoundary } from './ErrorBoundary';
-import { TerminalPanel } from './components/TerminalPanel';
+import { TerminalBar } from './components/TerminalBar';
 import { Sidebar } from './components/Sidebar';
 import { SearchPanel } from './components/SearchPanel';
 import { TopBar } from './components/TopBar';
 import { StatusBar } from './components/StatusBar';
 import { ActivityBar } from './components/ActivityBar';
 import { SettingsModal } from './components/SettingsModal';
-import './App.css';
+import './styles/theme.css';
+import './styles/layout.css';
+import './styles/components.css';
+import './styles/animations.css';
 
-import { VisualWorkflowEditor } from './components/VisualWorkflowEditor';
-import { InteractivePlanEditor } from './components/InteractivePlanEditor';
+import { ActiveFileEditor } from './components/ActiveFileEditor';
+import { NewFileDialog } from './components/NewFileDialog';
+import { NotificationToast } from './components/NotificationToast';
+import { isBinaryFile } from './utils/fileTypes';
 
-interface OpenFile {
-  path: string;
-  name: string;
-  content: string; // If flow, this stores description or raw JSON string
-  isDirty?: boolean;
-  type?: 'code' | 'flow' | 'plan' | 'diff';
-  originalContent?: string;
-  flowId?: number;
-  flowData?: {
-    nodes: any[];
-    edges: any[];
-  };
-}
+import { OpenFile } from './types/appTypes';
 
-
+import { openDiffFile, acceptDiffFile, rejectDiffFile, acceptFileProposal, rejectFileProposal } from './helpers/appDiff';
+import { useKeyboardShortcuts, useResizeHandlers } from './helpers/appKeyboard';
+import { checkArgs, assert, assertNonNull } from './helpers/invariant';
 
 function App() {
   const [files, setFiles] = useState<OpenFile[]>([]);
@@ -71,95 +64,25 @@ function App() {
           setAppFontSize(settings.fontSize);
           document.documentElement.style.setProperty('--editor-font-size', `${settings.fontSize}px`);
         }
+        if (settings.activeWorkspacePath) {
+          setRootPath(settings.activeWorkspacePath);
+        }
       }
     } catch (err) {
       console.error('Failed to load general settings:', err);
     }
   };
 
-  const handleOpenDiff = (filePath: string, originalContent: string, proposedContent: string) => {
-    const diffPath = `diff://${filePath}`;
-    const name = filePath.split(/[/\\]/).pop() || filePath;
-    const existing = files.find(f => f.path === diffPath);
-    if (existing) {
-      setActiveFilePath(diffPath);
-      return;
-    }
+  const handleOpenDiff = (filePath: string, originalContent: string, proposedContent: string) =>
+    openDiffFile(filePath, originalContent, proposedContent, setFiles, setActiveFilePath);
 
-    const newFile: OpenFile = {
-      path: diffPath,
-      name: `Diff: ${name}`,
-      content: proposedContent,
-      originalContent,
-      type: 'diff',
-      isDirty: false
-    };
-    setFiles(prev => [...prev, newFile]);
-    setActiveFilePath(diffPath);
-  };
+  const handleAcceptDiff = (diffFile: OpenFile) =>
+    acceptDiffFile(diffFile, setFiles, setActiveFilePath, showNotification);
 
-  const handleAcceptDiff = async (diffFile: OpenFile) => {
-    const actualPath = diffFile.path.substring(7);
-    try {
-      await window.ipcRenderer.invoke('write-file', actualPath, diffFile.content);
+  const handleRejectDiff = (diffFile: OpenFile) =>
+    rejectDiffFile(diffFile, setFiles, setActiveFilePath, showNotification);
 
-      setFiles(prevFiles => {
-        const filtered = prevFiles.filter(f => f.path !== diffFile.path);
-        
-        const updated = filtered.map(f => {
-          if (f.path === actualPath) {
-            return { ...f, content: diffFile.content, isDirty: false };
-          }
-          return f;
-        });
-
-        setActiveFilePath(prevActive => {
-          if (prevActive === diffFile.path) {
-            return actualPath;
-          }
-          return prevActive;
-        });
-
-        return updated;
-      });
-
-      showNotification(`Accepted changes for ${diffFile.name.replace('Diff: ', '')}`);
-
-      window.dispatchEvent(new CustomEvent('proposal-status-changed', {
-        detail: { filePath: actualPath, status: 'accepted' }
-      }));
-    } catch (err) {
-      console.error('Failed to accept changes:', err);
-      alert('Failed to save changes to disk');
-    }
-  };
-
-  const handleRejectDiff = (diffFile: OpenFile) => {
-    const actualPath = diffFile.path.substring(7);
-    setFiles(prevFiles => {
-      const filtered = prevFiles.filter(f => f.path !== diffFile.path);
-      
-      setActiveFilePath(prevActive => {
-        if (prevActive === diffFile.path) {
-          return filtered.length > 0 ? filtered[filtered.length - 1].path : '';
-        }
-        return prevActive;
-      });
-
-      return filtered;
-    });
-
-    showNotification(`Rejected changes for ${diffFile.name.replace('Diff: ', '')}`);
-
-    window.dispatchEvent(new CustomEvent('proposal-status-changed', {
-      detail: { filePath: actualPath, status: 'rejected' }
-    }));
-  };
-
-  const handleOpenDiffRef = useRef(handleOpenDiff);
-  useEffect(() => {
-    handleOpenDiffRef.current = handleOpenDiff;
-  }, []);
+  const activeChatTaskIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     loadAppSettings();
@@ -179,6 +102,9 @@ function App() {
         if (!isNaN(taskId)) {
           handleOpenPlan(taskId, `Task #${taskId}`);
         }
+      } else if (filePath.endsWith('implementation_plan.md')) {
+        const taskId = activeChatTaskIdRef.current || 1;
+        handleOpenPlan(taskId, `Task #${taskId}`);
       } else if (filePath.startsWith('diff://')) {
         const actualPath = filePath.substring(7);
         const proposedContent = customEvent.detail.proposedContent || '';
@@ -189,11 +115,15 @@ function App() {
           } catch (readErr) {
             originalContent = '';
           }
-          handleOpenDiffRef.current(actualPath, originalContent, proposedContent);
+          handleOpenDiff(actualPath, originalContent, proposedContent);
         } catch (err) {
           console.error('Failed to open diff view:', err);
         }
       } else {
+        if (isBinaryFile(filePath)) {
+          showNotification(`Cannot read "${filePath.split(/[/\\]/).pop()}" â€” this model does not support image input`);
+          return;
+        }
         try {
           const line = customEvent.detail.line;
           const content = await window.ipcRenderer.invoke('read-file', filePath);
@@ -203,65 +133,16 @@ function App() {
         }
       }
     };
-    const handleAcceptProposal = async (e: Event) => {
+    const handleAcceptProposal = (e: Event) => {
       const customEvent = e as CustomEvent;
       const { filePath, proposedContent } = customEvent.detail;
-      try {
-        await window.ipcRenderer.invoke('write-file', filePath, proposedContent);
-
-        setFiles(prevFiles => {
-          const diffPath = `diff://${filePath}`;
-          const filtered = prevFiles.filter(f => f.path !== diffPath);
-          const updated = filtered.map(f => {
-            if (f.path === filePath) {
-              return { ...f, content: proposedContent, isDirty: false };
-            }
-            return f;
-          });
-
-          setActiveFilePath(prevActive => {
-            if (prevActive === diffPath) {
-              return filePath;
-            }
-            return prevActive;
-          });
-
-          return updated;
-        });
-
-        showNotification(`Accepted proposed changes for ${filePath.split(/[/\\]/).pop()}`);
-
-        window.dispatchEvent(new CustomEvent('proposal-status-changed', {
-          detail: { filePath, status: 'accepted' }
-        }));
-      } catch (err) {
-        console.error('Failed to accept proposal:', err);
-      }
+      acceptFileProposal(filePath, proposedContent, setFiles, setActiveFilePath, showNotification);
     };
 
     const handleRejectProposal = (e: Event) => {
       const customEvent = e as CustomEvent;
       const { filePath } = customEvent.detail;
-      const diffPath = `diff://${filePath}`;
-
-      setFiles(prevFiles => {
-        const filtered = prevFiles.filter(f => f.path !== diffPath);
-
-        setActiveFilePath(prevActive => {
-          if (prevActive === diffPath) {
-            return filtered.length > 0 ? filtered[filtered.length - 1].path : '';
-          }
-          return prevActive;
-        });
-
-        return filtered;
-      });
-
-      showNotification(`Rejected proposed changes for ${filePath.split(/[/\\]/).pop()}`);
-
-      window.dispatchEvent(new CustomEvent('proposal-status-changed', {
-        detail: { filePath, status: 'rejected' }
-      }));
+      rejectFileProposal(filePath, setFiles, setActiveFilePath, showNotification);
     };
 
     window.addEventListener('open-workspace-file', handleOpenWorkspaceFile);
@@ -272,18 +153,23 @@ function App() {
       window.removeEventListener('accept-file-proposal', handleAcceptProposal);
       window.removeEventListener('reject-file-proposal', handleRejectProposal);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleRunFlow = (agent: AppAgent, flow: AppFlow) => {
-    console.assert(agent !== null && typeof agent === 'object', 'Agent must be an object');
-    console.assert(flow !== null && typeof flow === 'object', 'Flow must be an object');
+    assert(agent !== null && typeof agent === 'object', 'Agent must be an object');
+    assert(flow !== null && typeof flow === 'object', 'Flow must be an object');
     setExecutionContext({ agent, flow });
     setChatOpen(true);
   };
 
-  const handleOpenFlow = (flow: any) => {
+  const handleOpenFlow = (flow: Record<string, unknown>) => {
+    const flowId = String(flow.id ?? '');
+    const flowName = String(flow.name ?? '');
+    const flowDescription = String(flow.description ?? '');
+    const flowSteps = flow.steps ?? { nodes: [], edges: [] };
     // Check if already open
-    const path = `flow://${flow.id}`;
+    const path = `flow://${flowId}`;
     const existing = files.find(f => f.path === path);
     if (existing) {
       setActiveFilePath(path);
@@ -293,11 +179,11 @@ function App() {
 
     const newFile: OpenFile = {
       path,
-      name: flow.name,
-      content: flow.description || '',
+      name: flowName,
+      content: flowDescription,
       type: 'flow',
-      flowId: flow.id,
-      flowData: flow.steps || { nodes: [], edges: [] },
+      flowId: Number(flowId),
+      flowData: flowSteps as { nodes: unknown[]; edges: unknown[] },
       isDirty: false
     };
     setFiles([...files, newFile]);
@@ -305,6 +191,8 @@ function App() {
   };
 
   const handleOpenPlan = (taskId: number, taskTitle: string) => {
+    checkArgs(typeof taskId === 'number' && taskId > 0, 'taskId must be a positive number');
+    checkArgs(typeof taskTitle === 'string', 'taskTitle must be a string');
     const path = `plan://${taskId}`;
     const existing = files.find(f => f.path === path);
     if (existing) {
@@ -330,7 +218,10 @@ function App() {
   // Derived active file
   const activeFile = files.find(f => f.path === activeFilePath) || files[0];
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleFileSelect = (content: string, path: string, line?: number) => {
+    checkArgs(typeof path === 'string' && path.length > 0, 'path must be a non-empty string');
+    checkArgs(typeof content === 'string', 'content must be a string');
     const existing = files.find(f => f.path === path);
     if (existing) {
       setActiveFilePath(path);
@@ -382,7 +273,7 @@ function App() {
     }
   }, [newFileDialogOpen, newFileName, newFileDir]);
 
-  const handleCreateFile = (targetDir?: any) => {
+  const handleCreateFile = (targetDir?: string) => {
     // Fix: Ensure targetDir is a string, as this might be called with an Event object
     const dir = (typeof targetDir === 'string') ? targetDir : '';
     setNewFileName('');
@@ -449,29 +340,6 @@ function App() {
     setNewFileDir('');
   };
 
-  const getLanguageFromExtension = (filename: string): string => {
-    const ext = filename.split('.').pop()?.toLowerCase();
-    const langMap: Record<string, string> = {
-      ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
-      py: 'python', rb: 'ruby', rs: 'rust', go: 'go', java: 'java',
-      c: 'c', cpp: 'cpp', cs: 'csharp', php: 'php', swift: 'swift',
-      html: 'html', css: 'css', scss: 'scss', json: 'json', yaml: 'yaml',
-      md: 'markdown', sql: 'sql', sh: 'shell', ps1: 'powershell'
-    };
-    return langMap[ext || ''] || 'plaintext';
-  };
-
-  const getFileSettings = (filename: string) => {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    const language = getLanguageFromExtension(filename);
-    let tabSize = 4;
-    // 2-spaces standard for these languages
-    if (['js', 'jsx', 'ts', 'tsx', 'json', 'html', 'css', 'scss', 'yaml', 'yml', 'md'].includes(ext)) {
-      tabSize = 2;
-    }
-    return { language, tabSize };
-  };
-
   const showNotification = (msg: string) => {
     setNotification(msg);
     setTimeout(() => setNotification(null), 3000);
@@ -482,6 +350,7 @@ function App() {
       const path = specifiedPath || await window.ipcRenderer.invoke('dialog-open-folder');
       if (path) {
         setRootPath(path);
+        await window.ipcRenderer.invoke('save-general-settings', { activeWorkspacePath: path });
         setFiles([]); // Clear open files
         setActiveFilePath('');
         showNotification(`Opened folder: ${path}`);
@@ -516,6 +385,7 @@ function App() {
 
   // Handle applying code from AI chat to editor
   const handleApplyCode = (code: string) => {
+    checkArgs(typeof code === 'string', 'code must be a string');
     if (!activeFile) {
       // Create new file with the code
       const newFile: OpenFile = {
@@ -538,6 +408,7 @@ function App() {
 
   const handleSaveAs = async () => {
     if (!activeFile) return;
+    assertNonNull(activeFile, 'activeFile in handleSaveAs');
     try {
       const filePath = await window.ipcRenderer.invoke('dialog-save-file', activeFile.name);
       if (!filePath) return;
@@ -556,8 +427,10 @@ function App() {
     }
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleSave = async () => {
     if (!activeFile || !activeFile.isDirty) return;
+    assertNonNull(activeFile, 'activeFile in handleSave');
 
     if (activeFile.path.startsWith('Untitled')) {
       await handleSaveAs();
@@ -581,42 +454,8 @@ function App() {
     handleSaveRef.current = handleSave;
   }, [handleSave]);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-        e.preventDefault();
-        handleSaveRef.current();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-
-    // Global Mouse Up for resizing
-    const handleMouseUp = () => {
-      sidebarResizing.current = false;
-      terminalResizing.current = false;
-      document.body.style.cursor = 'default';
-      document.body.style.userSelect = 'auto'; // Re-enable text selection
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (sidebarResizing.current) {
-        setSidebarWidth(Math.max(100, Math.min(1400, e.clientX)));
-      }
-      if (terminalResizing.current) {
-        const newHeight = window.innerHeight - e.clientY;
-        setTerminalHeight(Math.max(50, Math.min(window.innerHeight - 100, newHeight)));
-      }
-    };
-
-    window.addEventListener('mouseup', handleMouseUp);
-    window.addEventListener('mousemove', handleMouseMove);
-
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('mouseup', handleMouseUp);
-      window.removeEventListener('mousemove', handleMouseMove);
-    };
-  }, []);
+  useKeyboardShortcuts(handleSaveRef);
+  useResizeHandlers(sidebarResizing, terminalResizing, setSidebarWidth, setTerminalHeight);
 
   const startResizeSidebar = () => {
     sidebarResizing.current = true;
@@ -701,149 +540,25 @@ function App() {
                 </div>
               ) : (
                 <div className="editor-wrapper" style={{ height: '100%', width: '100%', flex: 1 }}>
-                  {activeFile ? (
-                    activeFile.type === 'flow' ? (
-                      <VisualWorkflowEditor
-                        initialNodes={activeFile.flowData?.nodes}
-                        initialEdges={activeFile.flowData?.edges}
-                        onSave={(nodes, edges) => {
-                          // Update local file state
-                          const newData = { nodes, edges };
-                          setFiles(files.map(f => f.path === activeFilePath ? { ...f, flowData: newData, isDirty: true } : f));
-
-                          // Auto-save to DB?
-                          // Needed: A way to save back. For now, rely on Ctrl+S or Auto.
-                          // We'll implement handleSave for flows next.
-                        }}
-                      />
-                    ) : activeFile.type === 'plan' ? (
-                      <InteractivePlanEditor
-                        taskId={activeFile.flowId || 0}
-                      />
-                    ) : activeFile.type === 'diff' ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', background: 'var(--bg-secondary)' }}>
-                        <div style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          padding: '8px 16px',
-                          background: 'rgba(255,255,255,0.02)',
-                          borderBottom: '1px solid var(--border-subtle)',
-                          flexShrink: 0
-                        }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span className="codicon codicon-diff" style={{ color: 'var(--accent-primary)', fontSize: 16 }} />
-                            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Comparing Changes: {activeFile.name.replace('Diff: ', '')}</span>
-                            <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontFamily: 'monospace' }}>({activeFile.path.substring(7)})</span>
-                          </div>
-                          <div style={{ display: 'flex', gap: 10 }}>
-                            <button
-                              onClick={() => handleRejectDiff(activeFile)}
-                              style={{
-                                background: 'rgba(244, 63, 94, 0.1)',
-                                border: '1px solid rgba(244, 63, 94, 0.2)',
-                                color: '#f43f5e',
-                                padding: '4px 12px',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                fontSize: '12px',
-                                fontWeight: 500,
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 6,
-                                transition: 'all 0.2s'
-                              }}
-                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(244, 63, 94, 0.2)'}
-                              onMouseOut={(e) => e.currentTarget.style.background = 'rgba(244, 63, 94, 0.1)'}
-                            >
-                              <span className="codicon codicon-close" style={{ fontSize: 12 }} /> Discard
-                            </button>
-                            <button
-                              onClick={() => handleAcceptDiff(activeFile)}
-                              style={{
-                                background: 'rgba(52, 211, 153, 0.15)',
-                                border: '1px solid rgba(52, 211, 153, 0.3)',
-                                color: '#34d399',
-                                padding: '4px 12px',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                fontSize: '12px',
-                                fontWeight: 500,
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 6,
-                                transition: 'all 0.2s'
-                              }}
-                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(52, 211, 153, 0.25)'}
-                              onMouseOut={(e) => e.currentTarget.style.background = 'rgba(52, 211, 153, 0.15)'}
-                            >
-                              <span className="codicon codicon-check" style={{ fontSize: 12 }} /> Accept Changes
-                            </button>
-                          </div>
-                        </div>
-                        <div style={{ flex: 1, minHeight: 0 }}>
-                          <DiffEditor
-                            height="100%"
-                            language={getFileSettings(activeFile.name.replace('Diff: ', '')).language}
-                            original={activeFile.originalContent || ''}
-                            modified={activeFile.content}
-                            theme={appTheme === 'light' ? 'light' : 'vs-dark'}
-                            options={{
-                              readOnly: true,
-                              fontSize: appFontSize,
-                              renderSideBySide: true,
-                              minimap: { enabled: false },
-                              scrollBeyondLastLine: false,
-                              automaticLayout: true
-                            }}
-                          />
-                        </div>
-                      </div>
-                    ) : activeFile.name.endsWith('.html') ? (
-                      <iframe
-                        srcDoc={activeFile.content}
-                        style={{ width: '100%', height: '100%', border: 'none', background: '#1e1e1e' }}
-                        title={activeFile.name}
-                        sandbox="allow-scripts allow-same-origin"
-                      />
-                    ) : (
-                      <CodeEditor
-                        value={activeFile.content}
-                        onChange={handleContentChange}
-                        language={getFileSettings(activeFile.name).language}
-                        vimEnabled={vimEnabled}
-                        targetLine={editorTargetLine}
-                        highlightActive={!!symbolSearchQuery}
-                        options={{
-                          tabSize: getFileSettings(activeFile.name).tabSize,
-                          insertSpaces: true,
-                          fontSize: appFontSize,
-                          theme: appTheme === 'light' ? 'light' : 'vs-dark'
-                        }}
-                      />
-                    )
-                  ) : (
-                    <div className="empty-state">
-                      <p>No file open. Click + or select a file from sidebar.</p>
-                    </div>
-                  )}
+                  <ActiveFileEditor
+                    activeFile={activeFile}
+                    files={files}
+                    setFiles={setFiles}
+                    activeFilePath={activeFilePath}
+                    vimEnabled={vimEnabled}
+                    editorTargetLine={editorTargetLine}
+                    symbolSearchQuery={symbolSearchQuery}
+                    appTheme={appTheme}
+                    appFontSize={appFontSize}
+                    onAcceptDiff={handleAcceptDiff}
+                    onRejectDiff={handleRejectDiff}
+                    onContentChange={handleContentChange}
+                  />
                 </div>
               )}
             </div>
 
-            {terminalOpen && (
-              <>
-                {/* Resizer */}
-                <div
-                  className="resize-handle-horizontal"
-                  onMouseDown={startResizeTerminal}
-                  style={{ height: 4, cursor: 'row-resize', background: '#333', flexShrink: 0 }}
-                />
-                <div style={{ height: terminalHeight, position: 'relative', flexShrink: 0 }}>
-                  <TerminalPanel isOpen={terminalOpen} height="100%" />
-                </div>
-              </>
-            )}
+            <TerminalBar isOpen={terminalOpen} height={terminalHeight} onStartResize={startResizeTerminal} />
           </div>
 
           {/* Chat Panel - Nesting here inside the flex-row under TopBar to respect layout boundaries */}
@@ -856,6 +571,10 @@ function App() {
                 executionContext={executionContext}
                 settingsSavedTrigger={settingsSavedTrigger}
                 onOpenPlan={handleOpenPlan}
+                onActiveTaskIdChange={(taskId) => {
+                  activeChatTaskIdRef.current = taskId;
+                }}
+                rootPath={rootPath}
               />
             </ErrorBoundary>
           )}
@@ -864,73 +583,22 @@ function App() {
         <StatusBar vimEnabled={vimEnabled} />
       </div>
 
-      {/* New File Dialog */}
-      {newFileDialogOpen && (
-        <div className="modal-overlay" onClick={() => setNewFileDialogOpen(false)}>
-          <div className="new-file-dialog" onClick={e => e.stopPropagation()}>
-            <h3>New File</h3>
-            <div className="directory-hint" style={{ marginBottom: 12, fontSize: 12, color: 'var(--text-secondary)' }}>
-              <div style={{ marginBottom: 4 }}>Creating in:</div>
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                background: 'rgba(0,0,0,0.2)',
-                padding: '6px 8px',
-                borderRadius: 4,
-                overflow: 'hidden'
-              }}>
-                <span style={{
-                  color: 'var(--text-primary)',
-                  fontFamily: 'monospace',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  flex: 1
-                }}>
-                  {previewPath || '...'}
-                </span>
-                <button
-                  onClick={() => {
-                    if (previewPath) {
-                      navigator.clipboard.writeText(previewPath);
-                      showNotification('Absolute path copied!');
-                    }
-                  }}
-                  title="Copy full path"
-                  style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-secondary)' }}
-                >
-                  <span className="codicon codicon-copy" />
-                </button>
-              </div>
-            </div>
-            <input
-              type="text"
-              placeholder="filename.ts"
-              value={newFileName}
-              onChange={e => setNewFileName(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') handleConfirmNewFile();
-                if (e.key === 'Escape') setNewFileDialogOpen(false);
-              }}
-              autoFocus
-            />
-            <div className="language-hint">
-              Language: {getLanguageFromExtension(newFileName || 'file.txt')}
-            </div>
-            <div className="dialog-actions">
-              <button onClick={() => setNewFileDialogOpen(false)}>Cancel</button>
-              <button className="primary" onClick={handleConfirmNewFile}>Create</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <NewFileDialog
+        isOpen={newFileDialogOpen}
+        fileName={newFileName}
+        onFileNameChange={setNewFileName}
+        previewPath={previewPath}
+        onConfirm={handleConfirmNewFile}
+        onClose={() => setNewFileDialogOpen(false)}
+        onCopyPath={(path) => {
+          if (path) {
+            navigator.clipboard.writeText(path);
+            showNotification('Absolute path copied!');
+          }
+        }}
+      />
 
-      {notification && (
-        <div className="notification-toast">
-          <span className="codicon codicon-check" style={{ marginRight: 8 }} /> {notification}
-        </div>
-      )}
+      <NotificationToast message={notification} />
 
       <SettingsModal
         isOpen={settingsOpen}
