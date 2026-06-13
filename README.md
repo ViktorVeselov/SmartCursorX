@@ -12,7 +12,7 @@ Visit our live Documentation and Download Center to get the newest setup package
 
 ### 🔗 **[Launch SmartCursorX Download Center](https://ViktorVeselov.github.io/SmartCursorX/)**
 
-* **Windows Installer:** Standalone NSIS installer package (`SmartCursorX-Windows-0.0.1-alpha-Setup.exe`)
+* **Windows Installer:** Standalone NSIS installer package (`SmartCursorX-Windows-0.0.3-alpha-Setup.exe`)
 * **Security Checked:** 100% Passed pre-flight deterministic secrets scan (0 credentials/keys found in the source tree).
 
 ---
