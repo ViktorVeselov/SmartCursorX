@@ -12,9 +12,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.82",
+    "@ai-sdk/openai": "^3.0.69",
+    "@ai-sdk/openai-compatible": "^2.0.48",
     "@monaco-editor/react": "^4.6.0",
     "@vscode/codicons": "^0.0.44",
     "@xterm/addon-fit": "^0.11.0",
+    "ai": "^6.0.200",
     "better-sqlite3": "^12.6.2",
     "chokidar": "^3.6.0",
     "electron-store": "^11.0.2",
@@ -23,7 +27,9 @@
     "framer-motion": "^11.0.0",
     "monaco-vim": "^0.4.1",
     "node-pty": "^1.1.0",
+    "ollama-ai-provider": "^1.2.0",
     "openai": "^6.16.0",
+    "prismjs": "^1.29.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-resizable-panels": "^4.4.1",
@@ -31,7 +37,7 @@
     "sql.js": "^1.10.0",
     "sqlite-vec": "^0.1.9",
     "xterm": "^5.3.0",
-    "prismjs": "^1.29.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/react": "^18.2.64",

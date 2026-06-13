@@ -28,14 +28,14 @@ export const RulesModal: React.FC<{
     if (!file) return;
     try {
       // In Electron renderer, the file path is available via (file as any).path
-      const filePath = (file as any).path as string;
-      const content: string = await (window as any).ipcRenderer.invoke('read-file', filePath);
+      const filePath = (file as unknown as { path: string }).path;
+      const content: string = await window.ipcRenderer.invoke('read-file', filePath);
       const parsed = JSON.parse(content);
-      const imported: Rule[] = (Array.isArray(parsed) ? parsed : []).map((r: any, idx: number) => {
+      const imported: Rule[] = (Array.isArray(parsed) ? parsed : []).map((r: Record<string, unknown>, idx: number) => {
         if (typeof r === 'string') {
           return { id: `imported-${idx}-${Date.now()}`, content: r } as Rule;
         }
-        return { id: r.id || `imported-${idx}-${Date.now()}`, content: r.content || '' } as Rule;
+        return { id: (r.id as string) || `imported-${idx}-${Date.now()}`, content: (r.content as string) || '' } as Rule;
       });
       setRules(prev => [...prev, ...imported]);
     } catch (err) {

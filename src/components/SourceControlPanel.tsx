@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { VersionsPanel } from './VersionsPanel';
 
 interface SourceControlPanelProps {
@@ -18,13 +18,7 @@ export function SourceControlPanel({ rootPath }: SourceControlPanelProps) {
     const [diffContent, setDiffContent] = useState('');
     const [refreshing, setRefreshing] = useState(false);
 
-    useEffect(() => {
-        if (activeTab === 'git') {
-            loadGitInfo();
-        }
-    }, [activeTab, rootPath]);
-
-    const loadGitInfo = async () => {
+    const loadGitInfo = useCallback(async () => {
         setRefreshing(true);
         try {
             const b = await window.ipcRenderer.invoke('git-branch', rootPath);
@@ -37,7 +31,13 @@ export function SourceControlPanel({ rootPath }: SourceControlPanelProps) {
         } finally {
             setRefreshing(false);
         }
-    };
+    }, [rootPath]);
+
+    useEffect(() => {
+        if (activeTab === 'git') {
+            loadGitInfo();
+        }
+    }, [activeTab, loadGitInfo]);
 
     const handleFileClick = async (file: string) => {
         setSelectedFile(file);

@@ -47,16 +47,15 @@ All active automated gates, LLM judges, and human review steps successfully veri
         // Synthesize a beautiful description using LLM if available
         if (aiService.isActive()) {
             try {
-                const provider = aiService.getProvider();
                 const prompt = `Rewrite and polish the following task details into a professional technical documentation log. Ensure a high-reliability professional tone.
 
 ${docContent}`;
-                const polished = await provider.chat([
+                const polished = await aiService.chat([
                     { role: 'user', content: prompt }
-                ], { temperature: 0.2 });
+                ], { temperature: 0.2 }) as import('./AIService').ChatResponse;
 
-                if (typeof polished === 'string' && polished.trim().length > 0) {
-                    docContent = polished;
+                if (polished.text.trim().length > 0) {
+                    docContent = polished.text;
                 }
             } catch (e) {
                 console.error('[DocumentationService] LLM polishing failed, using raw outline:', e);

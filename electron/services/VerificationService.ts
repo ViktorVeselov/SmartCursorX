@@ -119,18 +119,26 @@ export class VerificationService {
             } else if (rule.rule_type === 'llm_judge') {
                 if (aiService.isActive()) {
                     try {
-                        const provider = aiService.getProvider();
                         const prompt = `Rate the following content on a scale of 0 to 1 based on the rubric: "${rule.config.rubric}".
 Respond with a JSON structure containing: {"score": 0.8, "explanation": "reasons..."}.
 
 Content to verify:
 "${output.content}"`;
 
-                        const response = await provider.chat([
+                        const response = await aiService.chat([
                             { role: 'user', content: prompt }
-                        ], { temperature: 0.0 });
+                        ], { temperature: 0.0, responseSchema: {
+                            type: 'object',
+                            title: 'VerificationScore',
+                            properties: {
+                                score: { type: 'number', minimum: 0, maximum: 1 },
+                                explanation: { type: 'string' }
+                            },
+                            required: ['score', 'explanation'],
+                            additionalProperties: false
+                        } }) as import('./AIService').ChatResponse;
 
-                        const data = JSON.parse(typeof response === 'string' ? response : '{"score": 0, "explanation": "error"}');
+                        const data = JSON.parse(response.text);
                         score = Number(data.score || 0.0);
                         details = data.explanation || '';
                         result = score >= (rule.config.pass_threshold || 0.8) ? 'passed' : 'failed';

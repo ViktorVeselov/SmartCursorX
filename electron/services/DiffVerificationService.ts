@@ -162,21 +162,19 @@ export class DiffVerificationService {
         });
     }
 
-    private static runPythonCheck(cwd: string, files: string[]): Promise<{ success: boolean; output: string }> {
-        return new Promise(async (resolve) => {
-            const relativeFiles = files.map(f => path.relative(cwd, f));
-            
-            // Attempt with 'python' command first
-            let result = await this.executePythonCommand('python', relativeFiles, cwd);
-            
-            // Fallback to 'python3' if 'python' command fails with execution spawn error
-            if (!result.success && result.output.includes('Process execution error')) {
-                console.log('[DiffVerificationService] "python" command unavailable. Retrying with "python3"...');
-                result = await this.executePythonCommand('python3', relativeFiles, cwd);
-            }
-            
-            resolve(result);
-        });
+    private static async runPythonCheck(cwd: string, files: string[]): Promise<{ success: boolean; output: string }> {
+        const relativeFiles = files.map(f => path.relative(cwd, f));
+        
+        // Attempt with 'python' command first
+        let result = await this.executePythonCommand('python', relativeFiles, cwd);
+        
+        // Fallback to 'python3' if 'python' command fails with execution spawn error
+        if (!result.success && result.output.includes('Process execution error')) {
+            console.log('[DiffVerificationService] "python" command unavailable. Retrying with "python3"...');
+            result = await this.executePythonCommand('python3', relativeFiles, cwd);
+        }
+        
+        return result;
     }
 
     private static executePythonCommand(command: string, args: string[], cwd: string): Promise<{ success: boolean; output: string }> {

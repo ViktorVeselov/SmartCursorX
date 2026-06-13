@@ -16,14 +16,15 @@ interface SidebarProps {
     onCreateFile: (path?: string) => void;
     rootPath?: string;
     onOpenFolder?: () => void;
-    onRunFlow?: (agent: any, flow: any) => void;
-    onOpenFlow?: (flow: any) => void;
+    onRunFlow?: (agent: { id: number; name: string; system_prompt?: string }, flow: { id: number; name: string; description?: string; steps?: unknown }) => void;
+    onOpenFlow?: (flow: { id: number; name: string; description?: string; steps?: unknown }) => void;
     onOpenPlan?: (taskId: number, taskTitle: string) => void;
     width?: number;
     symbolSearchQuery: string;
     setSymbolSearchQuery: (q: string) => void;
 }
 
+// eslint-disable-next-line complexity
 export function Sidebar({ isOpen, onToggle, activeSection, onFileSelect, onCreateFile, rootPath, onOpenFolder, onRunFlow, onOpenFlow, onOpenPlan, width = 260, symbolSearchQuery, setSymbolSearchQuery }: SidebarProps) {
     const handleNavigate = async (filePath: string, line?: number) => {
         try {

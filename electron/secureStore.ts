@@ -36,6 +36,7 @@ interface SecureStoreSchema {
     vertexLocation?: string;
     azureApiBase?: string;
     azureApiVersion?: string;
+    activeWorkspacePath?: string;
     
     windowBounds?: { width: number; height: number };
 }
@@ -58,7 +59,8 @@ const store = new Store<SecureStoreSchema>({
         vertexProject: '',
         vertexLocation: 'us-central1',
         azureApiBase: '',
-        azureApiVersion: '2024-02-01'
+        azureApiVersion: '2024-02-01',
+        activeWorkspacePath: ''
     }
 });
 
@@ -258,6 +260,14 @@ export const secureStore = {
     setWindowBounds(bounds: { width: number; height: number }): void {
         console.assert(bounds && typeof bounds.width === 'number', 'Window bounds must be valid');
         store.set('windowBounds', bounds);
+    },
+
+    getActiveWorkspacePath(): string {
+        return store.get('activeWorkspacePath') || '';
+    },
+    setActiveWorkspacePath(pathStr: string): void {
+        console.assert(typeof pathStr === 'string', 'Workspace path must be a string');
+        store.set('activeWorkspacePath', pathStr);
     },
 
     setCustomProviderKey(providerId: string, key: string): void {

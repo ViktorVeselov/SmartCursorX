@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 interface SymbolInfo {
     name: string;
@@ -30,8 +30,9 @@ interface CodeNavigatorPanelProps {
     onNavigate?: (filePath: string, line: number) => void;
 }
 
+// eslint-disable-next-line complexity
 export function CodeNavigatorPanel({ rootPath = '.', onNavigate }: CodeNavigatorPanelProps) {
-    const [workspaceOutline, setWorkspaceOutline] = useState<Array<{ filePath: string; outline: any }>>([]);
+    const [workspaceOutline, setWorkspaceOutline] = useState<Array<{ filePath: string; outline: Record<string, unknown> }>>([]);
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedFile, setSelectedFile] = useState<string | null>(null);
     const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
@@ -44,11 +45,7 @@ export function CodeNavigatorPanel({ rootPath = '.', onNavigate }: CodeNavigator
     const [activeTab, setActiveTab] = useState<'symbols' | 'references' | 'calls'>('symbols');
     const [isLoading, setIsLoading] = useState(false);
 
-    useEffect(() => {
-        loadWorkspaceOutline();
-    }, [rootPath]);
-
-    const loadWorkspaceOutline = async () => {
+    const loadWorkspaceOutline = useCallback(async () => {
         setIsLoading(true);
         try {
             const data = await window.ipcRenderer.invoke('code:get-workspace-outline', rootPath);
@@ -58,7 +55,11 @@ export function CodeNavigatorPanel({ rootPath = '.', onNavigate }: CodeNavigator
         } finally {
             setIsLoading(false);
         }
-    };
+    }, [rootPath]);
+
+    useEffect(() => {
+        loadWorkspaceOutline();
+    }, [loadWorkspaceOutline]);
 
     const handleFileSelect = async (filePath: string) => {
         setSelectedFile(filePath);

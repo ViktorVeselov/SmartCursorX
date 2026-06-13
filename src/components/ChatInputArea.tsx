@@ -1,0 +1,281 @@
+import { useRef, useEffect } from 'react';
+import { ChatPlusMenu } from './ChatPlusMenu';
+import { ModelDropdown } from './ModelDropdown';
+import { DollarIcon } from './DollarIcon';
+import { EffortLevelSelector } from './EffortLevelSelector';
+
+export interface ChatInputAreaProps {
+    input: string;
+    setInput: React.Dispatch<React.SetStateAction<string>>;
+    isLoading: boolean;
+    isPlanModifying: boolean;
+    isPlanModeActive: boolean;
+    attachedFile: { name: string; path: string; content: string } | null;
+    activeModel: string;
+    activeProvider: string;
+    customModels: Record<string, unknown>[];
+    availableModels: string[];
+    showModelDropdown: boolean;
+    setShowModelDropdown: React.Dispatch<React.SetStateAction<boolean>>;
+    inlineModelInput: string;
+    setInlineModelInput: React.Dispatch<React.SetStateAction<string>>;
+    setActiveModel: React.Dispatch<React.SetStateAction<string>>;
+    setCustomModels: React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>;
+    setAvailableModels: React.Dispatch<React.SetStateAction<string[]>>;
+    executionMode: 'fast' | 'think';
+    setExecutionMode: React.Dispatch<React.SetStateAction<'fast' | 'think'>>;
+    effortLevel: 'default' | 'low' | 'medium' | 'high';
+    setEffortLevel: React.Dispatch<React.SetStateAction<'default' | 'low' | 'medium' | 'high'>>;
+    showPlusMenu: boolean;
+    togglePlusMenu: () => void;
+    dbAgents: { id: number; name: string; system_prompt: string }[];
+    flows: { id: number; name: string; description: string; steps: unknown; agent_id: number }[];
+    showAgentSubmenu: boolean;
+    setShowAgentSubmenu: React.Dispatch<React.SetStateAction<boolean>>;
+    showWorkflowSubmenu: boolean;
+    setShowWorkflowSubmenu: React.Dispatch<React.SetStateAction<boolean>>;
+    setActiveAgent: React.Dispatch<React.SetStateAction<Record<string, unknown> | null>>;
+    setActiveWorkflow: React.Dispatch<React.SetStateAction<Record<string, unknown> | null>>;
+    setIsPlanModeActive: React.Dispatch<React.SetStateAction<boolean>>;
+    handleFileUpload: () => Promise<void>;
+    handleSend: (queuedMsg?: Record<string, unknown>) => void;
+    handleAbort: () => void;
+    currentModelCanThink: boolean;
+}
+
+// eslint-disable-next-line complexity
+export function ChatInputArea(props: ChatInputAreaProps) {
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    useEffect(() => {
+        const ta = textareaRef.current;
+        if (!ta) return;
+        const resize = () => {
+            ta.style.height = '0';
+            ta.style.height = Math.min(ta.scrollHeight, 250) + 'px';
+        };
+        resize();
+    }, [props.input]);
+
+    return (
+        <div className="chat-input-area" style={{ padding: '12px 16px 16px 16px', background: 'var(--bg-primary)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+            <div style={{
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: '16px',
+                padding: '12px 14px',
+                boxShadow: '0 8px 30px rgba(0,0,0,0.15)',
+                display: 'flex',
+                flexDirection: 'column',
+                transition: 'border-color 0.2s, box-shadow 0.2s',
+            }}
+                onFocusCapture={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                    e.currentTarget.style.boxShadow = '0 8px 30px rgba(99, 102, 241, 0.15)';
+                }}
+                onBlurCapture={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                    e.currentTarget.style.boxShadow = '0 8px 30px rgba(0,0,0,0.15)';
+                }}
+            >
+                <textarea
+                    ref={textareaRef}
+                    value={props.input}
+                    onChange={(e) => props.setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            props.handleSend();
+                            (e.target as HTMLTextAreaElement).style.height = '0';
+                        }
+                    }}
+                    placeholder={props.isLoading ? 'Type a message to queue...' : (props.isPlanModeActive ? 'Describe the feature to plan...' : 'Ask anything... (type / for flows)')}
+                    style={{
+                        minHeight: 48,
+                        maxHeight: '250px',
+                        background: 'transparent',
+                        border: 'none',
+                        outline: 'none',
+                        resize: 'none',
+                        fontSize: '13px',
+                        fontFamily: 'inherit',
+                        color: 'var(--text-primary)',
+                        overflow: 'hidden',
+                        width: '100%',
+                        padding: 0,
+                        margin: '0 0 10px 0',
+                        lineHeight: '1.5',
+                        flex: 'none'
+                    }}
+                />
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'relative' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <ChatPlusMenu
+                            showPlusMenu={props.showPlusMenu}
+                            onTogglePlusMenu={props.togglePlusMenu}
+                            isLoading={props.isLoading}
+                            dbAgents={props.dbAgents}
+                            flows={props.flows}
+                            showAgentSubmenu={props.showAgentSubmenu}
+                            onSetShowAgentSubmenu={props.setShowAgentSubmenu}
+                            showWorkflowSubmenu={props.showWorkflowSubmenu}
+                            onSetShowWorkflowSubmenu={props.setShowWorkflowSubmenu}
+                            isPlanModeActive={props.isPlanModeActive}
+                            onSetIsPlanModeActive={props.setIsPlanModeActive}
+                            onSetActiveAgent={props.setActiveAgent}
+                            onSetActiveWorkflow={props.setActiveWorkflow}
+                            onClose={() => { props.togglePlusMenu(); }}
+                            onAttachFile={props.handleFileUpload}
+                        />
+
+                        <ModelDropdown
+                            showModelDropdown={props.showModelDropdown}
+                            onSetShowModelDropdown={props.setShowModelDropdown}
+                            inlineModelInput={props.inlineModelInput}
+                            onSetInlineModelInput={props.setInlineModelInput}
+                            availableModels={props.availableModels}
+                            activeModel={props.activeModel}
+                            onSetActiveModel={props.setActiveModel}
+                            customModels={props.customModels}
+                            onSetCustomModels={props.setCustomModels}
+                            onSetAvailableModels={props.setAvailableModels}
+                            activeProvider={props.activeProvider}
+                            executionMode={props.executionMode}
+                            onSetExecutionMode={props.setExecutionMode}
+                        />
+
+                        <div
+                            onClick={async () => {
+                                if (!props.currentModelCanThink) return;
+                                const next = props.executionMode === 'think' ? 'fast' : 'think';
+                                props.setExecutionMode(next);
+                                if (props.activeModel) {
+                                    const customMatch = props.customModels.find((cm: Record<string, unknown>) => cm.model_name === props.activeModel);
+                                    if (customMatch) {
+                                        await window.ipcRenderer.invoke('ai:toggle-model-thinking', props.activeProvider, props.activeModel, next === 'think');
+                                    } else {
+                                        await window.ipcRenderer.invoke('ai:add-custom-model', props.activeProvider, props.activeModel, next === 'think');
+                                    }
+                                    const dbModels = await window.ipcRenderer.invoke('ai:get-custom-models', props.activeProvider);
+                                    props.setCustomModels(dbModels || []);
+                                }
+                            }}
+                            title={props.currentModelCanThink ? "Toggle AI Thinking / Reasoning Mode" : "This model does not support thinking mode"}
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                cursor: props.currentModelCanThink ? 'pointer' : 'default',
+                                userSelect: 'none',
+                                padding: '4px 6px',
+                                borderRadius: '8px',
+                                transition: 'background 0.2s ease',
+                                opacity: props.currentModelCanThink ? 1 : 0.35,
+                            }}
+                            onMouseOver={(e) => { if (props.currentModelCanThink) e.currentTarget.style.background = 'var(--bg-hover)'; }}
+                            onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+                        >
+                            <DollarIcon active={props.executionMode === 'think'} />
+                            <div style={{
+                                width: 26,
+                                height: 14,
+                                borderRadius: 7,
+                                background: props.executionMode === 'think' ? '#a78bfa' : 'rgba(255,255,255,0.15)',
+                                position: 'relative',
+                                transition: 'background 0.25s ease',
+                                boxShadow: props.executionMode === 'think' ? '0 0 8px rgba(167, 139, 250, 0.4)' : 'none'
+                            }}>
+                                <div style={{
+                                    width: 10,
+                                    height: 10,
+                                    borderRadius: '50%',
+                                    background: '#ffffff',
+                                    position: 'absolute',
+                                    top: 2,
+                                    left: props.executionMode === 'think' ? 14 : 2,
+                                    transition: 'left 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+                                }} />
+                            </div>
+                        </div>
+
+                        <EffortLevelSelector
+                            effortLevel={props.effortLevel}
+                            onChange={(level) => props.setEffortLevel(level)}
+                        />
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <button
+                            title="Voice Input"
+                            style={{
+                                background: 'transparent',
+                                border: 'none',
+                                cursor: 'pointer',
+                                color: 'var(--text-secondary)',
+                                padding: '4px',
+                                borderRadius: '50%',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                transition: 'var(--transition-smooth)'
+                            }}
+                            onMouseOver={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
+                            onMouseOut={(e) => e.currentTarget.style.color = 'var(--text-secondary)'}
+                        >
+                            <span className="codicon codicon-mic" style={{ fontSize: 14 }} />
+                        </button>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            {(props.isLoading || props.isPlanModifying) && (
+                                <button
+                                    onClick={props.handleAbort}
+                                    style={{
+                                        background: '#ef4444',
+                                        color: 'white',
+                                        border: 'none',
+                                        borderRadius: '50%',
+                                        width: 28,
+                                        height: 28,
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        transition: 'var(--transition-smooth)',
+                                        boxShadow: '0 0 8px rgba(239, 68, 68, 0.4)'
+                                    }}
+                                    title="Stop Generation"
+                                >
+                                    <span className="codicon codicon-debug-stop" style={{ fontSize: 11 }} />
+                                </button>
+                            )}
+
+                            <button
+                                onClick={() => props.handleSend()}
+                                disabled={(!props.input.trim() && !props.attachedFile) || !props.activeModel}
+                                style={{
+                                    background: (props.input.trim() && props.activeModel) ? (props.isLoading ? '#a78bfa' : '#0070f3') : 'var(--bg-hover)',
+                                    color: (props.input.trim() && props.activeModel) ? 'white' : 'var(--text-secondary)',
+                                    border: 'none',
+                                    borderRadius: '50%',
+                                    width: 28,
+                                    height: 28,
+                                    cursor: (props.input.trim() && props.activeModel) ? 'pointer' : 'default',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    transition: 'var(--transition-smooth)',
+                                    transform: (props.input.trim() && props.activeModel) ? 'scale(1.05)' : 'scale(1)',
+                                    boxShadow: (props.input.trim() && props.activeModel) ? (props.isLoading ? '0 0 8px rgba(167, 139, 250, 0.4)' : '0 0 8px rgba(0, 112, 243, 0.4)') : 'none'
+                                }}
+                                title={props.isLoading ? "Queue Message" : "Send message"}
+                            >
+                                <span className={`codicon ${props.isLoading ? 'codicon-history' : 'codicon-arrow-up'}`} style={{ fontSize: 13, fontWeight: 'bold' }} />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}

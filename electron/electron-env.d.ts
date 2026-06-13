@@ -25,3 +25,8 @@ declare namespace NodeJS {
 interface Window {
   ipcRenderer: import('electron').IpcRenderer
 }
+
+declare module '*.txt' {
+  const content: string;
+  export default content;
+}

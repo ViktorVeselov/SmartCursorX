@@ -5,14 +5,17 @@ import { dbService } from '../db';
 import console from 'console';
 
 export class SnapshotService {
-    private static getWhitelistedRoots(): string[] {
-        const workspaceRoot = path.resolve(process.cwd());
-        const parentRoot = path.resolve(workspaceRoot, '..');
-        return [
-            workspaceRoot,
-            path.resolve(parentRoot, 'adk-python-community'),
-            path.resolve(parentRoot, 'google-sdk')
-        ];
+    private static getWhitelistedRoots(workspacePath?: string | null): string[] {
+        if (workspacePath && workspacePath.trim().length > 0) {
+            const workspaceRoot = path.resolve(workspacePath);
+            const parentRoot = path.resolve(workspaceRoot, '..');
+            return [
+                workspaceRoot,
+                path.resolve(parentRoot, 'adk-python-community'),
+                path.resolve(parentRoot, 'google-sdk')
+            ];
+        }
+        return [];
     }
 
     private static normalizePathForCompare(p: string): string {
@@ -23,8 +26,8 @@ export class SnapshotService {
         return resolved;
     }
 
-    private static resolveToAllowedRoot(relativePath: string): string | null {
-        const roots = this.getWhitelistedRoots();
+    private static resolveToAllowedRoot(relativePath: string, workspacePath?: string | null): string | null {
+        const roots = this.getWhitelistedRoots(workspacePath);
         for (const root of roots) {
             const resolvedPath = path.isAbsolute(relativePath)
                 ? relativePath
@@ -51,12 +54,13 @@ export class SnapshotService {
 
         console.log(`[SnapshotService] Capturing snapshot "${name}" for task ID ${taskId}...`);
         
+        const workspacePath = dbService.getWorkspacePathForTask(taskId);
         const snapshotIdRaw = dbService.createSnapshot(`${name}_task_${taskId}`);
         const snapshotId = Number(snapshotIdRaw);
         console.assert(snapshotId > 0, 'Snapshot ID must be a positive integer');
 
         for (const file of filePaths) {
-            const absolutePath = this.resolveToAllowedRoot(file);
+            const absolutePath = this.resolveToAllowedRoot(file, workspacePath);
             if (absolutePath && fs.existsSync(absolutePath)) {
                 try {
                     const content = fs.readFileSync(absolutePath, 'utf-8');
@@ -90,12 +94,22 @@ export class SnapshotService {
             return;
         }
 
+        const snapshot = dbService.getSnapshot(snapshotId);
+        let workspacePath: string | null = null;
+        if (snapshot && snapshot.name) {
+            const match = snapshot.name.match(/_task_(\d+)/);
+            if (match) {
+                const taskId = parseInt(match[1], 10);
+                workspacePath = dbService.getWorkspacePathForTask(taskId);
+            }
+        }
+
         for (const f of files) {
             const absolutePath = f.file_path;
             const content = f.content;
 
             // Security/containment check during rollback to prevent directory traversal
-            const resolvedPath = this.resolveToAllowedRoot(absolutePath);
+            const resolvedPath = this.resolveToAllowedRoot(absolutePath, workspacePath);
             if (!resolvedPath) {
                 console.error(`[SnapshotService] Safety Block: Out-of-bounds rollback attempt rejected for path: ${absolutePath}`);
                 throw new Error(`Rollback safety violation on path: ${absolutePath}`);

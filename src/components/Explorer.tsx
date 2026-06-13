@@ -1,12 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ContextMenu, MenuItem } from './ContextMenu';
-
-interface FileItem {
-    name: string;
-    path: string;
-    isDirectory: boolean;
-    children?: FileItem[];
-}
+import { FileItem, loadDir } from '../helpers/fileTree';
+import { FileNode } from './FileTreeNode';
+import { RenameDialog, CloneDialog } from './ExplorerDialogs';
 
 interface ExplorerProps {
     onFileSelect: (content: string, path: string, line?: number) => void;
@@ -17,214 +13,12 @@ interface ExplorerProps {
     setSymbolSearchQuery: (q: string) => void;
 }
 
-interface FileNodeProps {
-    item: FileItem;
-    depth: number;
-    expandedFolders: Set<string>;
-    onToggleFolder: (path: string) => void;
-    onFileClick: (item: FileItem) => void;
-    loadChildren: (path: string) => Promise<FileItem[]>;
-    onContextMenu: (e: React.MouseEvent, item: FileItem) => void;
-}
-
-function FileNode({ item, depth, expandedFolders, onToggleFolder, onFileClick, loadChildren, onContextMenu }: FileNodeProps) {
-    const [children, setChildren] = useState<FileItem[]>([]);
-    const [isLoading, setIsLoading] = useState(false);
-    const isExpanded = expandedFolders.has(item.path);
-
-    useEffect(() => {
-        if (item.isDirectory && isExpanded && children.length === 0) {
-            setIsLoading(true);
-            loadChildren(item.path).then((items) => {
-                setChildren(items);
-                setIsLoading(false);
-            }).catch(() => setIsLoading(false));
-        }
-    }, [isExpanded, item.path, item.isDirectory, loadChildren]);
-
-    const handleClick = () => {
-        if (item.isDirectory) {
-            onToggleFolder(item.path);
-        } else {
-            onFileClick(item);
-        }
-    };
-
-    const getFileIcon = (name: string, isDir: boolean): { icon: string; color: string; label?: string } => {
-        if (isDir) return {
-            icon: isExpanded ? 'codicon-folder-opened' : 'codicon-folder',
-            color: '#dcb67a'
-        };
-
-        const ext = name.split('.').pop()?.toLowerCase();
-        const filename = name.toLowerCase();
-
-        // Special filenames
-        if (filename === '.gitignore' || filename === '.gitattributes')
-            return { icon: 'codicon-git-commit', color: '#f14e32' };
-        if (filename === '.env' || filename.endsWith('.env.local'))
-            return { icon: 'codicon-settings-gear', color: '#ecd53f' };
-        if (filename === 'package.json' || filename === 'package-lock.json')
-            return { icon: 'codicon-json', color: '#cb3837' };
-        if (filename === 'tsconfig.json')
-            return { icon: 'codicon-json', color: '#3178c6' };
-        if (filename === 'cargo.toml')
-            return { icon: 'codicon-settings-gear', color: '#dea584' };
-
-        switch (ext) {
-            // TypeScript - text label "TS"
-            case 'ts': return { icon: 'label-ts', color: '#3178c6', label: 'TS' };
-            case 'tsx': return { icon: 'label-react', color: '#61dafb', label: '⚛' };
-            // JavaScript - text label "JS"
-            case 'js': return { icon: 'label-js', color: '#f7df1e', label: 'JS' };
-            case 'jsx': return { icon: 'label-react', color: '#61dafb', label: '⚛' };
-            case 'mjs':
-            case 'cjs': return { icon: 'label-js', color: '#f7df1e', label: 'JS' };
-            // Python
-            case 'py': return { icon: 'codicon-python', color: '#3776ab' };
-            case 'pyw':
-            case 'pyx': return { icon: 'codicon-python', color: '#3776ab' };
-            // Ruby
-            case 'rb': return { icon: 'codicon-ruby', color: '#cc342d' };
-            case 'rake':
-            case 'gemspec': return { icon: 'codicon-ruby', color: '#cc342d' };
-            // Shell
-            case 'sh':
-            case 'bash': return { icon: 'codicon-terminal-bash', color: '#89e051' };
-            case 'zsh': return { icon: 'codicon-terminal-bash', color: '#89e051' };
-            case 'ps1':
-            case 'psm1': return { icon: 'codicon-terminal-powershell', color: '#5391fe' };
-            case 'bat':
-            case 'cmd': return { icon: 'codicon-terminal', color: '#c1f12e' };
-            // Web
-            case 'html':
-            case 'htm': return { icon: 'codicon-browser', color: '#e44d26' };
-            case 'css': return { icon: 'codicon-symbol-color', color: '#264de4' };
-            case 'scss':
-            case 'sass': return { icon: 'codicon-symbol-color', color: '#cc6699' };
-            case 'less': return { icon: 'codicon-symbol-color', color: '#1d365d' };
-            case 'vue': return { icon: 'codicon-file-code', color: '#42b883' };
-            case 'svelte': return { icon: 'codicon-file-code', color: '#ff3e00' };
-            // Data
-            case 'json': return { icon: 'codicon-json', color: '#cbcb41' };
-            case 'json5': return { icon: 'codicon-json', color: '#cbcb41' };
-            case 'yaml':
-            case 'yml': return { icon: 'codicon-file-code', color: '#cb171e' };
-            case 'xml': return { icon: 'codicon-file-code', color: '#e37933' };
-            case 'toml': return { icon: 'codicon-settings-gear', color: '#9c4121' };
-            case 'ini':
-            case 'cfg': return { icon: 'codicon-settings-gear', color: '#6d8086' };
-            // Docs
-            case 'md':
-            case 'mdx': return { icon: 'codicon-markdown', color: '#519aba' };
-            case 'txt': return { icon: 'codicon-file', color: '#c0c0c0' };
-            case 'pdf': return { icon: 'codicon-file-pdf', color: '#ff0000' };
-            // Compiled
-            case 'rs': return { icon: 'codicon-file-code', color: '#dea584' };
-            case 'go': return { icon: 'codicon-file-code', color: '#00add8' };
-            case 'java': return { icon: 'codicon-file-code', color: '#b07219' };
-            case 'class': return { icon: 'codicon-file-binary', color: '#b07219' };
-            case 'c':
-            case 'h': return { icon: 'codicon-file-code', color: '#555555' };
-            case 'cpp':
-            case 'cc':
-            case 'cxx':
-            case 'hpp': return { icon: 'codicon-file-code', color: '#f34b7d' };
-            case 'cs': return { icon: 'codicon-file-code', color: '#178600' };
-            case 'php': return { icon: 'codicon-file-code', color: '#4f5d95' };
-            case 'swift': return { icon: 'codicon-file-code', color: '#f05138' };
-            case 'kt':
-            case 'kts': return { icon: 'codicon-file-code', color: '#a97bff' };
-            case 'scala': return { icon: 'codicon-file-code', color: '#c22d40' };
-            case 'dart': return { icon: 'codicon-file-code', color: '#00b4ab' };
-            case 'lua': return { icon: 'codicon-file-code', color: '#000080' };
-            case 'r': return { icon: 'codicon-file-code', color: '#276dc3' };
-            case 'sql': return { icon: 'codicon-database', color: '#e38c00' };
-            // Images
-            case 'png':
-            case 'jpg':
-            case 'jpeg':
-            case 'gif':
-            case 'bmp':
-            case 'webp':
-            case 'ico': return { icon: 'codicon-file-media', color: '#a074c4' };
-            case 'svg': return { icon: 'codicon-file-media', color: '#ffb13b' };
-            // Archives
-            case 'zip':
-            case 'tar':
-            case 'gz':
-            case 'rar':
-            case '7z': return { icon: 'codicon-file-zip', color: '#e0a000' };
-            // Lock files
-            case 'lock': return { icon: 'codicon-lock', color: '#f7df1e' };
-            // Binaries
-            case 'exe':
-            case 'dll':
-            case 'so':
-            case 'dylib': return { icon: 'codicon-file-binary', color: '#6d8086' };
-            // Docker
-            case 'dockerfile': return { icon: 'codicon-file-code', color: '#2496ed' };
-            default: return { icon: 'codicon-file', color: '#c0c0c0' };
-        }
-    };
-
-    const fileInfo = getFileIcon(item.name, item.isDirectory);
-
-    return (
-        <div className="file-node">
-            <div
-                className={`file-item ${item.isDirectory ? 'folder' : 'file'}`}
-                onClick={handleClick}
-                onContextMenu={(e) => onContextMenu(e, item)}
-                style={{ paddingLeft: `${12 + depth * 16}px` }}
-            >
-                {item.isDirectory && (
-                    <span className="expand-arrow">
-                        <span className={`codicon ${isExpanded ? 'codicon-chevron-down' : 'codicon-chevron-right'}`} />
-                    </span>
-                )}
-                <span className="icon" style={{ color: fileInfo.color }}>
-                    {fileInfo.label ? (
-                        <span className="file-label">{fileInfo.label}</span>
-                    ) : (
-                        <span className={`codicon ${fileInfo.icon}`} />
-                    )}
-                </span>
-                <span className="name">{item.name}</span>
-            </div>
-
-            {item.isDirectory && isExpanded && (
-                <div className="folder-children">
-                    {isLoading ? (
-                        <div className="loading-item" style={{ paddingLeft: `${12 + (depth + 1) * 16}px` }}>
-                            Loading...
-                        </div>
-                    ) : (
-                        children.map((child) => (
-                            <FileNode
-                                key={child.path}
-                                item={child}
-                                depth={depth + 1}
-                                expandedFolders={expandedFolders}
-                                onToggleFolder={onToggleFolder}
-                                onFileClick={onFileClick}
-                                loadChildren={loadChildren}
-                                onContextMenu={onContextMenu}
-                            />
-                        ))
-                    )}
-                </div>
-            )}
-        </div>
-    );
-}
-
 export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFolder, symbolSearchQuery, setSymbolSearchQuery }: ExplorerProps) {
     const [rootItems, setRootItems] = useState<FileItem[]>([]);
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
 
     // Symbol Search and Outline State
-    const [workspaceOutline, setWorkspaceOutline] = useState<Array<{ filePath: string; outline: any }>>([]);
+    const [workspaceOutline, setWorkspaceOutline] = useState<Array<{ filePath: string; outline: Record<string, unknown> }>>([]);
     const [isLoadingOutline, setIsLoadingOutline] = useState(false);
 
     const loadWorkspaceOutline = useCallback(async () => {
@@ -253,9 +47,9 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
         const list: Array<{ name: string; kind: 'class' | 'function' | 'interface' | 'method'; startLine: number; filePath: string }> = [];
         workspaceOutline.forEach(item => {
             const { classes = [], functions = [], interfaces = [] } = item.outline || {};
-            classes.forEach((c: any) => list.push({ name: c.name, kind: 'class', startLine: c.startLine, filePath: item.filePath }));
-            functions.forEach((f: any) => list.push({ name: f.name, kind: f.kind || 'function', startLine: f.startLine, filePath: item.filePath }));
-            interfaces.forEach((i: any) => list.push({ name: i.name, kind: 'interface', startLine: i.startLine, filePath: item.filePath }));
+            (classes as Record<string, unknown>[]).forEach((c) => list.push({ name: c.name as string, kind: 'class' as const, startLine: c.startLine as number, filePath: item.filePath }));
+            (functions as Record<string, unknown>[]).forEach((f) => list.push({ name: f.name as string, kind: (f.kind as 'function') || 'function', startLine: f.startLine as number, filePath: item.filePath }));
+            (interfaces as Record<string, unknown>[]).forEach((i) => list.push({ name: i.name as string, kind: 'interface' as const, startLine: i.startLine as number, filePath: item.filePath }));
         });
         return list;
     }, [workspaceOutline]);
@@ -306,9 +100,9 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
                     }
                 }
             }
-        } catch (e: any) {
+        } catch (e: unknown) {
             console.error(e);
-            alert(`Clone failed: ${e.message || e}`);
+            alert(`Clone failed: ${e instanceof Error ? e.message : String(e)}`);
         } finally {
             setIsCloning(false);
         }
@@ -325,7 +119,7 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
 
     // Listen for git clone progress events
     useEffect(() => {
-        const handler = (_event: any, data: string) => {
+        const handler = (_event: unknown, data: string) => {
             setCloneProgress(prev => [...prev, data.trim()]);
         };
         window.ipcRenderer.on('git-clone-progress', handler);
@@ -333,16 +127,6 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
             window.ipcRenderer.off('git-clone-progress', handler);
         };
     }, []);
-
-    const loadDir = async (path: string): Promise<FileItem[]> => {
-        try {
-            const files = await window.ipcRenderer.invoke('read-dir', path);
-            return files.map((f: any) => ({ ...f, children: undefined }));
-        } catch (err) {
-            console.error('Failed to load directory:', err);
-            return [];
-        }
-    };
 
     const handleToggleFolder = useCallback((path: string) => {
         setExpandedFolders((prev) => {
@@ -437,11 +221,12 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
                     }
                 }
                 break;
-            case 'new-file':
+            case 'new-file': {
                 // Pass format: directory path
                 const targetDir = item.isDirectory ? item.path : item.path.substring(0, item.path.lastIndexOf(item.name));
                 onCreateFile?.(targetDir);
                 break;
+            }
         }
         setContextMenu(null);
     };
@@ -702,175 +487,29 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
                 />
             )}
 
-            {/* Rename Dialog */}
-            {renameDialogOpen && (
-                <div className="modal-overlay" onClick={() => setRenameDialogOpen(false)}>
-                    <div className="new-file-dialog" onClick={e => e.stopPropagation()}>
-                        <h3>Rename</h3>
-                        <input
-                            type="text"
-                            value={newName}
-                            onChange={e => setNewName(e.target.value)}
-                            onKeyDown={e => {
-                                if (e.key === 'Enter') handleRenameConfirm();
-                                if (e.key === 'Escape') setRenameDialogOpen(false);
-                            }}
-                            autoFocus
-                            onFocus={e => e.target.select()}
-                        />
-                        <div className="dialog-actions">
-                            <button onClick={() => setRenameDialogOpen(false)}>Cancel</button>
-                            <button className="primary" onClick={handleRenameConfirm}>Rename</button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <RenameDialog
+                open={renameDialogOpen}
+                newName={newName}
+                onNewNameChange={setNewName}
+                onConfirm={handleRenameConfirm}
+                onClose={() => setRenameDialogOpen(false)}
+            />
 
-            {/* Clone GitHub Repo Dialog */}
-            {cloneDialogOpen && (
-                <div className="modal-overlay" onClick={() => setCloneDialogOpen(false)} style={{
-                    position: 'fixed',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    background: 'rgba(0,0,0,0.6)',
-                    backdropFilter: 'blur(4px)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    zIndex: 2000
-                }}>
-                    <div className="new-file-dialog" onClick={e => e.stopPropagation()} style={{
-                        background: 'var(--bg-secondary)',
-                        border: '1px solid var(--border-subtle)',
-                        borderRadius: 'var(--radius-lg)',
-                        padding: '20px',
-                        width: '360px',
-                        boxShadow: 'var(--shadow-lg)'
-                    }}>
-                        <h3 style={{ margin: '0 0 16px 0', fontSize: 15, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-primary)' }}>
-                            <span className="codicon codicon-cloud-download" style={{ color: 'var(--accent-primary)' }} />
-                            Clone GitHub Repository
-                        </h3>
-                        
-                        <div style={{ marginBottom: 12 }}>
-                            <label style={{ display: 'block', fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6 }}>Repository URL / Path</label>
-                            <input
-                                type="text"
-                                placeholder="e.g. facebook/react or https://github.com/..."
-                                value={cloneRepoUrl}
-                                onChange={e => setCloneRepoUrl(e.target.value)}
-                                style={{
-                                    width: '100%',
-                                    padding: '8px 10px',
-                                    background: 'var(--bg-tertiary)',
-                                    border: '1px solid var(--border-subtle)',
-                                    borderRadius: 'var(--radius-sm)',
-                                    color: 'var(--text-primary)',
-                                    fontSize: 12,
-                                    outline: 'none',
-                                    boxSizing: 'border-box'
-                                }}
-                                autoFocus
-                            />
-                        </div>
-
-                        <div style={{ marginBottom: 20 }}>
-                            <label style={{ display: 'block', fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6 }}>Destination Folder</label>
-                            <div style={{ display: 'flex', gap: 8 }}>
-                                <input
-                                    type="text"
-                                    placeholder="Clone path..."
-                                    value={cloneDestPath}
-                                    onChange={e => setCloneDestPath(e.target.value)}
-                                    style={{
-                                        flex: 1,
-                                        padding: '8px 10px',
-                                        background: 'var(--bg-tertiary)',
-                                        border: '1px solid var(--border-subtle)',
-                                        borderRadius: 'var(--radius-sm)',
-                                        color: 'var(--text-primary)',
-                                        fontSize: 12,
-                                        outline: 'none',
-                                        boxSizing: 'border-box'
-                                    }}
-                                />
-                                <button
-                                    onClick={async () => {
-                                        const path = await window.ipcRenderer.invoke('dialog-open-folder');
-                                        if (path) setCloneDestPath(path);
-                                    }}
-                                    style={{
-                                        padding: '0 10px',
-                                        background: 'var(--bg-active)',
-                                        border: '1px solid var(--border-subtle)',
-                                        borderRadius: 'var(--radius-sm)',
-                                        color: 'var(--text-primary)',
-                                        cursor: 'pointer'
-                                    }}
-                                    title="Choose folder"
-                                >
-                                    <span className="codicon codicon-folder-opened" />
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="dialog-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                            <button 
-                                onClick={() => setCloneDialogOpen(false)}
-                                style={{
-                                    padding: '6px 12px',
-                                    background: 'transparent',
-                                    border: '1px solid var(--border-subtle)',
-                                    borderRadius: 'var(--radius-sm)',
-                                    color: 'var(--text-secondary)',
-                                    cursor: 'pointer',
-                                    fontSize: 12
-                                }}
-                            >Cancel</button>
-                            <button 
-                                className="primary" 
-                                onClick={handleCloneConfirm}
-                                disabled={isCloning || !cloneRepoUrl.trim() || !cloneDestPath.trim()}
-                                style={{
-                                    padding: '6px 12px',
-                                    background: isCloning ? 'var(--bg-active)' : 'var(--accent-primary)',
-                                    border: 'none',
-                                    borderRadius: 'var(--radius-sm)',
-                                    color: 'white',
-                                    cursor: isCloning ? 'default' : 'pointer',
-                                    fontWeight: 500,
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 6,
-                                    fontSize: 12
-                                }}
-                            >
-                                {isCloning ? 'Cloning...' : 'Clone'}
-                            </button>
-                        </div>
-                        {isCloning && cloneProgress.length > 0 && (
-                            <div style={{ 
-                                marginTop: 12, 
-                                maxHeight: '150px', 
-                                overflowY: 'auto', 
-                                background: 'var(--bg-tertiary)', 
-                                padding: '8px', 
-                                borderRadius: 'var(--radius-sm)', 
-                                fontSize: 11, 
-                                color: 'var(--text-primary)', 
-                                fontFamily: 'monospace',
-                                border: '1px solid var(--border-subtle)',
-                                whiteSpace: 'pre-wrap',
-                                wordBreak: 'break-all'
-                            }}>
-                                <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{cloneProgress.join('\n')}</pre>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            )}
+            <CloneDialog
+                open={cloneDialogOpen}
+                cloneRepoUrl={cloneRepoUrl}
+                cloneDestPath={cloneDestPath}
+                isCloning={isCloning}
+                cloneProgress={cloneProgress}
+                onRepoUrlChange={setCloneRepoUrl}
+                onDestPathChange={setCloneDestPath}
+                onBrowseDest={async () => {
+                    const path = await window.ipcRenderer.invoke('dialog-open-folder');
+                    if (path) setCloneDestPath(path);
+                }}
+                onConfirm={handleCloneConfirm}
+                onClose={() => setCloneDialogOpen(false)}
+            />
         </div>
     );
 }

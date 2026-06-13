@@ -1019,7 +1019,6 @@ body {
   font-family: inherit;
   resize: none;
   min-height: 40px;
-  max-height: 120px;
 }
 
 .chat-input-area textarea:focus {

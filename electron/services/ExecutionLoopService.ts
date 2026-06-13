@@ -7,6 +7,7 @@ import { TaskService } from './TaskService';
 import { ContextAssembler } from './ContextAssembler';
 import { LearningService } from './LearningService';
 import { ASTPatchingService } from './ASTPatchingService';
+import { secureStore } from '../secureStore';
 import * as fs from 'fs';
 import * as path from 'path';
 import console from 'console';
@@ -50,7 +51,7 @@ export class ExecutionLoopService {
 
         const activeTask = dbService.getTask(taskId);
         console.assert(activeTask !== null, 'Active task must exist in DB');
-        const modelUsed = activeTask.assigned_agent_id ? 'claude-3-5-sonnet-20241022' : 'gpt-4o';
+        const modelUsed = secureStore.getSelectedModel();
 
         // ==========================================================
         // Phase 1 & 2: Pre-Flight Zero-Assumption Investigation Phase
@@ -64,12 +65,23 @@ export class ExecutionLoopService {
 2. Outline a deterministic "Assumption Matrix" inside a scratchpad block.
 3. Validate that you are ready and have no blind spots. Do NOT propose code changes yet.`;
 
-            const provider = aiService.getProvider();
-            await provider.chat([
+            const investResult = await aiService.chat([
                 { role: 'system', content: investSystemInstructions },
                 { role: 'user', content: investPrompt }
             ], { temperature: 0.1, model: modelUsed });
-            console.log(`[ExecutionLoopService] Active Investigation completed successfully. Zero-Blind-Spots verified.`);
+            console.log(`[ExecutionLoopService] Active Investigation completed successfully.`);
+
+            const investText = typeof investResult === 'string' ? investResult : 'text' in investResult ? investResult.text : '';
+            if (investText) {
+                dbService.addModelPerformance(
+                    modelUsed,
+                    aiService.providerId,
+                    'investigation',
+                    1, 1,
+                    Math.ceil(investText.length / 4),
+                    Date.now() - startTime
+                );
+            }
         }
 
         // ==========================================================
@@ -102,7 +114,6 @@ export class ExecutionLoopService {
                 let responseContent = '';
 
                 if (aiService.isActive()) {
-                    const provider = aiService.getProvider();
                     const prompt = `Task Title: ${activeTask.title}
 Task Details: ${activeTask.description || ''}
 
@@ -111,12 +122,13 @@ Files to modify: ${filesToModify.join(', ')}
 
 Enforce strict type safety and preserve imports. Return ONLY the strict JSON patch block.`;
 
-                    const response = await provider.chat([
+                    const response = await aiService.chat([
                         { role: 'system', content: systemInstructions },
                         { role: 'user', content: prompt }
                     ], { temperature: tempWithEscalation, model: modelUsed });
 
-                    responseContent = typeof response === 'string' ? response : '';
+                    const chatResp = response as import('./AIService').ChatResponse;
+                    responseContent = chatResp.text;
                 } else {
                     throw new Error('AI Service is inactive. Code generation impossible.');
                 }
@@ -127,7 +139,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                     console.warn(`[ExecutionLoopService] AST JSON Patching failed or returned non-JSON. Falling back to Full-File Markdown Block parser.`);
                     
                     // Graceful fallback to raw files blocks parser
-                    parseSuccess = this.applyFileEdits(responseContent);
+                    parseSuccess = this.applyFileEdits(responseContent, taskId);
                     if (!parseSuccess) {
                         throw new Error('Failed parsing target file structures from LLM response (both JSON AST and Full-File fallbacks failed).');
                     }
@@ -140,7 +152,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                     'code',
                     Math.ceil(responseContent.length / 4),
                     modelUsed,
-                    aiService.isActive() ? aiService.getProvider().id : 'fallback'
+                    aiService.isActive() ? aiService.providerId : 'fallback'
                 );
 
                 finalOutputStatus = await VerificationService.verifyOutput(outputId);
@@ -149,7 +161,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                     taskId,
                     attempt,
                     modelUsed,
-                    aiService.isActive() ? aiService.getProvider().id : 'fallback',
+                    aiService.isActive() ? aiService.providerId : 'fallback',
                     Number(planRow.id),
                     outputId,
                     finalOutputStatus,
@@ -160,14 +172,20 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                     success = true;
                     console.log(`[ExecutionLoopService] Attempt ${attempt} passed all verification checks!`);
                     
+                    const providerId = aiService.isActive() ? aiService.providerId : 'fallback';
+                    const outputTokens = Math.max(1, Math.ceil(responseContent.length / 4));
+                    const latency = Date.now() - startTime;
+                    
                     dbService.addModelPerformance(
                         modelUsed,
-                        aiService.isActive() ? aiService.getProvider().id : 'fallback',
+                        providerId,
                         'code_edit',
                         1,
                         attempt,
-                        Math.ceil(responseContent.length / 4),
-                        Date.now() - startTime
+                        outputTokens,
+                        latency,
+                        Math.round(outputTokens * 0.6),
+                        outputTokens
                     );
 
                     break;
@@ -223,7 +241,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
         }
     }
 
-    private static applyFileEdits(response: string): boolean {
+    private static applyFileEdits(response: string, taskId: number): boolean {
         if (!response) return false;
 
         const fileBlockRegex = /===\s*FILE:\s*([^\s=]+)\s*===([\s\S]*?)===\s*END FILE\s*===/gi;
@@ -235,7 +253,13 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
             const rawContent = match[2];
             const cleanContent = rawContent.replace(/^\r?\n/, '').replace(/\r?\n\s*$/, '');
 
-            const workspaceRoot = path.resolve(process.cwd());
+            const workspacePath = dbService.getWorkspacePathForTask(taskId);
+            if (!workspacePath) {
+                console.error(`[ExecutionLoopService] Safety Block: No active workspace opened for task ID ${taskId}`);
+                return false;
+            }
+
+            const workspaceRoot = path.resolve(workspacePath);
             const parentRoot = path.resolve(workspaceRoot, '..');
             
             // Whitelisted multi-root directories (React workspace + Python ADK plugin)

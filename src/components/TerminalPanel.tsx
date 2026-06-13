@@ -115,7 +115,7 @@ export function TerminalPanel({ isOpen }: TerminalPanelProps) {
         });
 
         return newTerminal;
-    }, [terminals.length, defaultShell]);
+    }, [defaultShell]);
 
     // Close a terminal
     const closeTerminal = useCallback((id: string) => {
@@ -139,7 +139,7 @@ export function TerminalPanel({ isOpen }: TerminalPanelProps) {
 
     // Handle incoming data from PTY
     useEffect(() => {
-        const listener = (_event: any, terminalId: string, data: string) => {
+        const listener = (_event: unknown, terminalId: string, data: string) => {
             const terminalInstance = terminals.find(t => t.id === terminalId);
             if (terminalInstance) {
                 terminalInstance.terminal.write(data);
