@@ -77,3 +77,7 @@ yarn-error.log*
 pnpm-debug.log*
 .pnpm-debug.log*
 .eslintcache
+
+# Exclude migration documentation from being tracked or pushed
+docs/migrations/
+
