@@ -37,13 +37,16 @@ export interface Message {
     filesRead?: string[]; planSteps?: unknown[]; activities?: ActivityTimelineItem[];
 }
 
-const estimateCurrentTokens = (
+const getChatTokenDetails = (
     messages: Message[],
     currentInput: string,
     attachedFile: { content: string } | null
-): number => {
+) => {
     let baselineTokens = 0;
     let baselineIndex = -1;
+    let totalCost = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
 
     for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
@@ -54,11 +57,22 @@ const estimateCurrentTokens = (
                 try {
                     const metaStr = msg.content.substring(startIdx + '[CHAT_METADATA_START]'.length, endIdx);
                     const meta = JSON.parse(metaStr);
-                    const inputTokens = typeof meta.inputTokens === 'number' ? meta.inputTokens : 0;
-                    const outputTokens = typeof meta.outputTokens === 'number' ? meta.outputTokens : 0;
-                    baselineTokens = inputTokens + outputTokens;
-                    baselineIndex = i;
-                    break;
+                    
+                    // Accumulate cost
+                    const cost = typeof meta.cost === 'number' ? meta.cost : 0;
+                    totalCost += cost;
+
+                    // Accumulate total input and output tokens
+                    const inTokens = typeof meta.inputTokens === 'number' ? meta.inputTokens : 0;
+                    const outTokens = typeof meta.outputTokens === 'number' ? meta.outputTokens : 0;
+                    totalInputTokens += inTokens;
+                    totalOutputTokens += outTokens;
+
+                    // Set baseline if not already found
+                    if (baselineIndex === -1) {
+                        baselineTokens = inTokens + outTokens;
+                        baselineIndex = i;
+                    }
                 } catch (e) {
                     console.error('Failed to parse chat metadata from message', e);
                 }
@@ -66,28 +80,34 @@ const estimateCurrentTokens = (
         }
     }
 
-    let estimated = 0;
+    let historyTokens = 0;
     if (baselineIndex !== -1) {
         let postBaselineChars = 0;
         for (let i = baselineIndex + 1; i < messages.length; i++) {
             postBaselineChars += (messages[i].content || '').length;
         }
-        estimated = baselineTokens + Math.ceil(postBaselineChars / 4);
+        historyTokens = baselineTokens + Math.ceil(postBaselineChars / 4);
     } else {
         let totalChars = 0;
         for (const msg of messages) {
             totalChars += (msg.content || '').length;
         }
-        estimated = Math.ceil(totalChars / 4);
+        historyTokens = Math.ceil(totalChars / 4);
     }
 
-    let currentInputChars = currentInput.length;
-    if (attachedFile && attachedFile.content) {
-        currentInputChars += attachedFile.content.length;
-    }
-    estimated += Math.ceil(currentInputChars / 4);
+    const draftTokens = Math.ceil(currentInput.length / 4);
+    const fileTokens = attachedFile && attachedFile.content ? Math.ceil(attachedFile.content.length / 4) : 0;
+    const totalTokens = historyTokens + draftTokens + fileTokens;
 
-    return estimated;
+    return {
+        historyTokens,
+        draftTokens,
+        fileTokens,
+        totalTokens,
+        totalCost,
+        totalInputTokens,
+        totalOutputTokens
+    };
 };
 
 export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, settingsSavedTrigger, onOpenPlan, onActiveTaskIdChange, rootPath = '' }: ChatPanelProps) {
@@ -410,7 +430,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                         setIsPlanModeActive={setIsPlanModeActive}
                         handleFileUpload={handleFileUpload} handleSend={handleSend as unknown as (queuedMsg?: Record<string, unknown>) => void} handleAbort={handleAbort}
                         currentModelCanThink={currentModelCanThink}
-                        currentTokens={estimateCurrentTokens(messages, input, attachedFile)}
+                        tokenDetails={getChatTokenDetails(messages, input, attachedFile)}
                         modelLimit={modelLimit}
                     />
                 </div>

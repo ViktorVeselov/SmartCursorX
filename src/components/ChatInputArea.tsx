@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import { ChatPlusMenu } from './ChatPlusMenu';
 import { ModelDropdown } from './ModelDropdown';
 import { DollarIcon } from './DollarIcon';
@@ -41,13 +41,22 @@ export interface ChatInputAreaProps {
     handleSend: (queuedMsg?: Record<string, unknown>) => void;
     handleAbort: () => void;
     currentModelCanThink: boolean;
-    currentTokens: number;
+    tokenDetails: {
+        historyTokens: number;
+        draftTokens: number;
+        fileTokens: number;
+        totalTokens: number;
+        totalCost: number;
+        totalInputTokens: number;
+        totalOutputTokens: number;
+    };
     modelLimit: number;
 }
 
 // eslint-disable-next-line complexity
 export function ChatInputArea(props: ChatInputAreaProps) {
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const [showDetails, setShowDetails] = useState(false);
 
     useEffect(() => {
         const ta = textareaRef.current;
@@ -59,36 +68,18 @@ export function ChatInputArea(props: ChatInputAreaProps) {
         resize();
     }, [props.input]);
 
+    const totalTokens = props.tokenDetails.totalTokens;
     const effectiveLimit = Math.min(props.modelLimit, 200000);
-    const isOverLimit = props.currentTokens > effectiveLimit;
-    const isNearLimit = props.currentTokens > effectiveLimit * 0.8 && props.currentTokens <= effectiveLimit;
+    const isOverLimit = totalTokens > effectiveLimit;
+    const isNearLimit = totalTokens > effectiveLimit * 0.8 && totalTokens <= effectiveLimit;
+
+    const percentage = (totalTokens / props.modelLimit) * 100;
+    const strokeColor = isOverLimit ? '#ef4444' : isNearLimit ? '#f59e0b' : 'var(--accent-primary)';
+    const circumference = 50.265;
+    const strokeOffset = circumference - (Math.min(percentage, 100) / 100) * circumference;
 
     return (
         <div className="chat-input-area" style={{ padding: '12px 16px 16px 16px', background: 'var(--bg-primary)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-            {/* Context utilization bar */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '8px', fontSize: '11px', userSelect: 'none' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-secondary)' }}>
-                    <span>Context Utilization</span>
-                    <span style={{ fontWeight: '500', color: isOverLimit ? '#ef4444' : isNearLimit ? '#f59e0b' : 'var(--text-secondary)' }}>
-                        {props.currentTokens.toLocaleString()} / {props.modelLimit.toLocaleString()} tokens {props.modelLimit > 200000 && `(cap: 200k)`}
-                    </span>
-                </div>
-                <div style={{ width: '100%', height: '4px', background: 'var(--bg-active)', borderRadius: '2px', overflow: 'hidden' }}>
-                    <div style={{
-                        width: `${Math.min(100, (props.currentTokens / props.modelLimit) * 100)}%`,
-                        height: '100%',
-                        background: isOverLimit ? '#ef4444' : isNearLimit ? '#f59e0b' : 'var(--accent-primary)',
-                        transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease',
-                        boxShadow: isOverLimit ? '0 0 8px rgba(239, 68, 68, 0.5)' : isNearLimit ? '0 0 8px rgba(245, 158, 11, 0.5)' : 'none'
-                    }} />
-                </div>
-                {isOverLimit && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#ef4444', marginTop: '2px' }}>
-                        <span className="codicon codicon-warning" style={{ fontSize: '12px' }} />
-                        <span>⚠️ <strong>High Pollution:</strong> Reasoning quality may degrade. Consider using <strong>Fork Chat</strong> or <strong>Fork Sub-Thread</strong>.</span>
-                    </div>
-                )}
-            </div>
 
             <div style={{
                 background: 'var(--bg-secondary)',
@@ -237,6 +228,127 @@ export function ChatInputArea(props: ChatInputAreaProps) {
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        {/* Token / Cost Circular Indicator */}
+                        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                            <div
+                                onClick={() => setShowDetails(!showDetails)}
+                                title="Click to view context and cost details"
+                                style={{
+                                    width: 22,
+                                    height: 22,
+                                    borderRadius: '50%',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    cursor: 'pointer',
+                                    background: showDetails ? 'var(--bg-active)' : 'transparent',
+                                    transition: 'background-color 0.2s ease',
+                                    position: 'relative'
+                                }}
+                                onMouseOver={(e) => { if (!showDetails) e.currentTarget.style.backgroundColor = 'var(--bg-hover)'; }}
+                                onMouseOut={(e) => { if (!showDetails) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                            >
+                                <svg width="18" height="18" viewBox="0 0 20 20">
+                                    <circle
+                                        cx="10"
+                                        cy="10"
+                                        r="8"
+                                        fill="none"
+                                        stroke="var(--border-subtle)"
+                                        strokeWidth="1.5"
+                                    />
+                                    <circle
+                                        cx="10"
+                                        cy="10"
+                                        r="8"
+                                        fill="none"
+                                        stroke={strokeColor}
+                                        strokeWidth="2"
+                                        strokeDasharray="50.265"
+                                        strokeDashoffset={strokeOffset}
+                                        transform="rotate(-90 10 10)"
+                                        style={{
+                                            transition: 'stroke-dashoffset 0.3s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.3s ease'
+                                        }}
+                                    />
+                                </svg>
+                            </div>
+
+                            {/* Details Popover Card */}
+                            {showDetails && (
+                                <div style={{
+                                    position: 'absolute',
+                                    bottom: '30px',
+                                    right: '0',
+                                    width: '260px',
+                                    background: 'var(--bg-secondary)',
+                                    backdropFilter: 'blur(12px)',
+                                    border: '1px solid var(--border-subtle)',
+                                    borderRadius: '8px',
+                                    padding: '12px',
+                                    boxShadow: '0 10px 30px rgba(0,0,0,0.3)',
+                                    zIndex: 1000,
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '8px',
+                                    animation: 'fadeInUp 0.15s ease-out'
+                                }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '6px', marginBottom: '2px' }}>
+                                        <span style={{ fontWeight: 600, fontSize: '11px', color: 'var(--text-primary)' }}>Chat Token Details</span>
+                                        <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Model Limit: {props.modelLimit.toLocaleString()}</span>
+                                    </div>
+                                    
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '11px' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                            <span style={{ color: 'var(--text-secondary)' }}>History:</span>
+                                            <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{props.tokenDetails.historyTokens.toLocaleString()} t</span>
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                            <span style={{ color: 'var(--text-secondary)' }}>Draft Message:</span>
+                                            <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{props.tokenDetails.draftTokens.toLocaleString()} t</span>
+                                        </div>
+                                        {props.tokenDetails.fileTokens > 0 && (
+                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                <span style={{ color: 'var(--text-secondary)' }}>File Attachment:</span>
+                                                <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{props.tokenDetails.fileTokens.toLocaleString()} t</span>
+                                            </div>
+                                        )}
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed var(--border-subtle)', paddingTop: '4px', marginTop: '2px', fontWeight: 600 }}>
+                                            <span style={{ color: isOverLimit ? '#ef4444' : isNearLimit ? '#f59e0b' : 'var(--text-primary)' }}>Total Context:</span>
+                                            <span style={{ color: isOverLimit ? '#ef4444' : isNearLimit ? '#f59e0b' : 'var(--text-primary)' }}>
+                                                {totalTokens.toLocaleString()} t ({Math.round(Math.min(percentage, 100))}%)
+                                            </span>
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed var(--border-subtle)', paddingTop: '4px', marginTop: '2px' }}>
+                                            <span style={{ color: 'var(--text-secondary)' }}>Total Sent (Input):</span>
+                                            <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+                                                {props.tokenDetails.totalInputTokens.toLocaleString()} t
+                                            </span>
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                            <span style={{ color: 'var(--text-secondary)' }}>Total Received (Output):</span>
+                                            <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+                                                {props.tokenDetails.totalOutputTokens.toLocaleString()} t
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-subtle)', paddingTop: '6px', marginTop: '2px', fontSize: '11px' }}>
+                                        <span style={{ color: 'var(--text-secondary)' }}>Accumulated Cost:</span>
+                                        <span style={{ fontWeight: 600, color: '#10b981' }}>
+                                            ${props.tokenDetails.totalCost === 0 ? '0.00' : props.tokenDetails.totalCost.toFixed(4)}
+                                        </span>
+                                    </div>
+
+                                    {isOverLimit && (
+                                        <div style={{ color: '#ef4444', fontSize: '10px', marginTop: '4px', background: 'rgba(239, 68, 68, 0.1)', padding: '6px', borderRadius: '4px', border: '1px solid rgba(239, 68, 68, 0.2)', lineHeight: '1.4' }}>
+                                            ⚠️ <strong>High Pollution:</strong> Reasoning quality may degrade. Consider using <strong>Fork Chat</strong> or <strong>Fork Sub-Thread</strong>.
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
                         <button
                             title="Voice Input"
                             style={{
