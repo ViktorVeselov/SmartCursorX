@@ -30,6 +30,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [modelProvider, setModelProvider] = useState('openai');
     const [openAIKey, setOpenAIKey] = useState('');
     const [anthropicKey, setAnthropicKey] = useState('');
+    const [geminiKey, setGeminiKey] = useState('');
     const [liteLLMKey, setLiteLLMKey] = useState('');
     const [githubToken, setGithubToken] = useState('');
 
@@ -136,6 +137,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
             const aKey = await getIpc().invoke('ai:get-provider-key', 'anthropic');
             if (aKey) setAnthropicKey(aKey);
+
+            const gKey = await getIpc().invoke('ai:get-provider-key', 'gemini');
+            if (gKey) setGeminiKey(gKey);
 
             const lKey = await getIpc().invoke('ai:get-provider-key', 'litellm');
             if (lKey) setLiteLLMKey(lKey);
@@ -265,6 +269,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             await getIpc().invoke('set-api-key', openAIKey);
         } else if (modelProvider === 'anthropic' && anthropicKey) {
             await getIpc().invoke('ai:save-config', { providerId: 'anthropic', apiKey: anthropicKey });
+        } else if (modelProvider === 'gemini' && geminiKey) {
+            await getIpc().invoke('ai:save-config', { providerId: 'gemini', apiKey: geminiKey });
         } else if (modelProvider === 'litellm' && liteLLMKey) {
             await getIpc().invoke('ai:save-config', { providerId: 'litellm', apiKey: liteLLMKey });
         } else if (customProviders.some(p => p.id === modelProvider) && customApiKey) {
@@ -289,7 +295,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         // Save active provider config to initialize AIService
         await getIpc().invoke('ai:save-config', {
             providerId: modelProvider,
-            apiKey: modelProvider === 'openai' ? openAIKey : modelProvider === 'anthropic' ? anthropicKey : modelProvider === 'litellm' ? liteLLMKey : modelProvider === 'ollama' || modelProvider === 'zen' ? '' : customApiKey
+            apiKey: modelProvider === 'openai' ? openAIKey : modelProvider === 'anthropic' ? anthropicKey : modelProvider === 'gemini' ? geminiKey : modelProvider === 'litellm' ? liteLLMKey : modelProvider === 'ollama' || modelProvider === 'zen' ? '' : customApiKey
         });
 
         // Save general & agent configuration (including cloud settings)
@@ -412,6 +418,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             zenModelInfo={zenModelInfo}
                             openAIKey={openAIKey} setOpenAIKey={setOpenAIKey}
                             anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey}
+                            geminiKey={geminiKey} setGeminiKey={setGeminiKey}
                             liteLLMKey={liteLLMKey} setLiteLLMKey={setLiteLLMKey}
                             customApiKey={customApiKey} setCustomApiKey={setCustomApiKey}
                             customProviderIsLocal={customProviderIsLocal} setCustomProviderIsLocal={setCustomProviderIsLocal}

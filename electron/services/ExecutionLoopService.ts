@@ -8,6 +8,7 @@ import { ContextAssembler } from './ContextAssembler';
 import { LearningService } from './LearningService';
 import { ASTPatchingService } from './ASTPatchingService';
 import { secureStore } from '../secureStore';
+import { taxonomyService } from './taxonomy/TaxonomyService';
 import * as fs from 'fs';
 import * as path from 'path';
 import console from 'console';
@@ -53,13 +54,29 @@ export class ExecutionLoopService {
         console.assert(activeTask !== null, 'Active task must exist in DB');
         const modelUsed = secureStore.getSelectedModel();
 
+        let investText = '';
+
         // ==========================================================
         // Phase 1 & 2: Pre-Flight Zero-Assumption Investigation Phase
         // ==========================================================
         if (aiService.isActive()) {
             console.log(`[ExecutionLoopService] Triggering Taxonomy Steering: Active Investigation Phase...`);
             const investAssembled = await ContextAssembler.assembleContext(taskId, []);
-            const investSystemInstructions = ASTPatchingService.shapeSystemInstructions('investigate', investAssembled.systemPrompt);
+            const investSystemInstructions = ASTPatchingService.shapeSystemInstructions(
+                'investigate',
+                investAssembled.systemPrompt,
+                undefined,
+                investAssembled.taxonomyResult
+            );
+
+            if (investAssembled.taxonomyResult) {
+                try {
+                    taxonomyService.trackResult(taskId, investAssembled.taxonomyResult, 'investigation');
+                } catch (e) {
+                    console.error('[ExecutionLoopService] Failed to track investigation taxonomy:', e);
+                }
+            }
+
             const investPrompt = `Analyze the requirements for Task: "${activeTask.title}" and plan modifications.
 1. Trace and check all dependency signatures and database schema constraints.
 2. Outline a deterministic "Assumption Matrix" inside a scratchpad block.
@@ -71,7 +88,7 @@ export class ExecutionLoopService {
             ], { temperature: 0.1, model: modelUsed });
             console.log(`[ExecutionLoopService] Active Investigation completed successfully.`);
 
-            const investText = typeof investResult === 'string' ? investResult : 'text' in investResult ? investResult.text : '';
+            investText = typeof investResult === 'string' ? investResult : 'text' in investResult ? investResult.text : '';
             if (investText) {
                 dbService.addModelPerformance(
                     modelUsed,
@@ -96,15 +113,23 @@ export class ExecutionLoopService {
                     SnapshotService.rollbackToSnapshot(preSnapshotId);
                 }
 
-                const assembled = await ContextAssembler.assembleContext(taskId, []);
+                const assembled = await ContextAssembler.assembleContext(taskId, [], undefined, undefined, undefined, investText);
                 
+                if (assembled.taxonomyResult) {
+                    try {
+                        taxonomyService.trackResult(taskId, assembled.taxonomyResult, 'modify');
+                    } catch (e) {
+                        console.error('[ExecutionLoopService] Failed to track modify taxonomy:', e);
+                    }
+                }
+
                 // Expose ONLY modify instructions and ask for JSON AST Patch!
-                let systemInstructions = ASTPatchingService.shapeSystemInstructions('modify', assembled.systemPrompt);
+                let systemInstructions = ASTPatchingService.shapeSystemInstructions('modify', assembled.systemPrompt, undefined, assembled.taxonomyResult);
                 
                 if (attempt > 1 && failureFeedback) {
                     // Inject Compiler-Audited Self-Healing instructions!
                     const fileExt = filesToModify.length > 0 ? path.extname(filesToModify[0]) : '';
-                    systemInstructions = ASTPatchingService.shapeSystemInstructions('verify', assembled.systemPrompt, fileExt);
+                    systemInstructions = ASTPatchingService.shapeSystemInstructions('verify', assembled.systemPrompt, fileExt, assembled.taxonomyResult);
                     systemInstructions += `\n\n⚠️ PREVIOUS ATTEMPT FAILED VERIFICATION!\n` +
                         `Error & Feedback:\n${failureFeedback}\n` +
                         `Analyze the compiler logs and linter errors above, self-correct your mistakes, and write a repaired JSON AST patch.`;
@@ -155,7 +180,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                     aiService.isActive() ? aiService.providerId : 'fallback'
                 );
 
-                finalOutputStatus = await VerificationService.verifyOutput(outputId);
+                finalOutputStatus = await VerificationService.verifyOutput(outputId, assembled.taxonomyResult);
 
                 dbService.addExecutionAttempt(
                     taskId,

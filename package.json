@@ -28,13 +28,12 @@
     "monaco-vim": "^0.4.1",
     "node-pty": "^1.1.0",
     "ollama-ai-provider": "^1.2.0",
-    "openai": "^6.16.0",
+    
     "prismjs": "^1.29.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-resizable-panels": "^4.4.1",
     "reactflow": "^11.11.4",
-    "sql.js": "^1.10.0",
     "sqlite-vec": "^0.1.9",
     "xterm": "^5.3.0",
     "zod": "^4.4.3"
@@ -42,10 +41,9 @@
   "devDependencies": {
     "@types/react": "^18.2.64",
     "@types/react-dom": "^18.2.21",
-    "@types/sql.js": "^1.4.9",
     "@typescript-eslint/eslint-plugin": "^7.1.1",
     "@typescript-eslint/parser": "^7.1.1",
-    "@vitejs/plugin-react": "^4.2.1",
+    "@vitejs/plugin-react": "^6.0.2",
     "electron": "^39.8.5",
     "electron-builder": "^26.8.1",
     "eslint": "^8.57.0",
@@ -54,8 +52,8 @@
     "monaco-editor": "^0.55.1",
     "typescript": "^5.2.2",
     "vite": "^8.0.14",
-    "vite-plugin-electron": "^0.28.6",
-    "vite-plugin-electron-renderer": "^0.14.7"
+    "vite-plugin-electron": "^1.0.4",
+    "vite-plugin-electron-renderer": "^1.0.0"
   },
   "optionalDependencies": {
     "@rolldown/binding-win32-x64-msvc": "^1.0.3"

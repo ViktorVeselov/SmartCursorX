@@ -52,7 +52,7 @@ export class ASTPatchingService {
     /**
      * Enforces Phase-Specific Tool Masking & Steering Policy.
      */
-    static shapeSystemInstructions(phase: 'investigate' | 'modify' | 'verify', basePrompt: string, activeFileExt?: string): string {
+    static shapeSystemInstructions(phase: 'investigate' | 'modify' | 'verify', basePrompt: string, activeFileExt?: string, taxonomyResult?: any): string {
         let steeringDirectives = '';
 
         if (phase === 'investigate') {
@@ -112,7 +112,17 @@ export class ASTPatchingService {
 `;
         }
 
-        return `${basePrompt}\n${steeringDirectives}\n`;
+        let domainDirectives = '';
+        if (taxonomyResult && taxonomyResult.resolvedSlots) {
+            // Check if we have specific slots for this phase
+            const slotName = phase === 'investigate' ? 'domain_guidance' : phase === 'modify' ? 'domain_guidance' : 'verification_focus';
+            const val = taxonomyResult.resolvedSlots.get(slotName);
+            if (val && val.trim().length > 0) {
+                domainDirectives = `\n${val}\n`;
+            }
+        }
+
+        return `${basePrompt}\n${steeringDirectives}\n${domainDirectives}`;
     }
 
     /**

@@ -16,6 +16,8 @@ interface SettingsModelsTabProps {
     setOpenAIKey: (v: string) => void;
     anthropicKey: string;
     setAnthropicKey: (v: string) => void;
+    geminiKey: string;
+    setGeminiKey: (v: string) => void;
     liteLLMKey: string;
     setLiteLLMKey: (v: string) => void;
     customApiKey: string;
@@ -80,6 +82,7 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
         zenModelInfo,
         openAIKey, setOpenAIKey,
         anthropicKey, setAnthropicKey,
+        geminiKey, setGeminiKey,
         liteLLMKey, setLiteLLMKey,
         customApiKey, setCustomApiKey,
         customProviderIsLocal, setCustomProviderIsLocal,
@@ -128,6 +131,7 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                             >
                                 <option value="openai">OpenAI (Official)</option>
                                 <option value="anthropic">Anthropic (Official)</option>
+                                <option value="gemini">Google Gemini (Official)</option>
                                 <option value="litellm">LiteLLM (Local Proxy)</option>
                                 <option value="ollama">Ollama (Local)</option>
                                 <option value="zen">OpenCode Zen — Free Models</option>
@@ -183,6 +187,8 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                                         ? openAIKey
                                         : modelProvider === 'anthropic'
                                         ? anthropicKey
+                                        : modelProvider === 'gemini'
+                                        ? geminiKey
                                         : modelProvider === 'litellm'
                                         ? liteLLMKey
                                         : customApiKey
@@ -191,6 +197,7 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                                     const val = e.target.value;
                                     if (modelProvider === 'openai') setOpenAIKey(val);
                                     else if (modelProvider === 'anthropic') setAnthropicKey(val);
+                                    else if (modelProvider === 'gemini') setGeminiKey(val);
                                     else if (modelProvider === 'litellm') setLiteLLMKey(val);
                                     else setCustomApiKey(val);
                                 }}
@@ -199,6 +206,8 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                                         ? 'sk-...'
                                         : modelProvider === 'anthropic'
                                         ? 'sk-ant-...'
+                                        : modelProvider === 'gemini'
+                                        ? 'AIzaSy...'
                                         : modelProvider === 'litellm'
                                         ? 'Enter LiteLLM proxy API key (Optional)'
                                         : 'Enter API key or token if required'

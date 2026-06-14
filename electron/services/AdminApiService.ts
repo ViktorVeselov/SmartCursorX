@@ -204,10 +204,21 @@ export class AdminApiService {
 
     private parseJsonBody<T>(req: http.IncomingMessage, res: http.ServerResponse, callback: (body: T) => void): void {
         let bodyStr = '';
+        let limitExceeded = false;
+        const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024; // 5MB limit
+
         req.on('data', chunk => {
+            if (limitExceeded) return;
             bodyStr += chunk;
+            if (bodyStr.length > MAX_PAYLOAD_SIZE) {
+                limitExceeded = true;
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Payload Too Large: Maximum permitted size is 5MB' }));
+                req.destroy();
+            }
         });
         req.on('end', () => {
+            if (limitExceeded) return;
             try {
                 const parsed = JSON.parse(bodyStr) as T;
                 callback(parsed);

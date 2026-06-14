@@ -55,7 +55,7 @@ export function createLanguageModel(config: ProviderConfig, modelId: string): La
     case 'gemini':
       return createOpenAICompatible({
         name: 'gemini',
-        baseURL: config.baseUrl || 'https://generativelanguage.googleapis.com/v1beta/openai',
+        baseURL: config.baseUrl || 'https://generativelanguage.googleapis.com/v1beta/openai/',
         apiKey: config.apiKey,
         supportsStructuredOutputs: true,
       }).languageModel(modelId) as unknown as LanguageModel;

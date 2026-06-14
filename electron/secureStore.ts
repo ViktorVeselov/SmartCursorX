@@ -12,6 +12,7 @@ interface SecureStoreSchema {
     // Encrypted values stored as base64 strings
     openaiApiKey_encrypted?: string;
     anthropicApiKey_encrypted?: string;
+    geminiApiKey_encrypted?: string;
     ollamaApiKey_encrypted?: string;
     githubToken_encrypted?: string;
     
@@ -317,7 +318,7 @@ secureStore.setGitHubToken = function(token: string): void {
 
 // Export listEncryptedKeys separately
 export function listEncryptedKeys() {
-    const knownProviders = ['openai', 'anthropic', 'ollama', 'github'];
+    const knownProviders = ['openai', 'anthropic', 'gemini', 'ollama', 'github'];
     const encryptionAvailable = safeStorage.isEncryptionAvailable();
     return knownProviders.map(id => {
         let hasKey = false;
