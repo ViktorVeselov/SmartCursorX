@@ -6,13 +6,14 @@ import { SettingsAgentTab } from './SettingsAgentTab';
 import { SettingsRulesTab } from './SettingsRulesTab';
 import { SettingsOpenClawTab } from './SettingsOpenClawTab';
 import { SettingsUsageTab } from './SettingsUsageTab';
+import { SettingsPerformanceTab } from './SettingsPerformanceTab';
 
 interface SettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
 }
 
-type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'openclaw' | 'local' | 'usage';
+type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'openclaw' | 'local' | 'usage' | 'performance';
 
 const getIpc = () => window.ipcRenderer;
 
@@ -385,7 +386,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         Settings
                     </div>
                     {(() => {
-                        const baseTabs = ['general', 'models', 'agent', 'rules', 'openclaw', 'usage'];
+                        const baseTabs = ['general', 'models', 'agent', 'rules', 'openclaw', 'usage', 'performance'];
                         const isLocalProvider = modelProvider === 'ollama' || modelProvider === 'litellm' || customProviders.some((p: Record<string, unknown>) => p.id === modelProvider && (p.isLocal || p.is_local));
                         if (isLocalProvider) baseTabs.push('local');
                         return baseTabs.map(tab => (
@@ -402,7 +403,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     fontSize: 13
                                 }}
                             >
-                                {tab === 'openclaw' ? '🦞 OpenClaw' : tab === 'local' ? 'Local LLMs' : tab === 'usage' ? '📊 Usage & Costs' : tab === 'rules' ? '📜 Rules' : tab}
+                                {tab === 'openclaw' ? '🦞 OpenClaw' : tab === 'local' ? 'Local LLMs' : tab === 'usage' ? '📊 Usage & Costs' : tab === 'performance' ? '⚡ Performance' : tab === 'rules' ? '📜 Rules' : tab}
                             </div>
                         ));
                     })()}
@@ -490,6 +491,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                     {activeTab === 'usage' && (
                         <SettingsUsageTab usageStats={usageStats} setUsageStats={setUsageStats} />
+                    )}
+
+                    {activeTab === 'performance' && (
+                        <SettingsPerformanceTab />
                     )}
                 </div>
 

@@ -3,6 +3,7 @@ import { CodeAnalysisService } from './CodeAnalysisService';
 import { EmbeddingService } from './EmbeddingService';
 import { taxonomyService } from './taxonomy/TaxonomyService';
 import { TaxonomyPromptComposer } from './taxonomy/TaxonomyPromptComposer';
+import { PathGuard } from './PathGuard';
 import { RuleDiscoveryService } from './RuleDiscoveryService';
 import { ContextReconciler } from './ContextReconciler';
 import console from 'console';
@@ -117,7 +118,7 @@ export class ContextAssembler {
             
             for (const file of uniquePaths) {
                 try {
-                    const absolutePath = this.resolveToAllowedRoot(file, workspacePath);
+                    const absolutePath = PathGuard.resolve(file);
                     if (!absolutePath || !fs.existsSync(absolutePath)) {
                         console.warn(`[ContextAssembler] AST Pruning: File ${file} not found in whitelisted roots. Skipping.`);
                         continue;
@@ -297,7 +298,7 @@ export class ContextAssembler {
         if (filesToParse.size > 0) {
             for (const file of filesToParse) {
                 try {
-                    const absolutePath = this.resolveToAllowedRoot(file, workspacePath);
+                    const absolutePath = PathGuard.resolve(file);
                     if (absolutePath && fs.existsSync(absolutePath)) {
                         fileContentsMap[file] = fs.readFileSync(absolutePath, 'utf8');
                     }
@@ -374,36 +375,5 @@ Execute the active task effectively using the predefined plan.`;
         return Math.ceil(text.length / 4);
     }
 
-    private static getWhitelistedRoots(workspacePath?: string | null): string[] {
-        if (workspacePath && workspacePath.trim().length > 0) {
-            return [path.resolve(workspacePath)];
-        }
-        return [];
-    }
 
-    private static normalizePathForCompare(p: string): string {
-        let resolved = path.resolve(p);
-        if (process.platform === 'win32') {
-            resolved = resolved.toLowerCase();
-        }
-        return resolved;
-    }
-
-    private static resolveToAllowedRoot(relativePath: string, workspacePath?: string | null): string | null {
-        const roots = this.getWhitelistedRoots(workspacePath);
-        for (const root of roots) {
-            const resolvedPath = path.isAbsolute(relativePath)
-                ? relativePath
-                : path.resolve(root, relativePath);
-            const normRoot = this.normalizePathForCompare(root);
-            const normResolved = this.normalizePathForCompare(resolvedPath);
-            
-            const relative = path.relative(normRoot, normResolved);
-            const contained = relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
-            if (contained) {
-                return resolvedPath;
-            }
-        }
-        return null;
-    }
 }

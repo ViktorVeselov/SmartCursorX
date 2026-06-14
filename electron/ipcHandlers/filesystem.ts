@@ -1,6 +1,7 @@
 import { dialog } from 'electron';
 import path from 'path';
 import { createRequire } from 'module';
+import { PathGuard } from '../services/PathGuard';
 import { CodeAnalysisService } from '../services/CodeAnalysisService';
 import { checkArgs } from '../../src/helpers/invariant';
 import type { IpcHandlerContext } from './index';
@@ -28,6 +29,9 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('read-dir', async (_event, dirPath) => {
         if (typeof dirPath !== 'string') throw new Error('Invalid path argument');
+        if (!PathGuard.isContained(dirPath)) {
+            throw new Error(`Security: Read directory "${dirPath}" is outside the workspace root`);
+        }
 
         try {
             const names = await fs.readdir(dirPath);
@@ -52,6 +56,9 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('read-file', async (_event, filePath) => {
         if (typeof filePath !== 'string') throw new Error('Invalid path argument');
+        if (!PathGuard.isContained(filePath)) {
+            throw new Error(`Security: Read of "${filePath}" is outside the workspace root`);
+        }
 
         const binaryExts = ['.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.bmp', '.svg',
             '.pdf', '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.dylib',
@@ -77,6 +84,9 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
     ipcMain.handle('write-file', async (_event, filePath, content) => {
         if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('Invalid file path');
         if (typeof content !== 'string') throw new Error('Invalid content');
+        if (!PathGuard.isContained(filePath)) {
+            throw new Error(`Security: Write to "${filePath}" is outside the workspace root`);
+        }
 
         try {
             let additions = 0;
@@ -117,6 +127,9 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('delete-path', async (_event, targetPath) => {
         if (typeof targetPath !== 'string') throw new Error('Invalid path argument');
+        if (!PathGuard.isContained(targetPath)) {
+            throw new Error(`Security: Delete of "${targetPath}" is outside the workspace root`);
+        }
         try {
             const stats = await fs.stat(targetPath);
             if (stats.isDirectory()) {
@@ -133,6 +146,12 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('rename-path', async (_event, oldPath, newPath) => {
         if (typeof oldPath !== 'string' || typeof newPath !== 'string') throw new Error('Invalid path arguments');
+        if (!PathGuard.isContained(oldPath)) {
+            throw new Error(`Security: Rename source "${oldPath}" is outside the workspace root`);
+        }
+        if (!PathGuard.isContained(newPath)) {
+            throw new Error(`Security: Rename target "${newPath}" is outside the workspace root`);
+        }
         try {
             await fs.rename(oldPath, newPath);
             return true;
@@ -144,6 +163,9 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('create-directory', async (_event, dirPath) => {
         if (typeof dirPath !== 'string') throw new Error('Invalid path argument');
+        if (!PathGuard.isContained(dirPath)) {
+            throw new Error(`Security: Create directory "${dirPath}" is outside the workspace root`);
+        }
         try {
             await fs.mkdir(dirPath, { recursive: true });
             return true;

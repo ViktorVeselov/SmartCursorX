@@ -6,6 +6,7 @@ import { PlanningService } from './PlanningService';
 import { TaskService } from './TaskService';
 import { ContextAssembler } from './ContextAssembler';
 import { LearningService } from './LearningService';
+import { PathGuard } from './PathGuard';
 import { ASTPatchingService } from './ASTPatchingService';
 import { PendingModificationsService } from './PendingModificationsService';
 import { secureStore } from '../secureStore';
@@ -57,51 +58,7 @@ export class ExecutionLoopService {
         const modelUsed = secureStore.getSelectedModel();
 
         let investText = '';
-
-        // ==========================================================
-        // Phase 1 & 2: Pre-Flight Zero-Assumption Investigation Phase
-        // ==========================================================
-        if (aiService.isActive()) {
-            console.log(`[ExecutionLoopService] Triggering Taxonomy Steering: Active Investigation Phase...`);
-            const investAssembled = await ContextAssembler.assembleContext(taskId, []);
-            const investSystemInstructions = ASTPatchingService.shapeSystemInstructions(
-                'investigate',
-                investAssembled.systemPrompt,
-                undefined,
-                investAssembled.taxonomyResult
-            );
-
-            if (investAssembled.taxonomyResult) {
-                try {
-                    taxonomyService.trackResult(taskId, investAssembled.taxonomyResult, 'investigation');
-                } catch (e) {
-                    console.error('[ExecutionLoopService] Failed to track investigation taxonomy:', e);
-                }
-            }
-
-            const investPrompt = `Analyze the requirements for Task: "${activeTask.title}" and plan modifications.
-1. Trace and check all dependency signatures and database schema constraints.
-2. Outline a deterministic "Assumption Matrix" inside a scratchpad block.
-3. Validate that you are ready and have no blind spots. Do NOT propose code changes yet.`;
-
-            const investResult = await aiService.chat([
-                { role: 'system', content: investSystemInstructions },
-                { role: 'user', content: investPrompt }
-            ], { temperature: 0.1, model: modelUsed });
-            console.log(`[ExecutionLoopService] Active Investigation completed successfully.`);
-
-            investText = typeof investResult === 'string' ? investResult : 'text' in investResult ? investResult.text : '';
-            if (investText) {
-                dbService.addModelPerformance(
-                    modelUsed,
-                    aiService.providerId,
-                    'investigation',
-                    1, 1,
-                    Math.ceil(investText.length / 4),
-                    Date.now() - startTime
-                );
-            }
-        }
+        investText = await this.performInvestigation(taskId, activeTask, modelUsed, startTime);
 
         // ==========================================================
         // Modification and Compiler-Audited Self-Healing Loops
@@ -168,7 +125,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                     console.warn(`[ExecutionLoopService] AST JSON Preview Patching failed or returned non-JSON. Falling back to Full-File Markdown Block parser.`);
 
                     // Fallback: use full-file blocks to build preview patches
-                    const fallbackPatches = this.generateFallbackPatches(responseContent, taskId);
+                    const fallbackPatches = this.generateFallbackPatches(responseContent);
                     if (fallbackPatches.length > 0) {
                         previewPatches.push(...fallbackPatches);
                         parseSuccess = true;
@@ -220,7 +177,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                 parseSuccess = ASTPatchingService.applyJSONPatch(responseContent);
                 if (!parseSuccess) {
                     // Fallback: apply full-file blocks
-                    parseSuccess = this.applyFileEdits(responseContent, taskId);
+                    parseSuccess = this.applyFileEdits(responseContent);
                     if (!parseSuccess) {
                         throw new Error('Failed to write accepted modifications to disk.');
                     }
@@ -322,59 +279,78 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
         }
     }
 
-    private static generateFallbackPatches(response: string, taskId: number): import('../../src/types/appTypes').PendingFileModification[] {
-        if (!response) return [];
+    private static async performInvestigation(
+        taskId: number,
+        activeTask: any,
+        modelUsed: string,
+        startTime: number
+    ): Promise<string> {
+        if (!aiService.isActive()) return '';
 
-        const fileBlockRegex = /===\s*FILE:\s*([^\s=]+)\s*===([\s\S]*?)===\s*END FILE\s*===/gi;
-        let match;
-        const results: import('../../src/types/appTypes').PendingFileModification[] = [];
+        console.log(`[ExecutionLoopService] Triggering Taxonomy Steering: Active Investigation Phase...`);
+        const investAssembled = await ContextAssembler.assembleContext(taskId, []);
+        const investSystemInstructions = ASTPatchingService.shapeSystemInstructions(
+            'investigate',
+            investAssembled.systemPrompt,
+            undefined,
+            investAssembled.taxonomyResult
+        );
 
-        const workspacePath = dbService.getWorkspacePathForTask(taskId);
-        if (!workspacePath) {
-            console.error(`[ExecutionLoopService] Safety Block: No active workspace opened for task ID ${taskId}`);
-            return [];
+        if (investAssembled.taxonomyResult) {
+            try {
+                taxonomyService.trackResult(taskId, investAssembled.taxonomyResult, 'investigation');
+            } catch (e) {
+                console.error('[ExecutionLoopService] Failed to track investigation taxonomy:', e);
+            }
         }
 
-        const workspaceRoot = path.resolve(workspacePath);
-        const parentRoot = path.resolve(workspaceRoot, '..');
+        const investPrompt = `Analyze the requirements for Task: "${activeTask.title}" and plan modifications.
+1. Trace and check all dependency signatures and database schema constraints.
+2. Outline a deterministic "Assumption Matrix" inside a scratchpad block.
+3. Validate that you are ready and have no blind spots. Do NOT propose code changes yet.`;
 
-        const allowedRoots = [
-            workspaceRoot,
-            path.resolve(parentRoot, 'adk-python-community'),
-            path.resolve(parentRoot, 'google-sdk')
-        ];
+        const investResult = await aiService.chat([
+            { role: 'system', content: investSystemInstructions },
+            { role: 'user', content: investPrompt }
+        ], { temperature: 0.1, model: modelUsed });
 
-        const normalizePathForCompare = (p: string) => {
-            let resolved = path.resolve(p);
-            if (process.platform === 'win32') {
-                resolved = resolved.toLowerCase();
-            }
-            return resolved;
-        };
+        console.log(`[ExecutionLoopService] Active Investigation completed successfully.`);
 
+        const investText = typeof investResult === 'string' ? investResult : 'text' in investResult ? investResult.text : '';
+        if (investText) {
+            dbService.addModelPerformance(
+                modelUsed,
+                aiService.providerId,
+                'investigation',
+                1, 1,
+                Math.ceil(investText.length / 4),
+                Date.now() - startTime
+            );
+        }
+        return investText;
+    }
+
+    private static parseFileBlockResponse(response: string): Array<{ relativePath: string; content: string }> {
+        if (!response) return [];
+        const fileBlockRegex = /===\s*FILE:\s*([^\s=]+)\s*===([\s\S]*?)===\s*END FILE\s*===/gi;
+        let match;
+        const blocks: Array<{ relativePath: string; content: string }> = [];
         while ((match = fileBlockRegex.exec(response)) !== null) {
             const relativePath = match[1].trim();
             const rawContent = match[2];
             const cleanContent = rawContent.replace(/^\r?\n/, '').replace(/\r?\n\s*$/, '');
+            blocks.push({ relativePath, content: cleanContent });
+        }
+        return blocks;
+    }
 
-            let absolutePath = '';
-            let isContained = false;
+    private static generateFallbackPatches(response: string): import('../../src/types/appTypes').PendingFileModification[] {
+        const blocks = this.parseFileBlockResponse(response);
+        const results: import('../../src/types/appTypes').PendingFileModification[] = [];
 
-            for (const root of allowedRoots) {
-                const resolvedPath = path.resolve(root, relativePath);
-                const normRoot = normalizePathForCompare(root);
-                const normResolved = normalizePathForCompare(resolvedPath);
-
-                const relative = path.relative(normRoot, normResolved);
-                const contained = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
-                if (contained) {
-                    absolutePath = resolvedPath;
-                    isContained = true;
-                    break;
-                }
-            }
-
-            if (!isContained) {
+        for (const { relativePath, content: cleanContent } of blocks) {
+            const absolutePath = PathGuard.resolve(relativePath);
+            if (!absolutePath) {
                 console.error(`[ExecutionLoopService] Safety Block: Out-of-bounds file edit rejected: ${relativePath}`);
                 continue;
             }
@@ -402,62 +378,14 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
         return results;
     }
 
-    private static applyFileEdits(response: string, taskId: number): boolean {
-        if (!response) return false;
-
-        const fileBlockRegex = /===\s*FILE:\s*([^\s=]+)\s*===([\s\S]*?)===\s*END FILE\s*===/gi;
-        let match;
+    private static applyFileEdits(response: string): boolean {
+        const blocks = this.parseFileBlockResponse(response);
         let parsedAny = false;
 
-        while ((match = fileBlockRegex.exec(response)) !== null) {
-            const relativePath = match[1].trim();
-            const rawContent = match[2];
-            const cleanContent = rawContent.replace(/^\r?\n/, '').replace(/\r?\n\s*$/, '');
-
-            const workspacePath = dbService.getWorkspacePathForTask(taskId);
-            if (!workspacePath) {
-                console.error(`[ExecutionLoopService] Safety Block: No active workspace opened for task ID ${taskId}`);
-                return false;
-            }
-
-            const workspaceRoot = path.resolve(workspacePath);
-            const parentRoot = path.resolve(workspaceRoot, '..');
-            
-            // Whitelisted multi-root directories (React workspace + Python ADK plugin)
-            const allowedRoots = [
-                workspaceRoot,
-                path.resolve(parentRoot, 'adk-python-community'),
-                path.resolve(parentRoot, 'google-sdk')
-            ];
-
-            // Normalize slashes and force lowercase on Windows to prevent drive-letter conflicts
-            const normalizePathForCompare = (p: string) => {
-                let resolved = path.resolve(p);
-                if (process.platform === 'win32') {
-                    resolved = resolved.toLowerCase();
-                }
-                return resolved;
-            };
-
-            let absolutePath = '';
-            let isContained = false;
-
-            for (const root of allowedRoots) {
-                const resolvedPath = path.resolve(root, relativePath);
-                const normRoot = normalizePathForCompare(root);
-                const normResolved = normalizePathForCompare(resolvedPath);
-                
-                const relative = path.relative(normRoot, normResolved);
-                const contained = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
-                if (contained) {
-                    absolutePath = resolvedPath;
-                    isContained = true;
-                    break;
-                }
-            }
-
-            if (!isContained) {
-                console.error(`[ExecutionLoopService] Safety Block: Out-of-bounds file edit rejected: ${relativePath} (Tried roots: ${allowedRoots.join(', ')})`);
+        for (const { relativePath, content: cleanContent } of blocks) {
+            const absolutePath = PathGuard.resolve(relativePath);
+            if (!absolutePath) {
+                console.error(`[ExecutionLoopService] Safety Block: Out-of-bounds file edit rejected: ${relativePath}`);
                 return false;
             }
 

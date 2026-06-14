@@ -377,7 +377,7 @@ function App() {
         })
         .catch(err => {
           console.error('Failed to create file:', err);
-          alert('Failed to create file');
+          showNotification('Failed to create file');
         });
     } else {
       // Just in-memory untitled

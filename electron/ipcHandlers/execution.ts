@@ -7,6 +7,7 @@ import type { IpcHandlerContext } from './index';
 export function registerExecutionHandlers(ipcMain: Electron.IpcMain, _context: IpcHandlerContext) {
     ipcMain.handle('execution:start', async (_event, taskId: number) => {
         console.log(`[ExecutionHandler] Starting execution for task ${taskId}`);
+        PendingModificationsService.clear();
         try {
             const result = await ExecutionLoopService.executeTask(taskId);
             return { success: result === 'passed' };

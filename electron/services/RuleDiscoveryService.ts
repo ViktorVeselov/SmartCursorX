@@ -26,7 +26,8 @@ export class RuleDiscoveryService {
         const discoveredRules: string[] = [];
         const scannedPaths = new Set<string>();
 
-        while (true) {
+        let maxDepth = 20;
+        while (maxDepth-- > 0) {
             const resolvedCurrent = path.resolve(currentDir);
             
             // Check boundary traversal safety

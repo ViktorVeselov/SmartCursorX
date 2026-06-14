@@ -139,12 +139,14 @@ export function createTables(db: any) {
 
     try {
         db.prepare('ALTER TABLE custom_models ADD COLUMN has_thinking INTEGER DEFAULT 0').run();
-    } catch (e) {
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
     }
 
     try {
         db.prepare('ALTER TABLE custom_providers ADD COLUMN is_local INTEGER DEFAULT 0').run();
-    } catch (e) {
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
     }
 
     db.prepare(`
@@ -295,10 +297,14 @@ export function createTables(db: any) {
 
     try {
         db.prepare('ALTER TABLE model_performance ADD COLUMN input_tokens INTEGER DEFAULT 0').run();
-    } catch (e) {}
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
+    }
     try {
         db.prepare('ALTER TABLE model_performance ADD COLUMN output_tokens INTEGER DEFAULT 0').run();
-    } catch (e) {}
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
+    }
 
     db.prepare(`
         CREATE TABLE IF NOT EXISTS conversations (
@@ -313,13 +319,19 @@ export function createTables(db: any) {
 
     try {
         db.prepare("ALTER TABLE conversations ADD COLUMN model TEXT NOT NULL DEFAULT 'gpt-4o'").run();
-    } catch (e) {}
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
+    }
     try {
         db.prepare("ALTER TABLE conversations ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai'").run();
-    } catch (e) {}
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
+    }
     try {
         db.prepare("ALTER TABLE conversations ADD COLUMN workspace_path TEXT").run();
-    } catch (e) {}
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
+    }
 
     db.prepare(`
         CREATE TABLE IF NOT EXISTS chat_messages (

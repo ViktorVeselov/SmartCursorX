@@ -10,7 +10,11 @@
     "build:all": "npm run build:native && tsc && vite build && electron-builder -w -m",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
-    "test:taxonomy": "npx esbuild tests/unit/taxonomy/runTests.ts --bundle --platform=node --format=esm --alias:electron=./tests/unit/taxonomy/electron-mock.js --alias:electron-store=./tests/unit/taxonomy/electron-store-mock.js --outfile=tests/unit/taxonomy/runTests.js && node tests/unit/taxonomy/runTests.js"
+    "test:taxonomy": "npx esbuild tests/unit/taxonomy/runTests.ts --bundle --platform=node --format=esm --alias:electron=./tests/unit/taxonomy/electron-mock.js --alias:electron-store=./tests/unit/taxonomy/electron-store-mock.js --outfile=tests/unit/taxonomy/runTests.js && node tests/unit/taxonomy/runTests.js",
+    "test:pathguard": "npx esbuild tests/unit/pathGuard/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/pathGuard/runTests.js && node tests/unit/pathGuard/runTests.js",
+    "test:pm": "npx esbuild tests/unit/pendingModifications/runTests.ts --bundle --platform=node --format=esm --alias:electron=./tests/unit/taxonomy/electron-mock.js --outfile=tests/unit/pendingModifications/runTests.js && node tests/unit/pendingModifications/runTests.js",
+    "test:ipcsec": "npx esbuild tests/unit/ipcSecurity/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/ipcSecurity/runTests.js && node tests/unit/ipcSecurity/runTests.js",
+    "test": "npm run test:pathguard && npm run test:pm && npm run test:ipcsec"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.82",
