@@ -3,24 +3,7 @@ const canModelThink = (modelName: string) =>
     modelName.includes('deepseek-r1') || modelName.includes('reasoner') ||
     modelName.includes('gemini') || modelName.includes('claude');
 
-const ProviderBadge = ({ providerId }: { providerId: string }) => {
-    if (!providerId) return null;
-    return (
-        <span style={{
-            fontSize: '9px',
-            fontWeight: 400,
-            color: 'var(--text-secondary)',
-            opacity: 0.6,
-            background: 'var(--bg-hover)',
-            padding: '1px 4px',
-            borderRadius: '3px',
-            border: '1px solid var(--border-subtle)',
-            textTransform: 'uppercase'
-        }}>
-            {providerId}
-        </span>
-    );
-};
+
 
 export interface ModelDropdownProps {
     showModelDropdown: boolean;
@@ -74,7 +57,6 @@ export const ModelDropdown = ({
                     {activeModel ? (
                         <>
                             <span>{activeModel}</span>
-                            <ProviderBadge providerId={activeProvider} />
                         </>
                     ) : 'NO MODEL ACTIVE'}
                 </span>
@@ -135,11 +117,12 @@ export const ModelDropdown = ({
                             </div>
                         ) : (
                             customModels
+                                .filter((cm, index, self) => index === self.findIndex((t) => t.model_name === cm.model_name))
                                 .filter(cm => (cm.model_name as string).toLowerCase().includes(inlineModelInput.toLowerCase()))
                                 .map(cm => {
                                     const m = cm.model_name as string;
                                     const providerId = cm.provider_id as string;
-                                    const isSelected = activeModel === m && activeProvider === providerId;
+                                    const isSelected = activeModel === m;
 
                                     return (
                                         <div
@@ -182,7 +165,6 @@ export const ModelDropdown = ({
                                                 >
                                                     {m}
                                                 </span>
-                                                <ProviderBadge providerId={providerId} />
                                             </div>
 
                                             {canModelThink(m) && (
