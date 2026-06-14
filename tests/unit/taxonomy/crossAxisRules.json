@@ -1,0 +1,68 @@
+{
+  "rules": [
+    {
+      "axis1": "domain",
+      "axis1Path": "backend.database.relational.postgresql",
+      "axis2": "scale",
+      "axis2Path": "single-user.local-desktop",
+      "resolution": "Prefer local SQLite connection patterns if suitable; if PostgreSQL is requested, disable heavy connection pooling sizes or distributed setups. Enforce local single-client mode.",
+      "intersectionGuidance": "Local PostgreSQL execution: Keep pool size small (max: 2-5 connections). Avoid configuring distributed replication, master-replica routing, or horizontal scaling parameters."
+    },
+    {
+      "axis1": "domain",
+      "axis1Path": "backend.database.relational.postgresql",
+      "axis2": "paradigm",
+      "axis2Path": "functional",
+      "resolution": "Use database connection parameters passed as function arguments. Avoid mutating global objects or relying on class-scoped connections.",
+      "intersectionGuidance": "Functional Database Pattern: Maintain pure functions. Pass query clients (PoolClient or Transaction) explicitly as the first argument to database functions."
+    },
+    {
+      "axis1": "domain",
+      "axis1Path": "backend.database.relational.sqlite",
+      "axis2": "concurrency",
+      "axis2Path": "async-await",
+      "resolution": "Configure SQLite in WAL mode and use an appropriate busy_timeout (e.g. 5000ms) to prevent lock blocking on concurrent async writes.",
+      "intersectionGuidance": "SQLite Concurrency: Enable WAL mode (`db.pragma('journal_mode = WAL')`) and set busy_timeout to 5000ms. Handle transaction retries if SQLITE_BUSY occurs."
+    },
+    {
+      "axis1": "domain",
+      "axis1Path": "backend.database.keyvalue.redis",
+      "axis2": "concurrency",
+      "axis2Path": "async-await",
+      "resolution": "Use atomic Redis transactions (MULTI/EXEC) or Lua scripting (EVAL) to prevent race conditions during concurrent read-modify-write cache operations.",
+      "intersectionGuidance": "Redis Concurrency: Wrap multi-step key operations in MULTI/EXEC or deploy an atomic Lua script to run checks and mutations on the Redis server in a single thread-safe step."
+    },
+    {
+      "axis1": "domain",
+      "axis1Path": "backend.database.relational.postgresql",
+      "axis2": "scale",
+      "axis2Path": "production",
+      "resolution": "Configure pgbouncer or connection pooling dynamically. Set statement_timeout and lock_timeout to prevent query pileups.",
+      "intersectionGuidance": "Production PostgreSQL: Set connection pool size strictly. Implement lock_timeout (e.g., `SET lock_timeout = '3s'`) on transaction runs to prevent lock cascades on high-traffic tables."
+    },
+    {
+      "axis1": "domain",
+      "axis1Path": "backend.database.search.opensearch",
+      "axis2": "scale",
+      "axis2Path": "production",
+      "resolution": "Buffer search documents and execute updates in bulk. Configure circuit breakers and index refresh intervals for high write throughput.",
+      "intersectionGuidance": "Production OpenSearch: Batch search indexing requests into bulk (_bulk) API transactions. Set refresh_interval to 30s or longer to reduce IO contention under heavy loads."
+    },
+    {
+      "axis1": "domain",
+      "axis1Path": "backend.database.keyvalue.dynamodb",
+      "axis2": "scale",
+      "axis2Path": "production",
+      "resolution": "Mitigate hot partition keys. Use composite partition keys or pre-sharded suffixes if writes exceed 1000 WCU per key.",
+      "intersectionGuidance": "Production DynamoDB: Distribute writes evenly. If a partition key handles hot traffic (such as tenant or daily stats), append a random hash suffix (e.g. USER_123#2) to distribute data across physical storage nodes."
+    },
+    {
+      "axis1": "domain",
+      "axis1Path": "backend.database.columnar.clickhouse",
+      "axis2": "concurrency",
+      "axis2Path": "async-await",
+      "resolution": "Aggregate concurrent inserts into a single batch write. Avoid triggering concurrent inserts of individual rows to prevent clickhouse parts limits exhaustion.",
+      "intersectionGuidance": "ClickHouse Concurrency: Implement an in-memory buffer queue. Collect rows from concurrent async processes and flush them in batches of 10,000+ records to avoid exhausting merge parts."
+    }
+  ]
+}

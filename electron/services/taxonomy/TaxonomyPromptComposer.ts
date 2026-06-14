@@ -22,6 +22,26 @@ function findNodeInTree(tree: Record<string, TaxonomyNode>, id: string): Taxonom
 export class TaxonomyPromptComposer {
   static readonly SOFT_THRESHOLD = 0.3;
 
+  static readonly META_INSTRUCTION_HEADER = 
+    `=== TAXONOMY-DRIVEN DOMAIN AWARENESS ===\n` +
+    `The following domain-specific guidance has been activated based on analysis of your task.\n` +
+    `These are ADDITIONAL concerns to verify — they do NOT replace direct analysis of the\n` +
+    `actual codebase. Always verify guidance against the code before applying.\n` +
+    `If existing patterns in the codebase address a concern, follow the existing pattern.\n` +
+    `If guidance conflicts with what the code actually does, the code takes precedence.\n` +
+    `=== END TAXONOMY HEADER ===\n`;
+
+  static readonly SUPPORTING_GUIDANCE_HEADER = `\n\n### Supporting Cross-Domain Guidance\n`;
+
+  static readonly SUPPRESS_PATTERNS = [
+    'distributed caching',
+    'horizontal partition',
+    'sharding',
+    'replica',
+    'message queue',
+    'load balancer'
+  ];
+
   static resolveSlots(
     classification: MultiAxisClassification,
     context: OperationalContext,
@@ -142,7 +162,7 @@ export class TaxonomyPromptComposer {
 
       // Append cross-referenced supporting fragments if any
       if (crossRefFragments.length > 0) {
-        slotContent += `\n\n### Supporting Cross-Domain Guidance\n`;
+        slotContent += TaxonomyPromptComposer.SUPPORTING_GUIDANCE_HEADER;
         slotContent += crossRefFragments.map(rf => {
           activeFragmentIds.push(rf.id);
           return FragmentRenderer.renderFragment(rf, signals);
@@ -155,15 +175,7 @@ export class TaxonomyPromptComposer {
         (classification.scale.deepestNode.id === 'single-user.local-desktop' ||
           classification.scale.deepestNode.id === 'single-user')
       ) {
-        const suppressPatterns = [
-          'distributed caching',
-          'horizontal partition',
-          'sharding',
-          'replica',
-          'message queue',
-          'load balancer'
-        ];
-        for (const pat of suppressPatterns) {
+        for (const pat of TaxonomyPromptComposer.SUPPRESS_PATTERNS) {
           if (slotContent.toLowerCase().includes(pat)) {
             // Suppress: simple replacement or truncation
             const regex = new RegExp(`.*${pat}.*\\n?`, 'gi');
@@ -190,13 +202,7 @@ export class TaxonomyPromptComposer {
     const hasActiveTaxonomy = [...slots.values()].some(val => val && val.trim().length > 0);
 
     const metaInstructionText = hasActiveTaxonomy
-      ? `=== TAXONOMY-DRIVEN DOMAIN AWARENESS ===\n` +
-        `The following domain-specific guidance has been activated based on analysis of your task.\n` +
-        `These are ADDITIONAL concerns to verify — they do NOT replace direct analysis of the\n` +
-        `actual codebase. Always verify guidance against the code before applying.\n` +
-        `If existing patterns in the codebase address a concern, follow the existing pattern.\n` +
-        `If guidance conflicts with what the code actually does, the code takes precedence.\n` +
-        `=== END TAXONOMY HEADER ===\n`
+      ? TaxonomyPromptComposer.META_INSTRUCTION_HEADER
       : '';
 
     slots.set(metaInstructionSlot, metaInstructionText);

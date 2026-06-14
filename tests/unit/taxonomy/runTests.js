@@ -1,4 +1,7 @@
-import { fileURLToPath as myFileURLToPath } from 'url'; import { dirname as myDirname } from 'path'; const __filename = myFileURLToPath(import.meta.url); const __dirname = myDirname(__filename);
+// tests/unit/taxonomy/runTests.ts
+import { fileURLToPath as fileURLToPath2 } from "url";
+import * as path4 from "path";
+import * as fs2 from "fs";
 
 // electron/services/taxonomy/TaxonomyService.ts
 import * as fs from "fs";
@@ -8,7 +11,7 @@ import { fileURLToPath } from "url";
 // electron/db/index.ts
 import path2 from "path";
 
-// electron/services/taxonomy/__tests__/electron-mock.js
+// tests/unit/taxonomy/electron-mock.js
 var safeStorage = {
   isEncryptionAvailable: () => false,
   encryptString: (s) => s,
@@ -22,7 +25,7 @@ var app = {
 import path from "path";
 import { createRequire } from "module";
 
-// electron/services/taxonomy/__tests__/electron-store-mock.js
+// tests/unit/taxonomy/electron-store-mock.js
 var ElectronStore = class {
   constructor() {
   }
@@ -170,9 +173,9 @@ var secureStore = {
   getLiteLLMConfigPath() {
     return store.get("liteLLMConfigPath") || "";
   },
-  setLiteLLMConfigPath(path4) {
-    console2.assert(typeof path4 === "string", "Config path must be a string");
-    store.set("liteLLMConfigPath", path4);
+  setLiteLLMConfigPath(path5) {
+    console2.assert(typeof path5 === "string", "Config path must be a string");
+    store.set("liteLLMConfigPath", path5);
   },
   getLiteLLMModel() {
     return store.get("liteLLMModel") || "gpt-4o";
@@ -2008,7 +2011,35 @@ var TaxonomyClassifier = class {
 
 // electron/services/taxonomy/FragmentRenderer.ts
 var FragmentRenderer = class {
-  static renderFragment(fragment, _signals) {
+  static detectLanguage(signals) {
+    const fileNames = (signals.fileNames || []).map((f) => f.toLowerCase());
+    const imports = (signals.importStatements || []).map((i) => i.toLowerCase());
+    const packageDeps = (signals.packageJsonDeps || []).map((p) => p.toLowerCase());
+    const codeBody = (signals.codeBody || "").toLowerCase();
+    if (fileNames.some((f) => f.endsWith(".rs")) || imports.some((i) => i.includes("use std::") || i.includes("extern crate")) || codeBody.includes("fn main()") || codeBody.includes("use std::") || codeBody.includes("impl ")) {
+      return "rust";
+    }
+    if (fileNames.some((f) => f.endsWith(".go")) || imports.some((i) => i.includes('import "') || i.includes("package main")) || codeBody.includes("package ") || codeBody.includes("func ")) {
+      return "go";
+    }
+    if (fileNames.some((f) => f.endsWith(".cpp") || f.endsWith(".h") || f.endsWith(".hpp") || f.endsWith(".cc") || f.endsWith(".cxx")) || imports.some((i) => i.includes("#include")) || codeBody.includes("#include") || codeBody.includes("std::cout") || codeBody.includes("int main()")) {
+      return "cpp";
+    }
+    if (fileNames.some((f) => f.endsWith(".java")) || imports.some((i) => i.includes("import java.")) || codeBody.includes("public class ") || codeBody.includes("system.out.println")) {
+      return "java";
+    }
+    if (fileNames.some((f) => f.endsWith(".py")) || imports.some((i) => i.includes("import ") && (i.includes("from ") || i.includes("def "))) || codeBody.includes("def ") || codeBody.includes("import sys") || codeBody.includes("print(")) {
+      return "python";
+    }
+    if (fileNames.some((f) => f.endsWith(".ts") || f.endsWith(".tsx")) || packageDeps.includes("typescript") || imports.some((i) => i.includes('from "') || i.includes("require("))) {
+      return "typescript";
+    }
+    if (fileNames.some((f) => f.endsWith(".js") || f.endsWith(".jsx")) || packageDeps.length > 0) {
+      return "javascript";
+    }
+    return "typescript";
+  }
+  static renderFragment(fragment, signals) {
     const lines = [];
     lines.push(`### GUIDANCE [${fragment.weight.toUpperCase()}]: ${fragment.summary}`);
     if (fragment.defersToCodebase) {
@@ -2020,24 +2051,40 @@ var FragmentRenderer = class {
       lines.push(this.renderDecisionTree(fragment.decisionTree, 0));
     }
     if (fragment.codePatterns && fragment.codePatterns.length > 0) {
-      lines.push("\n**Code Examples:**");
-      for (const pattern of fragment.codePatterns) {
-        lines.push(`*Concern: ${pattern.concern}*`);
-        lines.push(`\u274C **DON'T (Wrong):**
+      const activeLanguage = this.detectLanguage(signals);
+      let filteredPatterns = fragment.codePatterns.filter((pattern) => {
+        const patternLang = pattern.wrong.language.toLowerCase();
+        if (activeLanguage === "typescript" || activeLanguage === "javascript") {
+          return patternLang === "typescript" || patternLang === "javascript" || patternLang === "js" || patternLang === "ts";
+        }
+        if (activeLanguage === "cpp") {
+          return patternLang === "cpp" || patternLang === "c++";
+        }
+        return patternLang === activeLanguage;
+      });
+      if (filteredPatterns.length === 0) {
+        filteredPatterns = fragment.codePatterns;
+      }
+      if (filteredPatterns.length > 0) {
+        lines.push("\n**Code Examples:**");
+        for (const pattern of filteredPatterns) {
+          lines.push(`*Concern: ${pattern.concern}*`);
+          lines.push(`\u274C **DON'T (Wrong):**
 \`\`\`${pattern.wrong.language}
 ${pattern.wrong.code}
 \`\`\`
 *Why: ${pattern.wrong.explanation}*
 `);
-        lines.push(`\u2705 **DO (Correct):**
+          lines.push(`\u2705 **DO (Correct):**
 \`\`\`${pattern.correct.language}
 ${pattern.correct.code}
 \`\`\`
 *Why: ${pattern.correct.explanation}*`);
-        if (pattern.detectionHint) {
-          lines.push(`*Detection Hint: ${pattern.detectionHint}*`);
+          if (pattern.detectionHint) {
+            lines.push(`*Detection Hint: ${pattern.detectionHint}*`);
+          }
+          lines.push("");
         }
-        lines.push("");
       }
     }
     if (fragment.commonMistakes && fragment.commonMistakes.length > 0) {
@@ -2104,6 +2151,17 @@ ${this.renderDecisionTree(branch, indent + 2)}`;
     const lines = [];
     lines.push(`
 === TAXONOMY DOMAIN AWARENESS: ${axisName.toUpperCase()} (${resolvedPath}) ===`);
+    if (signals.fileNames && signals.fileNames.length > 0) {
+      const activeFiles = signals.fileNames.slice(0, 3).join(", ");
+      lines.push(`> [!NOTE]`);
+      lines.push(`> This task touches file(s): **${activeFiles}**.`);
+      if (signals.codeSymbols && signals.codeSymbols.length > 0) {
+        const activeSymbols = signals.codeSymbols.slice(0, 5).join(", ");
+        lines.push(`> Active symbols detected: \`${activeSymbols}\`.`);
+      }
+      lines.push(`> When implementing the patterns below, ensure they align with the interfaces and styles of these files.`);
+      lines.push("");
+    }
     const alwaysTriggered = fragments.filter((f) => f.trigger === "always");
     const conditionalTriggered = fragments.filter((f) => {
       if (f.trigger !== "conditional") return false;
@@ -2142,6 +2200,26 @@ function findNodeInTree(tree, id) {
 }
 var TaxonomyPromptComposer = class _TaxonomyPromptComposer {
   static SOFT_THRESHOLD = 0.3;
+  static META_INSTRUCTION_HEADER = `=== TAXONOMY-DRIVEN DOMAIN AWARENESS ===
+The following domain-specific guidance has been activated based on analysis of your task.
+These are ADDITIONAL concerns to verify \u2014 they do NOT replace direct analysis of the
+actual codebase. Always verify guidance against the code before applying.
+If existing patterns in the codebase address a concern, follow the existing pattern.
+If guidance conflicts with what the code actually does, the code takes precedence.
+=== END TAXONOMY HEADER ===
+`;
+  static SUPPORTING_GUIDANCE_HEADER = `
+
+### Supporting Cross-Domain Guidance
+`;
+  static SUPPRESS_PATTERNS = [
+    "distributed caching",
+    "horizontal partition",
+    "sharding",
+    "replica",
+    "message queue",
+    "load balancer"
+  ];
   static resolveSlots(classification, context, signals, crossAxisRules = [], taxonomyTree) {
     const resolvedSlots = /* @__PURE__ */ new Map();
     const activeFragmentIds = [];
@@ -2235,25 +2313,14 @@ var TaxonomyPromptComposer = class _TaxonomyPromptComposer {
         axisMatchedRules
       );
       if (crossRefFragments.length > 0) {
-        slotContent += `
-
-### Supporting Cross-Domain Guidance
-`;
+        slotContent += _TaxonomyPromptComposer.SUPPORTING_GUIDANCE_HEADER;
         slotContent += crossRefFragments.map((rf) => {
           activeFragmentIds.push(rf.id);
           return FragmentRenderer.renderFragment(rf, signals);
         }).join("\n\n");
       }
       if (classification.scale && (classification.scale.deepestNode.id === "single-user.local-desktop" || classification.scale.deepestNode.id === "single-user")) {
-        const suppressPatterns = [
-          "distributed caching",
-          "horizontal partition",
-          "sharding",
-          "replica",
-          "message queue",
-          "load balancer"
-        ];
-        for (const pat of suppressPatterns) {
+        for (const pat of _TaxonomyPromptComposer.SUPPRESS_PATTERNS) {
           if (slotContent.toLowerCase().includes(pat)) {
             const regex = new RegExp(`.*${pat}.*\\n?`, "gi");
             slotContent = slotContent.replace(regex, "");
@@ -2271,14 +2338,7 @@ var TaxonomyPromptComposer = class _TaxonomyPromptComposer {
     let prompt = baseTemplate;
     const metaInstructionSlot = "meta_instruction";
     const hasActiveTaxonomy = [...slots.values()].some((val) => val && val.trim().length > 0);
-    const metaInstructionText = hasActiveTaxonomy ? `=== TAXONOMY-DRIVEN DOMAIN AWARENESS ===
-The following domain-specific guidance has been activated based on analysis of your task.
-These are ADDITIONAL concerns to verify \u2014 they do NOT replace direct analysis of the
-actual codebase. Always verify guidance against the code before applying.
-If existing patterns in the codebase address a concern, follow the existing pattern.
-If guidance conflicts with what the code actually does, the code takes precedence.
-=== END TAXONOMY HEADER ===
-` : "";
+    const metaInstructionText = hasActiveTaxonomy ? _TaxonomyPromptComposer.META_INSTRUCTION_HEADER : "";
     slots.set(metaInstructionSlot, metaInstructionText);
     const slotRegex = /\{\{slot:([a-zA-Z0-9_]+)\}\}/g;
     prompt = prompt.replace(slotRegex, (_match, slotName) => {
@@ -2466,10 +2526,10 @@ var TaxonomyService = class _TaxonomyService {
     for (const key of axesKeys) {
       const rootNode = this.taxonomyTree[key];
       if (rootNode) {
-        const path4 = TaxonomyClassifier.classifyAxis(key, rootNode, signals);
-        if (path4) {
-          classification[key] = path4;
-          totalConfidence += path4.confidence;
+        const path5 = TaxonomyClassifier.classifyAxis(key, rootNode, signals);
+        if (path5) {
+          classification[key] = path5;
+          totalConfidence += path5.confidence;
           activeCount++;
         }
       }
@@ -2484,9 +2544,9 @@ var TaxonomyService = class _TaxonomyService {
       this.taxonomyTree
     );
     const toolOverrides = [];
-    const collectOverrides = (path4) => {
-      for (const nodeId of path4.nodeIds) {
-        const node = TaxonomyClassifier.findNodeInSubtree(rootNodeForPath(path4.axisName), nodeId);
+    const collectOverrides = (path5) => {
+      for (const nodeId of path5.nodeIds) {
+        const node = TaxonomyClassifier.findNodeInSubtree(rootNodeForPath(path5.axisName), nodeId);
         if (node && node.toolOverrides) {
           toolOverrides.push(...node.toolOverrides);
         }
@@ -2494,9 +2554,9 @@ var TaxonomyService = class _TaxonomyService {
     };
     const rootNodeForPath = (axisName) => this.taxonomyTree[axisName];
     for (const key of axesKeys) {
-      const path4 = classification[key];
-      if (path4) {
-        collectOverrides(path4);
+      const path5 = classification[key];
+      if (path5) {
+        collectOverrides(path5);
       }
     }
     const uniqueOverridesMap = /* @__PURE__ */ new Map();
@@ -2545,15 +2605,15 @@ var TaxonomyService = class _TaxonomyService {
       `);
       const axesKeys = ["domain", "paradigm", "scale", "concurrency", "lifecycle"];
       for (const key of axesKeys) {
-        const path4 = result.classification[key];
-        if (path4) {
-          const depth = path4.depth;
+        const path5 = result.classification[key];
+        if (path5) {
+          const depth = path5.depth;
           const fragmentsCount = result.activeFragmentIds.length;
           stmt.run(
             taskId,
             key,
-            path4.nodeIds.join("."),
-            path4.confidence,
+            path5.nodeIds.join("."),
+            path5.confidence,
             result.classifiedBy,
             depth,
             fragmentsCount,
@@ -2568,7 +2628,7 @@ var TaxonomyService = class _TaxonomyService {
 };
 var taxonomyService = TaxonomyService.getInstance();
 
-// electron/services/taxonomy/__tests__/runTests.ts
+// tests/unit/taxonomy/runTests.ts
 function assert(condition, message) {
   if (!condition) {
     console.error(`\u274C Assertion Failed: ${message}`);
@@ -2578,6 +2638,17 @@ function assert(condition, message) {
 }
 async function run() {
   console.log("--- STARTING TAXONOMY ENGINE TESTS ---");
+  const currentDir = path4.dirname(fileURLToPath2(import.meta.url));
+  const srcDir = path4.resolve(currentDir, "../../../electron/services/taxonomy");
+  for (const file of ["taxonomyTree.json", "crossAxisRules.json"]) {
+    const srcFile = path4.join(srcDir, file);
+    const destFile = path4.join(currentDir, file);
+    if (fs2.existsSync(srcFile)) {
+      fs2.copyFileSync(srcFile, destFile);
+    } else {
+      console.warn(`\u26A0\uFE0F Warning: Source taxonomy JSON file not found at ${srcFile}`);
+    }
+  }
   const runQueries = [];
   const dbMock = {
     prepare: (query) => {
@@ -2668,6 +2739,54 @@ async function run() {
   assert(guidanceWithCrossRef.includes("cache-ttl-stampede") || guidanceWithCrossRef.includes("Provide cache key TTL and stampede protection"), "guidance should contain cache TTL guidelines");
   txFragment.crossReferences = null;
   console.log("\u2705 Soft-Threshold Cross-Referencing validated successfully.");
+  const pythonTask = {
+    title: "Implement user authentication with rest api in python",
+    description: "Write auth handlers for fastapi web framework"
+  };
+  const pythonPlan = {
+    steps: ["Setup FastAPI app", "Add routes"],
+    filesToModify: ["main.py"]
+  };
+  const pythonResult = taxonomyService.classify(
+    pythonTask,
+    "execution",
+    pythonPlan,
+    "FastAPI app dev.",
+    { "main.py": "from fastapi import FastAPI\napp = FastAPI()" }
+  );
+  console.log("Python classification domain path:", pythonResult.classification.domain ? pythonResult.classification.domain.nodeIds.join(" -> ") : "null");
+  console.log("Python classification confidence:", pythonResult.classification.domain ? pythonResult.classification.domain.confidence : 0);
+  const pythonGuidance = pythonResult.resolvedSlots.get("domain_guidance");
+  console.log("--- Python Guidance Start ---");
+  console.log(pythonGuidance);
+  console.log("--- Python Guidance End ---");
+  assert(!!pythonGuidance, "domain_guidance slot should be populated for Python REST task");
+  assert(pythonGuidance.includes("def increment_item(item_id: str):") || pythonGuidance.includes("def update_item(item_id: str, delta: int):"), "Guidance should include Python-specific code patterns");
+  assert(!pythonGuidance.includes('app.get("/users/:id/activate", async (req, res) =>'), "Guidance should NOT include TS/JS code patterns when Python is detected");
+  console.log("\u2705 Language-sensitive code pattern filtering (Python) validated successfully.");
+  const rustTask = {
+    title: "Setup websocket client connection in backend API using rust",
+    description: "use tokio-tungstenite for websocket connection"
+  };
+  const rustPlan = {
+    steps: ["Connect socket", "Listen"],
+    filesToModify: ["src/main.rs"]
+  };
+  const rustResult = taxonomyService.classify(
+    rustTask,
+    "execution",
+    rustPlan,
+    "Rust socket dev.",
+    { "src/main.rs": "use std::net::TcpStream;\nfn main() {}" }
+  );
+  const rustGuidance = rustResult.resolvedSlots.get("domain_guidance");
+  assert(!!rustGuidance, "domain_guidance slot should be populated for Rust WS task");
+  assert(rustGuidance.includes("async fn handle_socket(mut socket: WebSocket)"), "Guidance should include Rust-specific code patterns");
+  assert(!rustGuidance.includes('wss.on("connection", (ws) =>'), "Guidance should NOT include TS/JS code patterns when Rust is detected");
+  console.log("\u2705 Language-sensitive code pattern filtering (Rust) validated successfully.");
+  const contextualizedGuidance = pythonResult.resolvedSlots.get("domain_guidance");
+  assert(contextualizedGuidance.includes("This task touches file(s): **main.py**"), "Guidance should include dynamic contextual note with filenames");
+  console.log("\u2705 Dynamic Contextualization Header validated successfully.");
   taxonomyService.trackResult(101, result, "planning");
   assert(runQueries.length > 0, "Should run db insert query to track result");
   const trackQuery = runQueries.find((q) => q.query.includes("INSERT INTO task_taxonomy_tracking"));

@@ -207,32 +207,40 @@ const VECTOR_DBS = [
 ];
 
 // Helper to format generic database triggers programmatically
+// Helper to deduplicate words triggers
+const deduplicateWords = (words: { word: string; weight: number }[]) => {
+  const seen = new Set<string>();
+  return words.filter(w => {
+    const lower = w.word.toLowerCase();
+    if (seen.has(lower)) return false;
+    seen.add(lower);
+    return true;
+  });
+};
+
+const deduplicateStrings = (arr: string[]) => {
+  return [...new Set(arr.map(s => s.toLowerCase()))];
+};
+
+// Helper to format generic database triggers programmatically
 function makeDbNode(db: typeof RELATIONAL_DBS[0], parentId: string): TaxonomyNode {
-  return {
-    id: `${parentId}.${db.id}`,
-    label: db.label,
-    children: [],
-    triggers: {
-      words: db.keywords.map(kw => ({ word: kw, weight: 0.85 })),
-      phrases: [
-        { phrase: `${db.label.toLowerCase()} database`, weight: 0.95 },
-        { phrase: `${db.label.toLowerCase()} db`, weight: 0.95 }
-      ],
-      antiWords: [],
-      importPatterns: db.imports.map(imp => `from '${imp}'`).concat(db.imports.map(imp => `require('${imp}')`)),
-      filePatterns: [`**/${db.id}*`, `**/*${db.id}*`],
-      symbolPatterns: db.symbols
-    },
-    fragments: {
+  return makeLeafNode(
+    db.id,
+    db.label,
+    parentId,
+    db.keywords,
+    [`${db.label.toLowerCase()} database`, `${db.label.toLowerCase()} db`],
+    db.imports,
+    db.symbols,
+    {
       chat: null,
       planning: null,
       taskCreation: null,
       investigation: null,
       execution: null,
       verification: null
-    },
-    toolOverrides: []
-  };
+    }
+  );
 }
 
 function makeLeafNode(
@@ -245,15 +253,7 @@ function makeLeafNode(
   symbols: string[],
   fragments: Record<OperationalContext, ExpertFragment[] | null>
 ): TaxonomyNode {
-  const seen = new Set<string>();
-  const words = keywords
-    .map(kw => ({ word: kw, weight: 0.85 }))
-    .filter(w => {
-      const lower = w.word.toLowerCase();
-      if (seen.has(lower)) return false;
-      seen.add(lower);
-      return true;
-    });
+  const words = deduplicateWords(keywords.map(kw => ({ word: kw, weight: 0.85 })));
 
   return {
     id: `${parentId}.${id}`,
@@ -268,6 +268,40 @@ function makeLeafNode(
       symbolPatterns: [...new Set(symbols)].map(s => s.toLowerCase())
     },
     fragments,
+    toolOverrides: []
+  };
+}
+
+function buildDatabaseCategoryNode(
+  id: string,
+  label: string,
+  dbs: Array<{ id: string; label: string; keywords: string[]; symbols: string[]; imports: string[] }>,
+  categoryWords: Array<{ word: string; weight: number }>,
+  executionFragments: ExpertFragment[]
+): TaxonomyNode {
+  return {
+    id,
+    label,
+    children: dbs.map(db => makeDbNode(db, id)),
+    triggers: {
+      words: deduplicateWords([
+        ...categoryWords,
+        ...dbs.flatMap(db => db.keywords.map(kw => ({ word: kw, weight: 0.3 })))
+      ]),
+      phrases: [],
+      antiWords: [],
+      importPatterns: deduplicateStrings(dbs.flatMap(db => db.imports.flatMap(imp => [`from '${imp}'`, `require('${imp}')`]))),
+      filePatterns: deduplicateStrings(dbs.flatMap(db => [`**/${db.id}*`, `**/*${db.id}*`])),
+      symbolPatterns: deduplicateStrings(dbs.flatMap(db => db.symbols))
+    },
+    fragments: {
+      chat: null,
+      planning: null,
+      taskCreation: null,
+      investigation: null,
+      execution: executionFragments.length > 0 ? executionFragments : null,
+      verification: null
+    },
     toolOverrides: []
   };
 }
@@ -296,6 +330,37 @@ function createFragment(
   };
 }
 
+function createRichFragment(
+  id: string,
+  summary: string,
+  coreGuidance: string,
+  weight: 'critical' | 'principle' | 'awareness' = 'principle',
+  opts?: {
+    codePatterns?: any[];
+    commonMistakes?: any[];
+    selfVerification?: any[];
+    guardrails?: any[];
+    crossReferences?: string[];
+  }
+): ExpertFragment {
+  return {
+    id,
+    summary,
+    weight,
+    trigger: 'always',
+    defersToCodebase: true,
+    coreGuidance,
+    decisionTree: null,
+    codePatterns: opts?.codePatterns || null,
+    commonMistakes: opts?.commonMistakes || null,
+    selfVerification: opts?.selfVerification || null,
+    outputConstraints: null,
+    guardrails: opts?.guardrails || null,
+    scaffolding: null,
+    crossReferences: opts?.crossReferences || null
+  };
+}
+
 // -------------------------------------------------------------
 // Phase 3 Extensions Node definitions
 // -------------------------------------------------------------
@@ -308,14 +373,141 @@ const apiNode: TaxonomyNode = {
     makeLeafNode('rest', 'RESTful API', 'backend.api', ['rest', 'restful', 'http', 'endpoint', 'json'], ['rest api', 'http endpoint'], ['express', 'koa', 'fastify'], ['Router', 'Controller', 'get', 'post'], {
       chat: null, planning: null, taskCreation: null, investigation: null, verification: null,
       execution: [
-        createFragment('rest-semantics', 'RESTful Semantics', 'Enforce strict HTTP method semantics: GET (safe/idempotent), POST (non-idempotent), PUT (idempotent replace), PATCH (idempotent partial update), DELETE (idempotent). Ensure proper status codes (e.g., 201 Created, 400 Bad Request, 404 Not Found).', 'critical'),
+        createRichFragment(
+          'rest-semantics',
+          'RESTful Semantics',
+          'Enforce strict HTTP method semantics: GET (safe/idempotent), POST (non-idempotent), PUT (idempotent replace), PATCH (idempotent partial update), DELETE (idempotent). Ensure proper status codes (e.g., 201 Created, 400 Bad Request, 404 Not Found).',
+          'critical',
+          {
+            codePatterns: [
+              {
+                concern: 'Idempotency and Safety of GET requests',
+                wrong: {
+                  language: 'typescript',
+                  code: 'app.get("/users/:id/activate", async (req, res) => {\n  await db.updateUserStatus(req.params.id, "active");\n  res.json({ success: true });\n});',
+                  explanation: 'GET requests must be safe and not cause state mutations.'
+                },
+                correct: {
+                  language: 'typescript',
+                  code: 'app.post("/users/:id/activate", async (req, res) => {\n  await db.updateUserStatus(req.params.id, "active");\n  res.status(200).json({ success: true });\n});',
+                  explanation: 'State modification is mapped to a POST request.'
+                },
+                detectionHint: 'Database write or state update inside a GET controller'
+              },
+              {
+                concern: 'Idempotent HTTP methods in Python',
+                wrong: {
+                  language: 'python',
+                  code: '@app.get("/items/{item_id}/increment")\ndef increment_item(item_id: str):\n    db.increment(item_id)\n    return {"status": "ok"}',
+                  explanation: 'Modifying data via a HTTP GET endpoint violates REST safety guidelines.'
+                },
+                correct: {
+                  language: 'python',
+                  code: '@app.patch("/items/{item_id}")\ndef update_item(item_id: str, delta: int):\n    db.update_item_qty(item_id, delta)\n    return {"status": "updated"}',
+                  explanation: 'Use PATCH or POST for actions that update/modify resource state.'
+                },
+                detectionHint: 'GET method modifying database rows'
+              },
+              {
+                concern: 'Restful status codes in Go',
+                wrong: {
+                  language: 'go',
+                  code: 'func CreateUser(w http.ResponseWriter, r *http.Request) {\n    user := saveUser(r.Body)\n    w.WriteHeader(http.StatusOK)\n    json.NewEncoder(w).Encode(user)\n}',
+                  explanation: 'Returning 200 OK for resource creation instead of 201 Created.'
+                },
+                correct: {
+                  language: 'go',
+                  code: 'func CreateUser(w http.ResponseWriter, r *http.Request) {\n    user := saveUser(r.Body)\n    w.WriteHeader(http.StatusCreated)\n    json.NewEncoder(w).Encode(user)\n}',
+                  explanation: 'Use StatusCreated (201) when a resource is successfully created.'
+                },
+                detectionHint: 'Status OK (200) returned on create handlers'
+              }
+            ],
+            commonMistakes: [
+              {
+                mistake: 'Using GET requests to delete resources',
+                whyItHappens: 'Quick implementation without writing frontend forms or AJAX POST calls.',
+                correction: 'Map deletion to HTTP DELETE or POST with a payload.',
+                severity: 'security'
+              }
+            ],
+            selfVerification: [
+              {
+                check: 'All GET requests are read-only',
+                howToVerify: 'Verify that GET routes do not trigger save, update, or delete commands.',
+                failureIndicator: 'GET route containing database write methods',
+                remediation: 'Change the route method to POST, PUT, or PATCH.'
+              }
+            ],
+            guardrails: [
+              {
+                rule: 'Never allow GET routes to modify database or file state.',
+                rationale: 'Web crawlers, pre-fetching browsers, and caching proxies trigger GET requests automatically.',
+                alternative: 'Use POST for general operations, and PATCH/PUT for specific resource updates.'
+              }
+            ]
+          }
+        ),
         createFragment('rest-pagination', 'Pagination Strategy', 'Prefer cursor-based pagination for large datasets to avoid offset drift and performance issues. Always include `next_cursor` in the response payload.')
       ]
     }),
     makeLeafNode('graphql', 'GraphQL', 'backend.api', ['graphql', 'gql', 'resolver', 'mutation', 'subscription'], ['graphql schema', 'apollo server'], ['graphql', 'apollo-server', '@nestjs/graphql'], ['Resolver', 'Query', 'Mutation'], {
       chat: null, planning: null, taskCreation: null, investigation: null, verification: null,
       execution: [
-        createFragment('graphql-n1', 'N+1 Mitigation', 'Always use Dataloaders for batching and caching field resolutions. Never perform inline database queries inside scalar field resolvers.', 'critical'),
+        createRichFragment(
+          'graphql-n1',
+          'N+1 Mitigation',
+          'Always use Dataloaders for batching and caching field resolutions. Never perform inline database queries inside scalar field resolvers.',
+          'critical',
+          {
+            codePatterns: [
+              {
+                concern: 'Inline queries causing N+1',
+                wrong: {
+                  language: 'typescript',
+                  code: 'const resolvers = {\n  User: {\n    posts: async (user) => {\n      return await db.getPostsForUser(user.id);\n    }\n  }\n};',
+                  explanation: 'Resolves posts individually for every user, issuing N queries for N users.'
+                },
+                correct: {
+                  language: 'typescript',
+                  code: 'const resolvers = {\n  User: {\n    posts: (user, args, context) => {\n      return context.loaders.postsLoader.load(user.id);\n    }\n  }\n};',
+                  explanation: 'Batches and caches the post resolutions in a single database query.'
+                },
+                detectionHint: 'Database queries invoked inside type-specific sub-resolvers'
+              },
+              {
+                concern: 'Python GraphQL batching',
+                wrong: {
+                  language: 'python',
+                  code: 'class UserNode(DjangoObjectType):\n    def resolve_posts(self, info):\n        return Post.objects.filter(author=self)',
+                  explanation: 'Triggers a separate SQL query for each author resolved in the list.'
+                },
+                correct: {
+                  language: 'python',
+                  code: 'class UserNode(DjangoObjectType):\n    def resolve_posts(self, info):\n        return info.context.loaders.posts_by_author.load(self.id)',
+                  explanation: 'Loads author posts using a dataloader to batch relational queries.'
+                },
+                detectionHint: 'Django ORM query inside field resolver'
+              }
+            ],
+            commonMistakes: [
+              {
+                mistake: 'Failing to instantiate DataLoader per-request',
+                whyItHappens: 'Creating the DataLoader as a global singleton, causing users to see cached data of other users.',
+                correction: 'Instantiate all DataLoaders inside the context builder function for every request.',
+                severity: 'security'
+              }
+            ],
+            selfVerification: [
+              {
+                check: 'DataLoader instance is request-scoped',
+                howToVerify: 'Verify that loaders are created within the request context function, not in global module scope.',
+                failureIndicator: 'new DataLoader() found in root module levels',
+                remediation: 'Move DataLoader instantiation inside the express/apollo context callback.'
+              }
+            ]
+          }
+        ),
         createFragment('graphql-security', 'GraphQL Security', 'Enforce query depth limiting and complexity cost analysis to prevent malicious nested queries from causing DoS.')
       ]
     }),
@@ -326,7 +518,44 @@ const apiNode: TaxonomyNode = {
     makeLeafNode('websocket', 'WebSocket', 'backend.api', ['websocket', 'ws', 'socket.io', 'socketio'], ['web socket'], ['ws', 'socket.io'], ['Server', 'WebSocketServer', 'on', 'emit'], {
       chat: null, planning: null, taskCreation: null, investigation: null, verification: null,
       execution: [
-        createFragment('ws-lifecycle', 'WebSocket Lifecycle', 'Implement ping/pong heartbeats to detect stale connections. Handle disconnections gracefully with exponential backoff reconnections.', 'critical'),
+        createRichFragment(
+          'ws-lifecycle',
+          'WebSocket Lifecycle',
+          'Implement ping/pong heartbeats to detect stale connections. Handle disconnections gracefully with exponential backoff reconnections.',
+          'critical',
+          {
+            codePatterns: [
+              {
+                concern: 'Stale connection leaks',
+                wrong: {
+                  language: 'typescript',
+                  code: 'wss.on("connection", (ws) => {\n  console.log("connected");\n});',
+                  explanation: 'Fails to detect silent disconnections, leading to socket leaks and dead subscriptions.'
+                },
+                correct: {
+                  language: 'typescript',
+                  code: 'wss.on("connection", (ws) => {\n  ws.isAlive = true;\n  ws.on("pong", () => { ws.isAlive = true; });\n});\nsetInterval(() => {\n  wss.clients.forEach((ws) => {\n    if (!ws.isAlive) return ws.terminate();\n    ws.isAlive = false;\n    ws.ping();\n  });\n}, 30000);',
+                  explanation: 'Regularly pings clients and terminates dead sockets that fail to reply.'
+                },
+                detectionHint: 'WebSocket server connection without ping interval'
+              },
+              {
+                concern: 'Rust connection management in Axum',
+                wrong: {
+                  language: 'rust',
+                  code: 'async fn handle_socket(mut socket: WebSocket) {\n    while let Some(msg) = socket.recv().await {\n        // Process incoming\n    }\n}',
+                  explanation: 'Infinite wait loop that fails to handle dead connection cleanups.'
+                },
+                correct: {
+                  language: 'rust',
+                  code: 'async fn handle_socket(mut socket: WebSocket) {\n    let mut interval = tokio::time::interval(Duration::from_secs(30));\n    loop {\n        tokio::select! {\n            Some(msg) = socket.recv() => { /* handle msg */ }\n            _ = interval.tick() => { socket.send(Message::Ping(vec![])).await.ok(); }\n        }\n    }\n}',
+                  explanation: 'Sends standard WebSocket pings on interval ticks to maintain socket activity.'
+                },
+                detectionHint: 'Axum WebSocket handler missing Ping interval select loop'
+              }
+            ]
+          }
+        ),
         createFragment('ws-state', 'WebSocket State', 'Do not rely on the WebSocket connection for single source of truth state. Hydrate initial state via REST before opening the socket for deltas.')
       ]
     }),
@@ -377,7 +606,62 @@ const errorHandlingNode: TaxonomyNode = {
   children: [
     makeLeafNode('retry-patterns', 'Retry Patterns', 'backend.error-handling', ['retry', 'backoff', 'jitter'], ['exponential backoff'], ['async-retry'], ['retry'], {
       chat: null, planning: null, taskCreation: null, investigation: null, verification: null,
-      execution: [createFragment('retry-logic', 'Safe Retries', 'Only retry idempotent operations (GET, PUT, DELETE). Use exponential backoff with full jitter to avoid thundering herd problems.', 'critical')]
+      execution: [
+        createRichFragment(
+          'retry-logic',
+          'Safe Retries',
+          'Only retry idempotent operations (GET, PUT, DELETE). Use exponential backoff with full jitter to avoid thundering herd problems.',
+          'critical',
+          {
+            codePatterns: [
+              {
+                concern: 'Linear or raw retries without backoff/jitter',
+                wrong: {
+                  language: 'typescript',
+                  code: 'async function fetchWithRetry(url) {\n  for (let i = 0; i < 3; i++) {\n    try { return await fetch(url); }\n    catch (e) { /* retry immediately */ }\n  }\n}',
+                  explanation: 'Retries instantly without delay, overwhelming a struggling downstream service.'
+                },
+                correct: {
+                  language: 'typescript',
+                  code: 'async function fetchWithRetry(url, retries = 3, delay = 1000) {\n  try {\n    return await fetch(url);\n  } catch (e) {\n    if (retries <= 0) throw e;\n    const jitter = Math.random() * delay;\n    await new Promise(r => setTimeout(r, delay + jitter));\n    return fetchWithRetry(url, retries - 1, delay * 2);\n  }\n}',
+                  explanation: 'Applies exponential backoff (delay * 2) combined with random jitter to distribute retries.'
+                },
+                detectionHint: 'Retry loops without delay or setTimeout'
+              },
+              {
+                concern: 'Python backoff implementation',
+                wrong: {
+                  language: 'python',
+                  code: 'def call_service():\n    for _ in range(3):\n        try: return requests.get(url)\n        except: pass',
+                  explanation: 'Performs immediate retries upon failure, contributing to stampedes.'
+                },
+                correct: {
+                  language: 'python',
+                  code: 'import time, random\ndef call_service(retries=3, delay=1.0):\n    try:\n        return requests.get(url)\n    except Exception as e:\n        if retries <= 0: raise e\n        time.sleep(delay + random.uniform(0, delay))\n        return call_service(retries - 1, delay * 2)',
+                  explanation: 'Uses random.uniform for jitter and multiplies delay to exponentially scale backoff.'
+                },
+                detectionHint: 'time.sleep called in exception blocks without dynamic delay'
+              }
+            ],
+            commonMistakes: [
+              {
+                mistake: 'Retrying non-idempotent operations (POST)',
+                whyItHappens: 'Treating all network errors identically.',
+                correction: 'Only retry GET, PUT, or DELETE. If POST fails, return error and let caller decide.',
+                severity: 'data-loss'
+              }
+            ],
+            selfVerification: [
+              {
+                check: 'Only idempotent calls are retried',
+                howToVerify: 'Verify that retry wrappers are not wrapped around POST or non-idempotent requests.',
+                failureIndicator: 'POST requests wrapped with retry logic',
+                remediation: 'Remove retry logic wrapper from the POST request caller.'
+              }
+            ]
+          }
+        )
+      ]
     }),
     makeLeafNode('circuit-breaker', 'Circuit Breaker', 'backend.error-handling', ['circuit', 'breaker', 'opossum'], ['circuit breaker'], ['opossum'], ['CircuitBreaker'], {
       chat: null, planning: null, taskCreation: null, investigation: null, verification: null,
@@ -575,7 +859,46 @@ const paradigmAxis: TaxonomyNode = {
   children: [
     makeLeafNode('functional', 'Functional Programming', 'paradigm', ['fp', 'pure', 'immutable', 'map', 'reduce', 'filter'], ['pure function'], ['ramda', 'lodash/fp'], [], {
       chat: null, planning: null, taskCreation: null, investigation: null, verification: null,
-      execution: [createFragment('functional-pure', 'Pure Functions', 'Avoid mutations and side effects. Return new copies of objects/arrays rather than modifying arguments in place.')]
+      execution: [
+        createRichFragment(
+          'functional-pure',
+          'Pure Functions',
+          'Avoid mutations and side effects. Return new copies of objects/arrays rather than modifying arguments in place.',
+          'principle',
+          {
+            codePatterns: [
+              {
+                concern: 'In-place argument mutation',
+                wrong: {
+                  language: 'typescript',
+                  code: 'function addActiveUser(users: User[], newUser: User): User[] {\n  users.push(newUser);\n  return users;\n}',
+                  explanation: 'Mutates the input array argument directly, which can cause unexpected reactivity bugs.'
+                },
+                correct: {
+                  language: 'typescript',
+                  code: 'function addActiveUser(users: User[], newUser: User): User[] {\n  return [...users, newUser];\n}',
+                  explanation: 'Returns a brand new array, preserving the original array argument immutable.'
+                },
+                detectionHint: 'push, splice, shift, pop, or object property assignments on arguments'
+              },
+              {
+                concern: 'Python list mutability pitfalls',
+                wrong: {
+                  language: 'python',
+                  code: 'def append_to(element, target=[]):\n    target.append(element)\n    return target',
+                  explanation: 'Mutable default arguments are shared across all function calls, leading to cross-call leaks.'
+                },
+                correct: {
+                  language: 'python',
+                  code: 'def append_to(element, target=None):\n    if target is None:\n        target = []\n    new_target = list(target)\n    new_target.append(element)\n    return new_target',
+                  explanation: 'Uses None as a default placeholder and constructs a copy of the list before mutating.'
+                },
+                detectionHint: 'Mutable default arguments in python method definitions'
+              }
+            ]
+          }
+        )
+      ]
     }),
     makeLeafNode('object-oriented', 'Object-Oriented Programming', 'paradigm', ['oop', 'class', 'interface', 'extends', 'implements'], ['object oriented'], [], ['class', 'interface'], {
       chat: null, planning: null, taskCreation: null, investigation: null, verification: null,
@@ -628,7 +951,62 @@ const scaleAxis: TaxonomyNode = {
     }),
     makeLeafNode('production', 'Production', 'scale', ['production', 'cluster', 'ha', 'lb'], ['high availability'], [], [], {
       chat: null, planning: null, taskCreation: null, investigation: null, verification: null,
-      execution: [createFragment('scale-ha', 'High Availability', 'Assume servers can die at any time. Keep node processes strictly stateless. Offload all session state to Redis/DB.', 'critical')]
+      execution: [
+        createRichFragment(
+          'scale-ha',
+          'High Availability',
+          'Assume servers can die at any time. Keep node processes strictly stateless. Offload all session state to Redis/DB.',
+          'critical',
+          {
+            codePatterns: [
+              {
+                concern: 'In-memory stateful sessions',
+                wrong: {
+                  language: 'typescript',
+                  code: 'const activeSessions = new Map();\napp.post("/login", (req, res) => {\n  activeSessions.set(req.body.userId, req.session);\n  res.send("logged in");\n});',
+                  explanation: 'Sessions stored in local maps are lost when the instance restarts or scales horizontally.'
+                },
+                correct: {
+                  language: 'typescript',
+                  code: 'app.post("/login", async (req, res) => {\n  await redis.set(`session:${req.body.userId}`, JSON.stringify(req.session), "EX", 3600);\n  res.send("logged in");\n});',
+                  explanation: 'Offloads session state to a shared Redis cluster, keeping the web process completely stateless.'
+                },
+                detectionHint: 'In-memory Maps or arrays storing session or user state'
+              },
+              {
+                concern: 'Stateless Python handlers',
+                wrong: {
+                  language: 'python',
+                  code: 'logged_in_users = {}\n@app.post("/session")\ndef create_session(user_id: str):\n    logged_in_users[user_id] = True',
+                  explanation: 'Global dictionary storage prevents horizontal scaling across multiple Gunicorn/Uvicorn workers.'
+                },
+                correct: {
+                  language: 'python',
+                  code: '@app.post("/session")\ndef create_session(user_id: str, redis_client=Depends(get_redis)):\n    redis_client.setex(f"session:{user_id}", 3600, "active")',
+                  explanation: 'Stores login/session details externally in Redis for multi-instance stateless coordination.'
+                },
+                detectionHint: 'Global module variables modified in request routes'
+              }
+            ],
+            commonMistakes: [
+              {
+                mistake: 'Using local filesystem storage for user uploads',
+                whyItHappens: 'Simpler setup than configuring cloud object storage.',
+                correction: 'Stream uploads directly to cloud storage (S3, GCS) rather than saving to local disk.',
+                severity: 'data-loss'
+              }
+            ],
+            selfVerification: [
+              {
+                check: 'Process contains zero local stateful dependencies',
+                howToVerify: 'Verify that node restarts or parallel execution does not impact session or transaction completeness.',
+                failureIndicator: 'Local filesystem storage or global arrays used to tracks active user transaction states',
+                remediation: 'Migrate global state variables to shared cache (Redis) or database tables.'
+              }
+            ]
+          }
+        )
+      ]
     }),
     makeLeafNode('serverless', 'Serverless', 'scale', ['lambda', 'serverless', 'cold-start'], ['aws lambda'], [], [], {
       chat: null, planning: null, taskCreation: null, investigation: null, verification: null,
@@ -651,7 +1029,60 @@ const concurrencyAxis: TaxonomyNode = {
     }),
     makeLeafNode('multi-threaded', 'Multi-threaded', 'concurrency', ['worker', 'thread', 'pool', 'mutex', 'lock'], ['worker thread'], ['worker_threads'], ['Worker', 'SharedArrayBuffer'], {
       chat: null, planning: null, taskCreation: null, investigation: null, verification: null,
-      execution: [createFragment('thread-safety', 'Thread Safety', 'Use `Atomics` when interacting with `SharedArrayBuffer` to prevent race conditions across worker threads.', 'critical')]
+      execution: [
+        createRichFragment(
+          'thread-safety',
+          'Thread Safety',
+          'Use `Atomics` when interacting with `SharedArrayBuffer` to prevent race conditions across worker threads.',
+          'critical',
+          {
+            codePatterns: [
+              {
+                concern: 'Non-atomic shared array mutations',
+                wrong: {
+                  language: 'typescript',
+                  code: 'const sharedArray = new Int32Array(sharedBuffer);\nsharedArray[0]++;',
+                  explanation: 'Increments shared memory non-atomically, leading to lost updates under multi-threaded races.'
+                },
+                correct: {
+                  language: 'typescript',
+                  code: 'const sharedArray = new Int32Array(sharedBuffer);\nAtomics.add(sharedArray, 0, 1);',
+                  explanation: 'Uses Atomics.add to perform thread-safe, atomic updates in shared memory.'
+                },
+                detectionHint: 'Direct array index assignments on SharedArrayBuffer views'
+              },
+              {
+                concern: 'Java multi-threaded synchronization',
+                wrong: {
+                  language: 'java',
+                  code: 'public class Counter {\n    private int count = 0;\n    public void increment() { count++; }\n}',
+                  explanation: 'The count++ operation is not atomic and causes race conditions across threads.'
+                },
+                correct: {
+                  language: 'java',
+                  code: 'import java.util.concurrent.atomic.AtomicInteger;\npublic class Counter {\n    private final AtomicInteger count = new AtomicInteger(0);\n    public void increment() { count.incrementAndGet(); }\n}',
+                  explanation: 'AtomicInteger uses lock-free hardware instructions (CAS) to perform thread-safe increments.'
+                },
+                detectionHint: 'Non-synchronized variables modified across threads'
+              },
+              {
+                concern: 'C++ thread synchronization',
+                wrong: {
+                  language: 'cpp',
+                  code: 'int counter = 0;\nvoid worker() {\n    for (int i = 0; i < 1000; ++i) {\n        counter++;\n    }\n}',
+                  explanation: 'Unsynchronized concurrent modifications on a global variable trigger undefined behavior.'
+                },
+                correct: {
+                  language: 'cpp',
+                  code: '#include <atomic>\nstd::atomic<int> counter(0);\nvoid worker() {\n    for (int i = 0; i < 1000; ++i) {\n        counter++;\n    }\n}',
+                  explanation: 'std::atomic wrappers execute safe atomic operations that compile to hardware lock instructions.'
+                },
+                detectionHint: 'Global variable updates in thread loops without mutex or std::atomic'
+              }
+            ]
+          }
+        )
+      ]
     })
   ],
   triggers: { words: [], phrases: [], antiWords: [], importPatterns: [], filePatterns: [], symbolPatterns: [] },
@@ -669,439 +1100,296 @@ function run() {
 
   const baseTree = JSON.parse(fs.readFileSync(treePath, 'utf8'));
 
-  // Helper to deduplicate words triggers
-  const deduplicateWords = (words: { word: string, weight: number }[]) => {
-    const seen = new Set<string>();
-    return words.filter(w => {
-      const lower = w.word.toLowerCase();
-      if (seen.has(lower)) return false;
-      seen.add(lower);
-      return true;
-    });
-  };
-
-  const deduplicateStrings = (arr: string[]) => {
-    return [...new Set(arr.map(s => s.toLowerCase()))];
-  };
-
   // Define Category Nodes with Professional Parent Fragments
-  const relationalNode: TaxonomyNode = {
-    id: 'backend.database.relational',
-    label: 'Relational Database Engine',
-    children: RELATIONAL_DBS.map(db => makeDbNode(db, 'backend.database.relational')),
-    triggers: {
-      words: deduplicateWords([
-        { word: 'relational', weight: 0.6 },
-        { word: 'sql', weight: 0.4 },
-        { word: 'rdbms', weight: 0.8 },
-        ...RELATIONAL_DBS.flatMap(db => db.keywords.map(kw => ({ word: kw, weight: 0.3 })))
-      ]),
-      phrases: [],
-      antiWords: [],
-      importPatterns: deduplicateStrings(RELATIONAL_DBS.flatMap(db => db.imports.map(imp => `from '${imp}'`).concat(db.imports.map(imp => `require('${imp}')`)))),
-      filePatterns: deduplicateStrings(RELATIONAL_DBS.flatMap(db => [`**/${db.id}*`, `**/*${db.id}*`])),
-      symbolPatterns: deduplicateStrings(RELATIONAL_DBS.flatMap(db => db.symbols))
-    },
-    fragments: {
-      chat: null,
-      planning: null,
-      taskCreation: null,
-      investigation: null,
-      execution: [
-        {
-          id: 'relational-transactions',
-          summary: 'Proper transactional bounds in RDBMS',
-          weight: 'critical',
-          trigger: 'always',
-          defersToCodebase: true,
-          coreGuidance: 'When executing multiple writes in a relational database, wrap them in a TRANSACTION (BEGIN/COMMIT) to preserve atomicity.',
-          decisionTree: null,
-          codePatterns: [
-            {
-              concern: 'Atomic database updates',
-              wrong: {
-                code: 'await db.query("INSERT INTO users ...");\nawait db.query("INSERT INTO profiles ...");',
-                language: 'javascript',
-                explanation: 'If the second query fails, the user is left in an inconsistent state.'
-              },
-              correct: {
-                code: 'await db.query("BEGIN");\ntry {\n  await db.query("INSERT INTO users ...");\n  await db.query("INSERT INTO profiles ...");\n  await db.query("COMMIT");\n} catch (e) {\n  await db.query("ROLLBACK");\n  throw e;\n}',
-                language: 'javascript',
-                explanation: 'Ensures that either both writes succeed or neither does.'
-              },
-              detectionHint: 'Multiple sequential write queries without BEGIN/COMMIT'
-            }
-          ],
-          commonMistakes: [
-            {
-              mistake: 'Leaving database transactions uncommitted or un-rolled back in catch branches',
-              whyItHappens: 'Forgetting rollback statement inside the catch block.',
-              correction: 'Always include ROLLBACK in the catch block and ensure connection is released.',
-              severity: 'data-loss'
-            }
-          ],
-          selfVerification: [
-            {
-              check: 'Every BEGIN block has a corresponding COMMIT and ROLLBACK path',
-              howToVerify: 'Verify query lines and make sure error handler calls ROLLBACK.',
-              failureIndicator: 'BEGIN query found without ROLLBACK inside catch block',
-              remediation: 'Add a ROLLBACK statement to the database catch wrapper.'
-            }
-          ],
-          outputConstraints: null,
-          guardrails: null,
-          scaffolding: null,
-          crossReferences: null
-        }
-      ],
-      verification: null
-    },
-    toolOverrides: []
-  };
+  const relationalNode = buildDatabaseCategoryNode(
+    'backend.database.relational',
+    'Relational Database Engine',
+    RELATIONAL_DBS,
+    [
+      { word: 'relational', weight: 0.6 },
+      { word: 'sql', weight: 0.4 },
+      { word: 'rdbms', weight: 0.8 }
+    ],
+    [
+      {
+        id: 'relational-transactions',
+        summary: 'Proper transactional bounds in RDBMS',
+        weight: 'critical',
+        trigger: 'always',
+        defersToCodebase: true,
+        coreGuidance: 'When executing multiple writes in a relational database, wrap them in a TRANSACTION (BEGIN/COMMIT) to preserve atomicity.',
+        decisionTree: null,
+        codePatterns: [
+          {
+            concern: 'Atomic database updates',
+            wrong: {
+              code: 'await db.query("INSERT INTO users ...");\nawait db.query("INSERT INTO profiles ...");',
+              language: 'javascript',
+              explanation: 'If the second query fails, the user is left in an inconsistent state.'
+            },
+            correct: {
+              code: 'await db.query("BEGIN");\ntry {\n  await db.query("INSERT INTO users ...");\n  await db.query("INSERT INTO profiles ...");\n  await db.query("COMMIT");\n} catch (e) {\n  await db.query("ROLLBACK");\n  throw e;\n}',
+              language: 'javascript',
+              explanation: 'Ensures that either both writes succeed or neither does.'
+            },
+            detectionHint: 'Multiple sequential write queries without BEGIN/COMMIT'
+          }
+        ],
+        commonMistakes: [
+          {
+            mistake: 'Leaving database transactions uncommitted or un-rolled back in catch branches',
+            whyItHappens: 'Forgetting rollback statement inside the catch block.',
+            correction: 'Always include ROLLBACK in the catch block and ensure connection is released.',
+            severity: 'data-loss'
+          }
+        ],
+        selfVerification: [
+          {
+            check: 'Every BEGIN block has a corresponding COMMIT and ROLLBACK path',
+            howToVerify: 'Verify query lines and make sure error handler calls ROLLBACK.',
+            failureIndicator: 'BEGIN query found without ROLLBACK inside catch block',
+            remediation: 'Add a ROLLBACK statement to the database catch wrapper.'
+          }
+        ],
+        outputConstraints: null,
+        guardrails: null,
+        scaffolding: null,
+        crossReferences: null
+      }
+    ]
+  );
 
-  const documentNode: TaxonomyNode = {
-    id: 'backend.database.document',
-    label: 'Document Datastore',
-    children: DOCUMENT_DBS.map(db => makeDbNode(db, 'backend.database.document')),
-    triggers: {
-      words: deduplicateWords([
-        { word: 'document', weight: 0.5 },
-        { word: 'nosql', weight: 0.6 },
-        { word: 'json', weight: 0.3 },
-        ...DOCUMENT_DBS.flatMap(db => db.keywords.map(kw => ({ word: kw, weight: 0.3 })))
-      ]),
-      phrases: [],
-      antiWords: [],
-      importPatterns: deduplicateStrings(DOCUMENT_DBS.flatMap(db => db.imports.map(imp => `from '${imp}'`).concat(db.imports.map(imp => `require('${imp}')`)))),
-      filePatterns: deduplicateStrings(DOCUMENT_DBS.flatMap(db => [`**/${db.id}*`, `**/*${db.id}*`])),
-      symbolPatterns: deduplicateStrings(DOCUMENT_DBS.flatMap(db => db.symbols))
-    },
-    fragments: {
-      chat: null,
-      planning: null,
-      taskCreation: null,
-      investigation: null,
-      execution: [
-        {
-          id: 'document-connection-cache',
-          summary: 'Reuse MongoClient / Database connection handles',
-          weight: 'critical',
-          trigger: 'always',
-          defersToCodebase: true,
-          coreGuidance: 'In document stores, always cache and reuse database client instances. Avoid calling connect() on every request handler.',
-          decisionTree: null,
-          codePatterns: [
-            {
-              concern: 'MongoClient connection caching',
-              wrong: {
-                code: 'app.get("/data", async (req, res) => {\n  const client = await MongoClient.connect(url);\n  res.json(await client.db().collection("data").find().toArray());\n});',
-                language: 'javascript',
-                explanation: 'Re-connects on every request, exhausting connection limits instantly.'
-              },
-              correct: {
-                code: 'let cachedClient = null;\nasync function getClient() {\n  if (!cachedClient) cachedClient = await MongoClient.connect(url);\n  return cachedClient;\n}\napp.get("/data", async (req, res) => {\n  const client = await getClient();\n  res.json(await client.db().collection("data").find().toArray());\n});',
-                language: 'javascript',
-                explanation: 'Caches the client instance globally and reuses it across requests.'
-              },
-              detectionHint: 'MongoClient.connect inside requests or route handlers'
-            }
-          ],
-          commonMistakes: [],
-          selfVerification: [],
-          outputConstraints: null,
-          guardrails: null,
-          scaffolding: null,
-          crossReferences: null
-        }
-      ],
-      verification: null
-    },
-    toolOverrides: []
-  };
+  const documentNode = buildDatabaseCategoryNode(
+    'backend.database.document',
+    'Document Datastore',
+    DOCUMENT_DBS,
+    [
+      { word: 'document', weight: 0.5 },
+      { word: 'nosql', weight: 0.6 },
+      { word: 'json', weight: 0.3 }
+    ],
+    [
+      {
+        id: 'document-connection-cache',
+        summary: 'Reuse MongoClient / Database connection handles',
+        weight: 'critical',
+        trigger: 'always',
+        defersToCodebase: true,
+        coreGuidance: 'In document stores, always cache and reuse database client instances. Avoid calling connect() on every request handler.',
+        decisionTree: null,
+        codePatterns: [
+          {
+            concern: 'MongoClient connection caching',
+            wrong: {
+              code: 'app.get("/data", async (req, res) => {\n  const client = await MongoClient.connect(url);\n  res.json(await client.db().collection("data").find().toArray());\n});',
+              language: 'javascript',
+              explanation: 'Re-connects on every request, exhausting connection limits instantly.'
+            },
+            correct: {
+              code: 'let cachedClient = null;\nasync function getClient() {\n  if (!cachedClient) cachedClient = await MongoClient.connect(url);\n  return cachedClient;\n}\napp.get("/data", async (req, res) => {\n  const client = await getClient();\n  res.json(await client.db().collection("data").find().toArray());\n});',
+              language: 'javascript',
+              explanation: 'Caches the client instance globally and reuses it across requests.'
+            },
+            detectionHint: 'MongoClient.connect inside requests or route handlers'
+          }
+        ],
+        commonMistakes: [],
+        selfVerification: [],
+        outputConstraints: null,
+        guardrails: null,
+        scaffolding: null,
+        crossReferences: null
+      }
+    ]
+  );
 
-  const keyvalueNode: TaxonomyNode = {
-    id: 'backend.database.keyvalue',
-    label: 'Key-Value & Cache Store',
-    children: KEYVALUE_DBS.map(db => makeDbNode(db, 'backend.database.keyvalue')),
-    triggers: {
-      words: deduplicateWords([
-        { word: 'cache', weight: 0.4 },
-        { word: 'keyvalue', weight: 0.6 },
-        { word: 'redis', weight: 0.4 },
-        ...KEYVALUE_DBS.flatMap(db => db.keywords.map(kw => ({ word: kw, weight: 0.3 })))
-      ]),
-      phrases: [],
-      antiWords: [],
-      importPatterns: deduplicateStrings(KEYVALUE_DBS.flatMap(db => db.imports.map(imp => `from '${imp}'`).concat(db.imports.map(imp => `require('${imp}')`)))),
-      filePatterns: deduplicateStrings(KEYVALUE_DBS.flatMap(db => [`**/${db.id}*`, `**/*${db.id}*`])),
-      symbolPatterns: deduplicateStrings(KEYVALUE_DBS.flatMap(db => db.symbols))
-    },
-    fragments: {
-      chat: null,
-      planning: null,
-      taskCreation: null,
-      investigation: null,
-      execution: [
-        {
-          id: 'cache-ttl-stampede',
-          summary: 'Provide cache key TTL and stampede protection',
-          weight: 'principle',
-          trigger: 'always',
-          defersToCodebase: true,
-          coreGuidance: 'When caching keys, always define a TTL (Time To Live). Consider cache stampede mitigation for hot keys.',
-          decisionTree: null,
-          codePatterns: [],
-          commonMistakes: [
-            {
-              mistake: 'Caching sensitive or dynamic user data indefinitely without TTL',
-              whyItHappens: 'Forgetting to set expire parameters in cache client calls.',
-              correction: 'Ensure all SET commands include an EX option.',
-              severity: 'functional'
-            }
-          ],
-          selfVerification: [],
-          outputConstraints: null,
-          guardrails: null,
-          scaffolding: null,
-          crossReferences: null
-        }
-      ],
-      verification: null
-    },
-    toolOverrides: []
-  };
+  const keyvalueNode = buildDatabaseCategoryNode(
+    'backend.database.keyvalue',
+    'Key-Value & Cache Store',
+    KEYVALUE_DBS,
+    [
+      { word: 'cache', weight: 0.4 },
+      { word: 'keyvalue', weight: 0.6 },
+      { word: 'redis', weight: 0.4 }
+    ],
+    [
+      {
+        id: 'cache-ttl-stampede',
+        summary: 'Provide cache key TTL and stampede protection',
+        weight: 'principle',
+        trigger: 'always',
+        defersToCodebase: true,
+        coreGuidance: 'When caching keys, always define a TTL (Time To Live). Consider cache stampede mitigation for hot keys.',
+        decisionTree: null,
+        codePatterns: [],
+        commonMistakes: [
+          {
+            mistake: 'Caching sensitive or dynamic user data indefinitely without TTL',
+            whyItHappens: 'Forgetting to set expire parameters in cache client calls.',
+            correction: 'Ensure all SET commands include an EX option.',
+            severity: 'functional'
+          }
+        ],
+        selfVerification: [],
+        outputConstraints: null,
+        guardrails: null,
+        scaffolding: null,
+        crossReferences: null
+      }
+    ]
+  );
 
-  const widecolumnNode: TaxonomyNode = {
-    id: 'backend.database.widecolumn',
-    label: 'Wide-Column Family Database',
-    children: WIDECOLUMN_DBS.map(db => makeDbNode(db, 'backend.database.widecolumn')),
-    triggers: {
-      words: deduplicateWords([
-        { word: 'widecolumn', weight: 0.7 },
-        { word: 'cassandra', weight: 0.4 },
-        { word: 'hbase', weight: 0.4 },
-        ...WIDECOLUMN_DBS.flatMap(db => db.keywords.map(kw => ({ word: kw, weight: 0.3 })))
-      ]),
-      phrases: [],
-      antiWords: [],
-      importPatterns: deduplicateStrings(WIDECOLUMN_DBS.flatMap(db => db.imports.map(imp => `from '${imp}'`).concat(db.imports.map(imp => `require('${imp}')`)))),
-      filePatterns: deduplicateStrings(WIDECOLUMN_DBS.flatMap(db => [`**/${db.id}*`, `**/*${db.id}*`])),
-      symbolPatterns: deduplicateStrings(WIDECOLUMN_DBS.flatMap(db => db.symbols))
-    },
-    fragments: {
-      chat: null,
-      planning: null,
-      taskCreation: null,
-      investigation: null,
-      execution: [
-        {
-          id: 'widecolumn-queries',
-          summary: 'Query-driven design in Cassandra/ScyllaDB',
-          weight: 'principle',
-          trigger: 'always',
-          defersToCodebase: true,
-          coreGuidance: 'In wide-column stores, design tables strictly around queries. Avoid joins and perform denormalization to match target read shapes.',
-          decisionTree: null,
-          codePatterns: [],
-          commonMistakes: [],
-          selfVerification: [],
-          outputConstraints: null,
-          guardrails: null,
-          scaffolding: null,
-          crossReferences: null
-        }
-      ],
-      verification: null
-    },
-    toolOverrides: []
-  };
+  const widecolumnNode = buildDatabaseCategoryNode(
+    'backend.database.widecolumn',
+    'Wide-Column Family Database',
+    WIDECOLUMN_DBS,
+    [
+      { word: 'widecolumn', weight: 0.7 },
+      { word: 'cassandra', weight: 0.4 },
+      { word: 'hbase', weight: 0.4 }
+    ],
+    [
+      {
+        id: 'widecolumn-queries',
+        summary: 'Query-driven design in Cassandra/ScyllaDB',
+        weight: 'principle',
+        trigger: 'always',
+        defersToCodebase: true,
+        coreGuidance: 'In wide-column stores, design tables strictly around queries. Avoid joins and perform denormalization to match target read shapes.',
+        decisionTree: null,
+        codePatterns: [],
+        commonMistakes: [],
+        selfVerification: [],
+        outputConstraints: null,
+        guardrails: null,
+        scaffolding: null,
+        crossReferences: null
+      }
+    ]
+  );
 
-  const columnarNode: TaxonomyNode = {
-    id: 'backend.database.columnar',
-    label: 'Columnar Warehouse & OLAP Engine',
-    children: COLUMNAR_DBS.map(db => makeDbNode(db, 'backend.database.columnar')),
-    triggers: {
-      words: deduplicateWords([
-        { word: 'columnar', weight: 0.7 },
-        { word: 'olap', weight: 0.7 },
-        { word: 'warehouse', weight: 0.6 },
-        ...COLUMNAR_DBS.flatMap(db => db.keywords.map(kw => ({ word: kw, weight: 0.3 })))
-      ]),
-      phrases: [],
-      antiWords: [],
-      importPatterns: deduplicateStrings(COLUMNAR_DBS.flatMap(db => db.imports.map(imp => `from '${imp}'`).concat(db.imports.map(imp => `require('${imp}')`)))),
-      filePatterns: deduplicateStrings(COLUMNAR_DBS.flatMap(db => [`**/${db.id}*`, `**/*${db.id}*`])),
-      symbolPatterns: deduplicateStrings(COLUMNAR_DBS.flatMap(db => db.symbols))
-    },
-    fragments: {
-      chat: null,
-      planning: null,
-      taskCreation: null,
-      investigation: null,
-      execution: [
-        {
-          id: 'columnar-batch-writes',
-          summary: 'Batch writes in columnar engines',
-          weight: 'critical',
-          trigger: 'always',
-          defersToCodebase: true,
-          coreGuidance: 'Columnar engines (e.g. ClickHouse, Snowflake) are built for large batches. NEVER write single rows concurrently; instead, buffer inserts.',
-          decisionTree: null,
-          codePatterns: [],
-          commonMistakes: [
-            {
-              mistake: 'Direct single-row inserts from real-time events',
-              whyItHappens: 'Treating ClickHouse like OLTP PostgreSQL database.',
-              correction: 'Buffer writes in memory or use a queue (Kafka/Redis) to write 1000+ rows in batch.',
-              severity: 'functional'
-            }
-          ],
-          selfVerification: [],
-          outputConstraints: null,
-          guardrails: null,
-          scaffolding: null,
-          crossReferences: null
-        }
-      ],
-      verification: null
-    },
-    toolOverrides: []
-  };
+  const columnarNode = buildDatabaseCategoryNode(
+    'backend.database.columnar',
+    'Columnar Warehouse & OLAP Engine',
+    COLUMNAR_DBS,
+    [
+      { word: 'columnar', weight: 0.7 },
+      { word: 'olap', weight: 0.7 },
+      { word: 'warehouse', weight: 0.6 }
+    ],
+    [
+      {
+        id: 'columnar-batch-writes',
+        summary: 'Batch writes in columnar engines',
+        weight: 'critical',
+        trigger: 'always',
+        defersToCodebase: true,
+        coreGuidance: 'Columnar engines (e.g. ClickHouse, Snowflake) are built for large batches. NEVER write single rows concurrently; instead, buffer inserts.',
+        decisionTree: null,
+        codePatterns: [],
+        commonMistakes: [
+          {
+            mistake: 'Direct single-row inserts from real-time events',
+            whyItHappens: 'Treating ClickHouse like OLTP PostgreSQL database.',
+            correction: 'Buffer writes in memory or use a queue (Kafka/Redis) to write 1000+ rows in batch.',
+            severity: 'functional'
+          }
+        ],
+        selfVerification: [],
+        outputConstraints: null,
+        guardrails: null,
+        scaffolding: null,
+        crossReferences: null
+      }
+    ]
+  );
 
-  const timeseriesNode: TaxonomyNode = {
-    id: 'backend.database.timeseries',
-    label: 'Time-Series Engine',
-    children: TIMESERIES_DBS.map(db => makeDbNode(db, 'backend.database.timeseries')),
-    triggers: {
-      words: deduplicateWords([
-        { word: 'timeseries', weight: 0.7 },
-        { word: 'influx', weight: 0.4 },
-        { word: 'questdb', weight: 0.4 },
-        ...TIMESERIES_DBS.flatMap(db => db.keywords.map(kw => ({ word: kw, weight: 0.3 })))
-      ]),
-      phrases: [],
-      antiWords: [],
-      importPatterns: deduplicateStrings(TIMESERIES_DBS.flatMap(db => db.imports.map(imp => `from '${imp}'`).concat(db.imports.map(imp => `require('${imp}')`)))),
-      filePatterns: deduplicateStrings(TIMESERIES_DBS.flatMap(db => [`**/${db.id}*`, `**/*${db.id}*`])),
-      symbolPatterns: deduplicateStrings(TIMESERIES_DBS.flatMap(db => db.symbols))
-    },
-    fragments: {
-      chat: null,
-      planning: null,
-      taskCreation: null,
-      investigation: null,
-      execution: [
-        {
-          id: 'timeseries-indexing',
-          summary: 'Time index sorting requirements',
-          weight: 'principle',
-          trigger: 'always',
-          defersToCodebase: true,
-          coreGuidance: 'Always ensure timeseries inserts are strictly timestamped and queried using time boundaries to utilize indexing partitions.',
-          decisionTree: null,
-          codePatterns: [],
-          commonMistakes: [],
-          selfVerification: [],
-          outputConstraints: null,
-          guardrails: null,
-          scaffolding: null,
-          crossReferences: null
-        }
-      ],
-      verification: null
-    },
-    toolOverrides: []
-  };
+  const timeseriesNode = buildDatabaseCategoryNode(
+    'backend.database.timeseries',
+    'Time-Series Engine',
+    TIMESERIES_DBS,
+    [
+      { word: 'timeseries', weight: 0.7 },
+      { word: 'influx', weight: 0.4 },
+      { word: 'questdb', weight: 0.4 }
+    ],
+    [
+      {
+        id: 'timeseries-indexing',
+        summary: 'Time index sorting requirements',
+        weight: 'principle',
+        trigger: 'always',
+        defersToCodebase: true,
+        coreGuidance: 'Always ensure timeseries inserts are strictly timestamped and queried using time boundaries to utilize indexing partitions.',
+        decisionTree: null,
+        codePatterns: [],
+        commonMistakes: [],
+        selfVerification: [],
+        outputConstraints: null,
+        guardrails: null,
+        scaffolding: null,
+        crossReferences: null
+      }
+    ]
+  );
 
-  const searchNode: TaxonomyNode = {
-    id: 'backend.database.search',
-    label: 'Search Engine Store',
-    children: SEARCH_DBS.map(db => makeDbNode(db, 'backend.database.search')),
-    triggers: {
-      words: deduplicateWords([
-        { word: 'opensearch', weight: 0.4 },
-        { word: 'elasticsearch', weight: 0.4 },
-        { word: 'meilisearch', weight: 0.4 },
-        ...SEARCH_DBS.flatMap(db => db.keywords.map(kw => ({ word: kw, weight: 0.3 })))
-      ]),
-      phrases: [],
-      antiWords: [],
-      importPatterns: deduplicateStrings(SEARCH_DBS.flatMap(db => db.imports.map(imp => `from '${imp}'`).concat(db.imports.map(imp => `require('${imp}')`)))),
-      filePatterns: deduplicateStrings(SEARCH_DBS.flatMap(db => [`**/${db.id}*`, `**/*${db.id}*`])),
-      symbolPatterns: deduplicateStrings(SEARCH_DBS.flatMap(db => db.symbols))
-    },
-    fragments: {
-      chat: null,
-      planning: null,
-      taskCreation: null,
-      investigation: null,
-      execution: [
-        {
-          id: 'search-bulk-indexing',
-          summary: 'Bulk operations for indexing documents',
-          weight: 'principle',
-          trigger: 'always',
-          defersToCodebase: true,
-          coreGuidance: 'When indexing multiple search documents in OpenSearch/Elasticsearch, use bulk APIs (_bulk) rather than single index updates.',
-          decisionTree: null,
-          codePatterns: [],
-          commonMistakes: [],
-          selfVerification: [],
-          outputConstraints: null,
-          guardrails: null,
-          scaffolding: null,
-          crossReferences: null
-        }
-      ],
-      verification: null
-    },
-    toolOverrides: []
-  };
+  const searchNode = buildDatabaseCategoryNode(
+    'backend.database.search',
+    'Search Engine Store',
+    SEARCH_DBS,
+    [
+      { word: 'opensearch', weight: 0.4 },
+      { word: 'elasticsearch', weight: 0.4 },
+      { word: 'meilisearch', weight: 0.4 }
+    ],
+    [
+      {
+        id: 'search-bulk-indexing',
+        summary: 'Bulk operations for indexing documents',
+        weight: 'principle',
+        trigger: 'always',
+        defersToCodebase: true,
+        coreGuidance: 'When indexing multiple search documents in OpenSearch/Elasticsearch, use bulk APIs (_bulk) rather than single index updates.',
+        decisionTree: null,
+        codePatterns: [],
+        commonMistakes: [],
+        selfVerification: [],
+        outputConstraints: null,
+        guardrails: null,
+        scaffolding: null,
+        crossReferences: null
+      }
+    ]
+  );
 
-  const vectorNode: TaxonomyNode = {
-    id: 'backend.database.vector',
-    label: 'Vector Database',
-    children: VECTOR_DBS.map(db => makeDbNode(db, 'backend.database.vector')),
-    triggers: {
-      words: deduplicateWords([
-        { word: 'vector', weight: 0.5 },
-        { word: 'pinecone', weight: 0.4 },
-        { word: 'weaviate', weight: 0.4 },
-        ...VECTOR_DBS.flatMap(db => db.keywords.map(kw => ({ word: kw, weight: 0.3 })))
-      ]),
-      phrases: [],
-      antiWords: [],
-      importPatterns: deduplicateStrings(VECTOR_DBS.flatMap(db => db.imports.map(imp => `from '${imp}'`).concat(db.imports.map(imp => `require('${imp}')`)))),
-      filePatterns: deduplicateStrings(VECTOR_DBS.flatMap(db => [`**/${db.id}*`, `**/*${db.id}*`])),
-      symbolPatterns: deduplicateStrings(VECTOR_DBS.flatMap(db => db.symbols))
-    },
-    fragments: {
-      chat: null,
-      planning: null,
-      taskCreation: null,
-      investigation: null,
-      execution: [
-        {
-          id: 'vector-similarity-metrics',
-          summary: 'Vector distance metric alignment',
-          weight: 'critical',
-          trigger: 'always',
-          defersToCodebase: true,
-          coreGuidance: 'Ensure cosine similarity or L2 euclidean metrics are correctly configured to match the embedding model outputs.',
-          decisionTree: null,
-          codePatterns: [],
-          commonMistakes: [],
-          selfVerification: [],
-          outputConstraints: null,
-          guardrails: null,
-          scaffolding: null,
-          crossReferences: null
-        }
-      ],
-      verification: null
-    },
-    toolOverrides: []
-  };
+  const vectorNode = buildDatabaseCategoryNode(
+    'backend.database.vector',
+    'Vector Database',
+    VECTOR_DBS,
+    [
+      { word: 'vector', weight: 0.5 },
+      { word: 'pinecone', weight: 0.4 },
+      { word: 'weaviate', weight: 0.4 }
+    ],
+    [
+      {
+        id: 'vector-similarity-metrics',
+        summary: 'Vector distance metric alignment',
+        weight: 'critical',
+        trigger: 'always',
+        defersToCodebase: true,
+        coreGuidance: 'Ensure cosine similarity or L2 euclidean metrics are correctly configured to match the embedding model outputs.',
+        decisionTree: null,
+        codePatterns: [],
+        commonMistakes: [],
+        selfVerification: [],
+        outputConstraints: null,
+        guardrails: null,
+        scaffolding: null,
+        crossReferences: null
+      }
+    ]
+  );
 
   // Find backend.database in the baseTree
   const domainTree = baseTree.domain;
@@ -1153,38 +1441,67 @@ function run() {
   ];
 
   // -------------------------------------------------------------
-  // Inject Phase 3 Extensions
+  // Inject/Replace Phase 3 Extensions
   // -------------------------------------------------------------
 
-  // Inject backend nodes
-  if (!backendNode.children.find((c: any) => c.id === 'backend.api')) {
+  // Inject/Replace backend nodes
+  const apiIndex = backendNode.children.findIndex((c: any) => c.id === 'backend.api');
+  if (apiIndex !== -1) {
+    backendNode.children[apiIndex] = apiNode;
+  } else {
     backendNode.children.push(apiNode);
   }
-  if (!backendNode.children.find((c: any) => c.id === 'backend.architecture')) {
+
+  const archIndex = backendNode.children.findIndex((c: any) => c.id === 'backend.architecture');
+  if (archIndex !== -1) {
+    backendNode.children[archIndex] = archNode;
+  } else {
     backendNode.children.push(archNode);
   }
-  if (!backendNode.children.find((c: any) => c.id === 'backend.error-handling')) {
+
+  const errIndex = backendNode.children.findIndex((c: any) => c.id === 'backend.error-handling');
+  if (errIndex !== -1) {
+    backendNode.children[errIndex] = errorHandlingNode;
+  } else {
     backendNode.children.push(errorHandlingNode);
   }
-  if (!backendNode.children.find((c: any) => c.id === 'backend.messaging')) {
+
+  const msgIndex = backendNode.children.findIndex((c: any) => c.id === 'backend.messaging');
+  if (msgIndex !== -1) {
+    backendNode.children[msgIndex] = messagingNode;
+  } else {
     backendNode.children.push(messagingNode);
   }
 
-  // Inject top-level Domain nodes
-  if (!domainTree.children.find((c: any) => c.id === 'testing')) {
+  // Inject/Replace top-level Domain nodes
+  const testIndex = domainTree.children.findIndex((c: any) => c.id === 'testing');
+  if (testIndex !== -1) {
+    domainTree.children[testIndex] = testingNode;
+  } else {
     domainTree.children.push(testingNode);
   }
-  if (!domainTree.children.find((c: any) => c.id === 'devops')) {
+
+  const devopsIndex = domainTree.children.findIndex((c: any) => c.id === 'devops');
+  if (devopsIndex !== -1) {
+    domainTree.children[devopsIndex] = devopsNode;
+  } else {
     domainTree.children.push(devopsNode);
   }
-  if (!domainTree.children.find((c: any) => c.id === 'performance')) {
+
+  const perfIndex = domainTree.children.findIndex((c: any) => c.id === 'performance');
+  if (perfIndex !== -1) {
+    domainTree.children[perfIndex] = perfNode;
+  } else {
     domainTree.children.push(perfNode);
   }
 
   // Frontend custom sub-branches (Redux, Zustand, Signals)
   const frontendNode = domainTree.children.find((c: any) => c.id === 'frontend');
   if (frontendNode) {
-    if (!frontendNode.children.find((c: any) => c.id === 'frontend.state-management')) {
+    const smIndex = frontendNode.children.findIndex((c: any) => c.id === 'frontend.state-management');
+    if (smIndex !== -1) {
+      frontendNode.children[smIndex] = stateManagementNode;
+    } else {
       frontendNode.children.push(stateManagementNode);
     }
   }
@@ -1192,13 +1509,24 @@ function run() {
   // Security sub-branches (SQL injection, DOM XSS, Env vars, Hashing)
   const securityNode = domainTree.children.find((c: any) => c.id === 'security');
   if (securityNode) {
-    if (!securityNode.children.find((c: any) => c.id === 'security.injection')) {
+    const injIndex = securityNode.children.findIndex((c: any) => c.id === 'security.injection');
+    if (injIndex !== -1) {
+      securityNode.children[injIndex] = injectionNode;
+    } else {
       securityNode.children.push(injectionNode);
     }
-    if (!securityNode.children.find((c: any) => c.id === 'security.secrets-management')) {
+
+    const secIndex = securityNode.children.findIndex((c: any) => c.id === 'security.secrets-management');
+    if (secIndex !== -1) {
+      securityNode.children[secIndex] = secretsNode;
+    } else {
       securityNode.children.push(secretsNode);
     }
-    if (!securityNode.children.find((c: any) => c.id === 'security.cryptography')) {
+
+    const cryIndex = securityNode.children.findIndex((c: any) => c.id === 'security.cryptography');
+    if (cryIndex !== -1) {
+      securityNode.children[cryIndex] = cryptoNode;
+    } else {
       securityNode.children.push(cryptoNode);
     }
   }
