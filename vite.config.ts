@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import path from 'node:path'
 import electron from 'vite-plugin-electron/simple'
 import react from '@vitejs/plugin-react'
+import { notBundle } from 'vite-plugin-electron/plugin'
 
 /**
  * Packages that must stay unbundled to avoid Rolldown's __require shim for
@@ -18,6 +19,7 @@ const externalPkgs = [
   '@ai-sdk/gateway',
   '@ai-sdk/react',
   '@ai-sdk/ui-utils',
+  '@ai-sdk/core',
   '@vercel/oidc',
   // Runtime-safe to deps that have proper ESM exports
   'ai',
@@ -40,6 +42,27 @@ export default defineConfig({
               external: externalPkgs,
             },
           },
+          ssr: {
+            external: [
+              'node-pty',
+              'better-sqlite3',
+              '@ai-sdk/provider',
+              '@ai-sdk/openai',
+              '@ai-sdk/anthropic',
+              '@ai-sdk/openai-compatible',
+              '@ai-sdk/gateway',
+              '@ai-sdk/react',
+              '@ai-sdk/ui-utils',
+              '@ai-sdk/core',
+              '@vercel/oidc',
+              'ai',
+              'ollama-ai-provider',
+              'zod',
+            ],
+          },
+          plugins: [
+            notBundle(),
+          ],
         },
       },
       preload: {

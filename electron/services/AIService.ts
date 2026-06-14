@@ -1,10 +1,13 @@
-﻿import { generateText, streamText, Output, wrapLanguageModel, type AsyncIterableStream } from 'ai';
+import { generateText, streamText, Output, wrapLanguageModel, type AsyncIterableStream } from 'ai';
 import type { LanguageModelV3 } from '@ai-sdk/provider';
 import { createLanguageModel, resolveZenModel } from './ai/provider';
 import type { ProviderConfig } from './ai/provider';
 import { getProviderPrompt, composeSystemPrompt, extractSystemMessages } from './ai/prompts';
 import { createTransformMiddleware } from './ai/transform';
 import console from 'console';
+import { aiBridge } from './AIBridge';
+import { secureStore } from '../secureStore';
+import { dbService } from '../db';
 
 export const API_TIMEOUT = 120_000;
 
@@ -116,6 +119,33 @@ export class AIService {
     this.config = { ...config };
   }
 
+  initializeFromStore(providerId?: string) {
+    const targetProvider = providerId || secureStore.getActiveProvider();
+    const customProviders = dbService.getCustomProviders();
+    const isCustom = customProviders.some((p: any) => p.id === targetProvider);
+    let apiKey = '';
+    let baseUrl: string | undefined;
+    let isLocal = false;
+
+    if (isCustom) {
+      const prov = customProviders.find((p: any) => p.id === targetProvider);
+      apiKey = secureStore.getCustomProviderKey(targetProvider) || '';
+      baseUrl = prov?.base_url;
+      isLocal = !!prov?.is_local;
+    } else {
+      apiKey = secureStore.getApiKey(targetProvider) || AIService.getEnvKey(targetProvider) || '';
+    }
+
+    console.log(`[AIService:initializeFromStore] Initialized for provider: ${targetProvider}, apiKey length: ${apiKey ? apiKey.length : 0}, baseUrl: ${baseUrl || 'default'}`);
+
+    this.initialize({
+      providerId: targetProvider,
+      apiKey,
+      baseUrl,
+      isLocal,
+    });
+  }
+
   get providerId(): string {
     return this.config?.providerId ?? 'fallback';
   }
@@ -126,6 +156,10 @@ export class AIService {
 
   private getModel(modelId?: string) {
     if (!this.config) throw new Error('AI Service not initialized');
+    const requiresApiKey = this.config.providerId !== 'ollama' && this.config.providerId !== 'zen';
+    if (requiresApiKey && !this.config.apiKey) {
+      throw new Error(`API Key for provider "${this.config.providerId}" is not configured. Please set it in Settings > Models.`);
+    }
     const model = createLanguageModel(this.config, modelId || 'gpt-4o') as unknown as LanguageModelV3;
     return wrapLanguageModel({
       model,
@@ -175,12 +209,6 @@ export class AIService {
     return requestedTemp ?? 0.0;
   }
 
-  /**
-   * Backward-compatible chat method.
-   * - stream=true  -> returns ChatStreamResult
-   * - stream=false -> returns ChatResponse
-   * - responseSchema set -> uses Output.json() for structured JSON output
-   */
   async chat(
     messages: LLMMessage[],
     options?: CompletionOptions
@@ -259,7 +287,6 @@ export class AIService {
     }
   }
 
-  /** Generate a typed structured object using a Zod schema. */
   async generateObject<T>(
     schema: import('zod').ZodSchema<T>,
     messages: LLMMessage[],
@@ -280,7 +307,6 @@ export class AIService {
     return result.output;
   }
 
-  /** Stream a typed structured object using a Zod schema. */
   async streamObject<T>(
     schema: import('zod').ZodSchema<T>,
     messages: LLMMessage[],
@@ -328,90 +354,15 @@ export class AIService {
 
   async getModels(): Promise<string[]> {
     if (!this.config) return ['gpt-4o'];
-
-    switch (this.config.providerId) {
-      case 'openai':
-        return this.fetchOpenAIModels();
-      case 'zen':
-        return this.fetchZenModels();
-      case 'anthropic':
-        return [
-          'claude-3-5-sonnet-20241022',
-          'claude-3-5-haiku-20241022',
-          'claude-3-opus-20240229',
-        ];
-      case 'ollama':
-        return this.fetchOllamaModels();
-      default:
-        return ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
-    }
+    return aiBridge.getAvailableModels(this.config.providerId);
   }
 
   static getEnvKey(providerId: string): string | undefined {
     if (providerId === 'openai') return process.env.OPENAI_API_KEY;
     if (providerId === 'anthropic') return process.env.ANTHROPIC_API_KEY;
+    if (providerId === 'gemini') return process.env.GEMINI_API_KEY;
     return undefined;
-  }
-
-  private async fetchOpenAIModels(): Promise<string[]> {
-    try {
-      if (!this.config?.apiKey) return ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
-      const resp = await fetch('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${this.config.apiKey}` },
-      });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = (await resp.json()) as any;
-      return (data.data || [])
-        .map((m: any) => m.id)
-        .filter((id: string) => id.includes('gpt'));
-    } catch (e) {
-      console.error('[AIService] Failed to fetch OpenAI models', e);
-      return ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
-    }
-  }
-
-  private async fetchZenModels(): Promise<string[]> {
-    try {
-      const resp = await fetch('https://opencode.ai/zen/v1/models');
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = (await resp.json()) as any;
-      const baseIds: string[] = (data.data || []).map((m: any) => m.id);
-      const expanded: string[] = [];
-      for (const id of baseIds) {
-        if (id === 'deepseek-v4-flash-free') {
-          expanded.push('deepseek-v4-flash-free-low');
-          expanded.push('deepseek-v4-flash-free');
-          expanded.push('deepseek-v4-flash-free-high');
-        } else {
-          expanded.push(id);
-        }
-      }
-      return expanded.sort();
-    } catch (e) {
-      return [
-        'deepseek-v4-flash-free',
-        'deepseek-v4-flash-free-high',
-        'deepseek-v4-flash-free-low',
-        'mimo-v2.5-free',
-      ];
-    }
-  }
-
-  private async fetchOllamaModels(): Promise<string[]> {
-    const baseUrl = this.config?.baseUrl || 'http://localhost:11434';
-    try {
-      const resp = await fetch(`${baseUrl}/api/tags`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = (await resp.json()) as any;
-      if (data.models && Array.isArray(data.models)) {
-        return data.models.map((m: any) => m.name);
-      }
-    } catch (e) {
-      console.error('[AIService] Failed to fetch Ollama models', e);
-    }
-    return ['llama3', 'mistral', 'codellama', 'phi3'];
   }
 }
 
 export const aiService = AIService.getInstance();
-

@@ -1,5 +1,6 @@
 import { dbService } from '../db';
-import { secureStore } from '../secureStore';
+import { secureStore, listEncryptedKeys } from '../secureStore';
+import { runSecureStoreTests } from '../testRunner';
 import { liteLLMService } from '../services/LiteLLMService';
 import { DocumentationService } from '../services/DocumentationService';
 import { VerificationService } from '../services/VerificationService';
@@ -252,20 +253,11 @@ export function registerDBHandlers(ipcMain: Electron.IpcMain) {
     });
 
     ipcMain.handle('secure:list-keys', async () => {
-        const { listEncryptedKeys } = await import('../secureStore');
         return listEncryptedKeys();
     });
 
     ipcMain.handle('test:secure-run', async () => {
-        try {
-            // @ts-expect-error - implicit any due to lack of declaration file
-            const { runTests } = await import('../../scripts/test-secure-store.js');
-            await runTests(secureStore, dbService);
-            return { success: true };
-        } catch (e: any) {
-            console.error('[test:secure-run] Error running tests:', e);
-            return { success: false, error: e.message };
-        }
+        return await runSecureStoreTests();
     });
 
     // Verification

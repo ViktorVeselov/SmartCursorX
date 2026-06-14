@@ -1,6 +1,8 @@
 import { dbService } from '../db';
 import { CodeAnalysisService } from './CodeAnalysisService';
 import { EmbeddingService } from './EmbeddingService';
+import { taxonomyService } from './taxonomy/TaxonomyService';
+import { TaxonomyPromptComposer } from './taxonomy/TaxonomyPromptComposer';
 import console from 'console';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -18,6 +20,7 @@ export interface AssembledContext {
     relevantChunks: string[];
     symbolContext: string;
     tokenUsage: Record<string, number>;
+    taxonomyResult: any;
 }
 
 export class ContextAssembler {
@@ -30,7 +33,8 @@ export class ContextAssembler {
         recentMessages: Array<{ role: string; content: string }>,
         budget: ContextBudget = { taskContext: 3000, ragResults: 3000, codeSymbols: 3000, chatHistory: 3000, total: 12000 },
         conversationId?: string,
-        passedWorkspacePath?: string
+        passedWorkspacePath?: string,
+        investigationResults?: string
     ): Promise<AssembledContext> {
         console.assert(typeof taskId === 'number', 'Task ID is required');
         console.assert(Array.isArray(recentMessages), 'Messages must be a valid array');
@@ -252,8 +256,43 @@ export class ContextAssembler {
             console.error('[ContextAssembler] Failed to search memories:', e);
         }
 
-        const systemPrompt = `You are Cursor Replacer's high-reliability agentic assistant. Follow strict safety-critical guidelines.
-Ensure 100% accurate edits. Verify syntax and types, and do not introduce implicit 'any' values.
+        // Build file contents map for taxonomy scanning
+        const fileContentsMap: Record<string, string> = {};
+        if (filesToParse.size > 0) {
+            for (const file of filesToParse) {
+                try {
+                    const absolutePath = this.resolveToAllowedRoot(file, workspacePath);
+                    if (absolutePath && fs.existsSync(absolutePath)) {
+                        fileContentsMap[file] = fs.readFileSync(absolutePath, 'utf8');
+                    }
+                } catch (e) {
+                    // ignore
+                }
+            }
+        }
+
+        // Run taxonomy classification
+        let taxonomyResult = null;
+        try {
+            taxonomyResult = taxonomyService.classify(
+                activeTask,
+                'execution',
+                planRow ? planRow.plan_json : undefined,
+                investigationResults,
+                fileContentsMap
+            );
+        } catch (e) {
+            console.error('[ContextAssembler] Taxonomy classification failed:', e);
+        }
+
+        const baseSystemPromptTemplate = `You are Cursor Replacer's high-reliability agentic assistant.
+{{slot:safety_guidelines}}
+{{slot:meta_instruction}}
+{{slot:domain_guidance}}
+{{slot:structural_patterns}}
+{{slot:scale_awareness}}
+{{slot:concurrency_guidance}}
+{{slot:lifecycle_context}}
 
 ${blueprintBlock}
 ${matchedMemoriesBlock}
@@ -264,13 +303,32 @@ ${ragBlock}
 Observe previous conversation history where appropriate:
 ${chatContextBlock}
 
+{{slot:verification_focus}}
 Execute the active task effectively using the predefined plan.`;
+
+        let systemPrompt = baseSystemPromptTemplate;
+        if (taxonomyResult && taxonomyResult.resolvedSlots) {
+            // Ensure fallback content exists in slots if empty
+            if (!taxonomyResult.resolvedSlots.get('safety_guidelines')) {
+                taxonomyResult.resolvedSlots.set('safety_guidelines', 'Follow strict safety-critical guidelines. Ensure 100% accurate edits.');
+            }
+            if (!taxonomyResult.resolvedSlots.get('verification_focus')) {
+                taxonomyResult.resolvedSlots.set('verification_focus', 'Verify syntax and types, and do not introduce implicit \'any\' values.');
+            }
+            systemPrompt = TaxonomyPromptComposer.composePrompt(baseSystemPromptTemplate, taxonomyResult.resolvedSlots);
+        } else {
+            const fallbackSlots = new Map<string, string>();
+            fallbackSlots.set('safety_guidelines', 'Follow strict safety-critical guidelines. Ensure 100% accurate edits.');
+            fallbackSlots.set('verification_focus', 'Verify syntax and types, and do not introduce implicit \'any\' values.');
+            systemPrompt = TaxonomyPromptComposer.composePrompt(baseSystemPromptTemplate, fallbackSlots);
+        }
 
         return {
             systemPrompt,
             relevantChunks,
             symbolContext: symbolContextBlock,
-            tokenUsage
+            tokenUsage,
+            taxonomyResult
         };
     }
 

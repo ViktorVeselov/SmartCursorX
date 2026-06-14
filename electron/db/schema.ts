@@ -359,6 +359,22 @@ When planning:
 3. Risk Assessment: Rank assumptions by their potential impact on the project (High/Medium/Low).
 4. Verification Plan: Propose specific steps (e.g., "Run grep", "Ask the user") to convert each assumption into a fact.', 1)
     `).run();
+
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS task_taxonomy_tracking (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id INTEGER NOT NULL,
+          axis TEXT NOT NULL,
+          resolved_path TEXT NOT NULL,
+          confidence REAL NOT NULL,
+          classified_by TEXT NOT NULL,
+          classification_depth INTEGER NOT NULL,
+          fragments_injected INTEGER NOT NULL,
+          phase TEXT NOT NULL,
+          reclassified INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    `).run();
 }
 
 export function migrateKeysToSecureStore(db: any) {

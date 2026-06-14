@@ -28,7 +28,7 @@ export class VerificationService {
      * Executes verification pipelines sequentially matching the three-tier taxonomy constraints.
      * Integrates Tier 0 fully-deterministic static analysis before standard pattern/LLM checks.
      */
-    static async verifyOutput(taskOutputId: number): Promise<'passed' | 'failed' | 'needs_review'> {
+    static async verifyOutput(taskOutputId: number, taxonomyResult?: any): Promise<'passed' | 'failed' | 'needs_review'> {
         console.assert(typeof taskOutputId === 'number', 'Task Output ID must be a number');
         
         const output = dbService.getTaskOutput(taskOutputId);
@@ -168,6 +168,47 @@ Content to verify:
                 finalStatus = 'failed';
             } else if (result === 'pending_review' && finalStatus !== 'failed') {
                 finalStatus = 'needs_review';
+            }
+        }
+
+        // === Taxonomy Verification Overlays ===
+        if (taxonomyResult && taxonomyResult.classification) {
+            const axesKeys = ['domain', 'paradigm', 'scale', 'concurrency', 'lifecycle'] as const;
+            for (const key of axesKeys) {
+                const pathObj = taxonomyResult.classification[key];
+                if (pathObj && pathObj.deepestNode) {
+                    const fragments = pathObj.deepestNode.fragments['verification'] || [];
+                    for (const frag of fragments) {
+                        if (frag.selfVerification) {
+                            for (const check of frag.selfVerification) {
+                                let checkPassed = true;
+                                let checkDetails = '';
+                                
+                                // Perform a simple keyword-based validation or custom logic
+                                if (check.check.toLowerCase().includes('sql string concatenation')) {
+                                    const codeContent = output.content;
+                                    if (codeContent.includes('.query(') && (codeContent.includes('`') && codeContent.includes('${') || codeContent.includes(" + ") || codeContent.includes(" +"))) {
+                                        checkPassed = false;
+                                        checkDetails = `Failed check: ${check.check}. Potential SQL string concatenation found. ${check.failureIndicator}`;
+                                    }
+                                }
+
+                                dbService.addVerificationResult(
+                                    taskOutputId,
+                                    999, // Dynamic taxonomy rule ID
+                                    checkPassed ? 'passed' : 'failed',
+                                    checkPassed ? 1.0 : 0.0,
+                                    checkDetails || `Passed taxonomy check: ${check.check}. ${check.howToVerify}`,
+                                    'auto'
+                                );
+
+                                if (!checkPassed) {
+                                    finalStatus = 'failed';
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

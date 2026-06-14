@@ -1,17 +1,26 @@
 import { app, BrowserWindow, Menu } from 'electron'
 import { createRequire } from 'node:module'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 // import { store } from './store'
 import { dbService } from './db'
 import { registerAllHandlers } from './ipcHandlers'
 import type { IpcHandlerContext } from './ipcHandlers'
 import { adminApiService } from './services/AdminApiService'
+import { checkCommandLineTests } from './testRunner'
+import { aiService } from './services/AIService'
 
 console.log(' [Main] Starting Electron Main Process...');
 
 // Suppress AI SDK warnings (Gemini structured output fallback, etc.)
 (globalThis as any).AI_SDK_LOG_WARNINGS = false;
+
+// Override console.assert to throw Errors instead of silently logging (NASA Rule #5)
+console.assert = function(condition: any, message?: string, ...args: any[]) {
+  if (!condition) {
+    throw new Error(`Assertion failed: ${message || 'Assert failed'} ${args.join(' ')}`);
+  }
+};
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -170,22 +179,13 @@ app.whenReady().then(async () => {
     await dbService.init()
     console.log(' [Main] DB Initialized');
 
-    if (process.argv.includes('--test-secure-store')) {
-      console.log(' [Main] Running test-secure-store integration test...');
-      try {
-        const testPath = path.join(process.cwd(), 'scripts/test-secure-store.js');
-        const testUrl = pathToFileURL(testPath).href;
-        const { runTests } = await import(testUrl);
-        const { secureStore } = await import('./secureStore');
-        await runTests(secureStore, dbService);
-        app.quit();
-        return;
-      } catch (testErr) {
-        console.error(' [Main] Test execution failed:', testErr);
-        app.exit(1);
-        return;
-      }
-    }
+    // Initialize AI Service
+    console.log(' [Main] Initializing AI Service...');
+    aiService.initializeFromStore();
+    console.log(' [Main] AI Service Initialized');
+
+    // Decoupled CLI integration test suite runner
+    await checkCommandLineTests();
 
     // Start Admin HTTP server
     console.log(' [Main] Starting Admin REST API Server...');
