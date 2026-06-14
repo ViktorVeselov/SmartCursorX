@@ -3,6 +3,25 @@ const canModelThink = (modelName: string) =>
     modelName.includes('deepseek-r1') || modelName.includes('reasoner') ||
     modelName.includes('gemini') || modelName.includes('claude');
 
+const ProviderBadge = ({ providerId }: { providerId: string }) => {
+    if (!providerId) return null;
+    return (
+        <span style={{
+            fontSize: '9px',
+            fontWeight: 400,
+            color: 'var(--text-secondary)',
+            opacity: 0.6,
+            background: 'var(--bg-hover)',
+            padding: '1px 4px',
+            borderRadius: '3px',
+            border: '1px solid var(--border-subtle)',
+            textTransform: 'uppercase'
+        }}>
+            {providerId}
+        </span>
+    );
+};
+
 export interface ModelDropdownProps {
     showModelDropdown: boolean;
     onSetShowModelDropdown: (v: boolean) => void;
@@ -10,7 +29,7 @@ export interface ModelDropdownProps {
     onSetInlineModelInput: (v: string) => void;
     availableModels: string[];
     activeModel: string;
-    onSetActiveModel: (v: string) => void;
+    onSelectModel: (modelName: string, providerId: string) => void;
     customModels: Record<string, unknown>[];
     onSetCustomModels: (v: Record<string, unknown>[]) => void;
     onSetAvailableModels: (v: string[]) => void;
@@ -24,9 +43,8 @@ export const ModelDropdown = ({
     onSetShowModelDropdown,
     inlineModelInput,
     onSetInlineModelInput,
-    availableModels,
     activeModel,
-    onSetActiveModel,
+    onSelectModel,
     customModels,
     onSetCustomModels,
     onSetAvailableModels,
@@ -52,8 +70,13 @@ export const ModelDropdown = ({
                 onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-active)'}
                 onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
                 onClick={() => onSetShowModelDropdown(!showModelDropdown)}>
-                <span style={{ fontWeight: 600, color: activeModel ? 'var(--text-primary)' : '#f59e0b' }}>
-                    {activeModel || 'NO MODEL ACTIVE'}
+                <span style={{ fontWeight: 600, color: activeModel ? 'var(--text-primary)' : '#f59e0b', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    {activeModel ? (
+                        <>
+                            <span>{activeModel}</span>
+                            <ProviderBadge providerId={activeProvider} />
+                        </>
+                    ) : 'NO MODEL ACTIVE'}
                 </span>
                 <span className="codicon codicon-chevron-down" style={{ fontSize: 10, opacity: 0.8 }} />
             </div>
@@ -90,13 +113,13 @@ export const ModelDropdown = ({
                                     await window.ipcRenderer.invoke('ai:add-custom-model', activeProvider, name, hasTh);
                                     onSetInlineModelInput('');
 
-                                    const dbModels = await window.ipcRenderer.invoke('ai:get-custom-models', activeProvider);
+                                    const dbModels = await window.ipcRenderer.invoke('ai:get-custom-models');
                                     onSetCustomModels(dbModels || []);
-                                    const chosenNames = dbModels.map((cm: Record<string, unknown>) => cm.model_name as string);
+                                    const chosenNames = (dbModels as Record<string, unknown>[]).map((cm: Record<string, unknown>) => cm.model_name as string);
                                     if (chosenNames.length > 0) {
                                         onSetAvailableModels(chosenNames);
                                     }
-                                    onSetActiveModel(name);
+                                    onSelectModel(name, activeProvider);
                                     onSetShowModelDropdown(false);
                                 }
                             }}
@@ -104,70 +127,78 @@ export const ModelDropdown = ({
                     </div>
 
                     <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 180 }}>
-                        {availableModels.length === 0 ? (
+                        {customModels.length === 0 ? (
                             <div style={{ padding: '16px 12px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '11px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
                                 <span className="codicon codicon-warning" style={{ fontSize: 16, color: '#f59e0b' }} />
                                 <span>No active models added.</span>
                                 <span style={{ fontSize: '9px', opacity: 0.8 }}>Use the register input below or settings to add one!</span>
                             </div>
                         ) : (
-                            availableModels
-                                .filter(m => m.toLowerCase().includes(inlineModelInput.toLowerCase()))
-                                .map(m => {
-                                    const customMatch = customModels.find(cm => (cm as Record<string, unknown>).model_name === m);
+                            customModels
+                                .filter(cm => (cm.model_name as string).toLowerCase().includes(inlineModelInput.toLowerCase()))
+                                .map(cm => {
+                                    const m = cm.model_name as string;
+                                    const providerId = cm.provider_id as string;
+                                    const isSelected = activeModel === m && activeProvider === providerId;
 
                                     return (
                                         <div
-                                            key={m}
+                                            key={`${providerId}:${m}`}
                                             style={{
                                                 display: 'flex',
                                                 alignItems: 'center',
                                                 justifyContent: 'space-between',
                                                 padding: '5px 8px',
                                                 borderRadius: 'var(--radius-sm)',
-                                                background: activeModel === m ? 'var(--bg-active)' : 'transparent',
+                                                background: isSelected ? 'var(--bg-active)' : 'transparent',
                                                 cursor: 'pointer',
                                                 transition: 'var(--transition-smooth)'
                                             }}
-                                            onMouseOver={(e) => { if (activeModel !== m) e.currentTarget.style.background = 'var(--bg-hover)'; }}
-                                            onMouseOut={(e) => { if (activeModel !== m) e.currentTarget.style.background = 'transparent'; }}
+                                            onMouseOver={(e) => { if (!isSelected) e.currentTarget.style.background = 'var(--bg-hover)'; }}
+                                            onMouseOut={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
                                         >
-                                            <span
+                                            <div
                                                 onClick={() => {
-                                                    onSetActiveModel(m);
+                                                    onSelectModel(m, providerId);
                                                     onSetShowModelDropdown(false);
                                                 }}
                                                 style={{
                                                     flex: 1,
-                                                    fontSize: 'var(--font-xs)',
-                                                    color: activeModel === m ? 'var(--text-primary)' : 'var(--text-secondary)',
-                                                    textAlign: 'left',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: 6,
                                                     overflow: 'hidden',
-                                                    textOverflow: 'ellipsis',
-                                                    whiteSpace: 'nowrap'
+                                                    textAlign: 'left'
                                                 }}
                                             >
-                                                {m}
-                                            </span>
+                                                <span
+                                                    style={{
+                                                        fontSize: 'var(--font-xs)',
+                                                        color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
+                                                        overflow: 'hidden',
+                                                        textOverflow: 'ellipsis',
+                                                        whiteSpace: 'nowrap'
+                                                    }}
+                                                >
+                                                    {m}
+                                                </span>
+                                                <ProviderBadge providerId={providerId} />
+                                            </div>
 
                                             {canModelThink(m) && (
                                                 <button
                                                     onClick={async (e) => {
                                                         e.stopPropagation();
-                                                    const matchingModel = customModels.find(cm => (cm as Record<string, unknown>).model_name === m);
-                                                    const newEnabled = m === activeModel ? executionMode !== 'think' : !((matchingModel as Record<string, unknown>)?.has_thinking === 1);
-                                                        if (customMatch) {
-                                                            await window.ipcRenderer.invoke('ai:toggle-model-thinking', activeProvider, m, newEnabled);
-                                                        } else {
-                                                            await window.ipcRenderer.invoke('ai:add-custom-model', activeProvider, m, newEnabled);
-                                                        }
-                                                        const dbModels = (await window.ipcRenderer.invoke('ai:get-custom-models', activeProvider)) as Record<string, unknown>[];
+                                                        const newEnabled = isSelected ? executionMode !== 'think' : !((cm as Record<string, unknown>).has_thinking === 1);
+                                                        await window.ipcRenderer.invoke('ai:toggle-model-thinking', providerId, m, newEnabled);
+                                                        
+                                                        const dbModels = (await window.ipcRenderer.invoke('ai:get-custom-models')) as Record<string, unknown>[];
                                                         onSetCustomModels(dbModels || []);
-                                                        if (m === activeModel) {
+                                                        if (isSelected) {
                                                             onSetExecutionMode(newEnabled ? 'think' : 'fast');
                                                         }
                                                     }}
-                                                    title={m === activeModel ? (executionMode === 'think' ? 'Disable Reasoning/Thinking' : 'Enable Reasoning/Thinking') : 'Toggle Reasoning/Thinking'}
+                                                    title={isSelected ? (executionMode === 'think' ? 'Disable Reasoning/Thinking' : 'Enable Reasoning/Thinking') : 'Toggle Reasoning/Thinking'}
                                                     style={{
                                                         background: 'none',
                                                         border: 'none',
@@ -183,7 +214,7 @@ export const ModelDropdown = ({
                                                         width: 20,
                                                         height: 11,
                                                         borderRadius: 5.5,
-                                                        background: (m === activeModel ? executionMode === 'think' : (customMatch?.has_thinking === 1)) ? '#a78bfa' : 'rgba(255,255,255,0.15)',
+                                                        background: (isSelected ? executionMode === 'think' : (cm.has_thinking === 1)) ? '#a78bfa' : 'rgba(255,255,255,0.15)',
                                                         position: 'relative',
                                                         transition: 'background 0.2s ease'
                                                     }}>
@@ -194,7 +225,7 @@ export const ModelDropdown = ({
                                                             background: '#ffffff',
                                                             position: 'absolute',
                                                             top: 2,
-                                                            left: (m === activeModel ? executionMode === 'think' : (customMatch?.has_thinking === 1)) ? 11 : 2,
+                                                            left: (isSelected ? executionMode === 'think' : (cm.has_thinking === 1)) ? 11 : 2,
                                                             transition: 'left 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
                                                         }} />
                                                     </div>

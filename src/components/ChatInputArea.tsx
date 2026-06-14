@@ -19,7 +19,7 @@ export interface ChatInputAreaProps {
     setShowModelDropdown: React.Dispatch<React.SetStateAction<boolean>>;
     inlineModelInput: string;
     setInlineModelInput: React.Dispatch<React.SetStateAction<string>>;
-    setActiveModel: React.Dispatch<React.SetStateAction<string>>;
+    onSelectModel: (modelName: string, providerId: string) => void;
     setCustomModels: React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>;
     setAvailableModels: React.Dispatch<React.SetStateAction<string[]>>;
     executionMode: 'fast' | 'think';
@@ -158,7 +158,7 @@ export function ChatInputArea(props: ChatInputAreaProps) {
                             onSetInlineModelInput={props.setInlineModelInput}
                             availableModels={props.availableModels}
                             activeModel={props.activeModel}
-                            onSetActiveModel={props.setActiveModel}
+                            onSelectModel={props.onSelectModel}
                             customModels={props.customModels}
                             onSetCustomModels={props.setCustomModels}
                             onSetAvailableModels={props.setAvailableModels}
@@ -173,13 +173,13 @@ export function ChatInputArea(props: ChatInputAreaProps) {
                                 const next = props.executionMode === 'think' ? 'fast' : 'think';
                                 props.setExecutionMode(next);
                                 if (props.activeModel) {
-                                    const customMatch = props.customModels.find((cm: Record<string, unknown>) => cm.model_name === props.activeModel);
+                                    const customMatch = props.customModels.find((cm: Record<string, unknown>) => cm.model_name === props.activeModel && cm.provider_id === props.activeProvider);
                                     if (customMatch) {
                                         await window.ipcRenderer.invoke('ai:toggle-model-thinking', props.activeProvider, props.activeModel, next === 'think');
                                     } else {
                                         await window.ipcRenderer.invoke('ai:add-custom-model', props.activeProvider, props.activeModel, next === 'think');
                                     }
-                                    const dbModels = await window.ipcRenderer.invoke('ai:get-custom-models', props.activeProvider);
+                                    const dbModels = await window.ipcRenderer.invoke('ai:get-custom-models');
                                     props.setCustomModels(dbModels || []);
                                 }
                             }}
