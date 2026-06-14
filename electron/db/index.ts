@@ -23,7 +23,7 @@ import {
     addExecutionAttempt, getExecutionAttempts, getTaskExecutionDetails,
     addVerificationRule, getVerificationRules, addVerificationResult, getVerificationResults,
     addKnowledgeChunk, searchKnowledge,
-    addModelPerformance, getModelPerformanceSummary, getUsageStats, clearUsageStats
+    addModelPerformance, getModelPerformanceSummary, getModelPerformanceStats, getUsageStats, clearUsageStats
 } from './settings';
 
 export class DatabaseService {
@@ -301,6 +301,9 @@ export class DatabaseService {
     }
     getModelPerformanceSummary() {
         return getModelPerformanceSummary(this.db);
+    }
+    getModelPerformanceStats(filterProvider?: string, filterModel?: string, filterTaskType?: string) {
+        return getModelPerformanceStats(this.db, filterProvider, filterModel, filterTaskType);
     }
     getUsageStats() {
         return getUsageStats(this.db);

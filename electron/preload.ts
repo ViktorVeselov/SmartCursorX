@@ -22,7 +22,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'get-general-settings', 'save-general-settings', 'openclaw:check-installed',
   'openclaw:get-status', 'openclaw:start-gateway', 'openclaw:stop-gateway',
   'openclaw:run-doctor', 'openclaw:approve-pairing', 'openclaw:run-agent',
-  'openclaw:get-logs', 'ai:get-usage-stats', 'ai:clear-usage-stats',
+  'openclaw:get-logs', 'ai:get-usage-stats', 'ai:clear-usage-stats', 'ai:get-model-stats',
   'chat:create-conv', 'chat:get-convs', 'chat:get-messages', 'chat:add-message', 'chat:update-message',
   'chat:delete-conv', 'chat:update-title', 'chat:truncate-from-message', 'chat:fork-conv', 'plan:get', 'plan:save', 'secure:list-keys', 'test:secure-run',
   'db:get-rules', 'db:add-rule', 'db:update-rule', 'db:delete-rule', 'db:toggle-rule',

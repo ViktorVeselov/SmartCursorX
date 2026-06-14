@@ -485,6 +485,55 @@ export function getUsageStats(db: any) {
     };
 }
 
+export function getModelPerformanceStats(db: any, filterProvider?: string, filterModel?: string, filterTaskType?: string) {
+    if (!db) return [];
+
+    let query = `
+        SELECT
+            model, provider, task_type,
+            COUNT(*) as total_runs,
+            SUM(success) as successful_runs,
+            ROUND(CAST(SUM(success) AS REAL) / MAX(COUNT(*), 1), 4) as success_rate,
+            AVG(latency_ms) as avg_latency_ms,
+            AVG(input_tokens) as avg_input_tokens,
+            AVG(output_tokens) as avg_output_tokens,
+            AVG(token_count) as avg_token_count
+        FROM model_performance
+        WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (filterProvider) {
+        query += ' AND provider = ?';
+        params.push(filterProvider);
+    }
+    if (filterModel) {
+        query += ' AND model = ?';
+        params.push(filterModel);
+    }
+    if (filterTaskType) {
+        query += ' AND task_type = ?';
+        params.push(filterTaskType);
+    }
+
+    query += ` GROUP BY model, provider, task_type ORDER BY total_runs DESC`;
+
+    const rows = db.prepare(query).all(...params);
+
+    return rows.map((row: any) => ({
+        model: row.model,
+        provider: row.provider,
+        taskType: row.task_type,
+        totalRuns: row.total_runs,
+        successfulRuns: row.successful_runs,
+        successRate: row.success_rate,
+        avgLatencyMs: Math.round(row.avg_latency_ms || 0),
+        avgInputTokens: Math.round(row.avg_input_tokens || 0),
+        avgOutputTokens: Math.round(row.avg_output_tokens || 0),
+        avgTokens: Math.round(row.avg_token_count || 0),
+    }));
+}
+
 export function clearUsageStats(db: any) {
     if (!db) throw new Error('DB not initialized');
     db.prepare('DELETE FROM model_performance').run();

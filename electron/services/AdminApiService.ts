@@ -38,10 +38,8 @@ export class AdminApiService {
                 this.adminToken = envToken.trim();
             } else {
                 this.adminToken = crypto.randomBytes(16).toString('hex');
-                console.log(`\n==================================================`);
-                console.log(`[AdminApiService] SECURE ADMIN TOKEN GENERATED: ${this.adminToken}`);
-                console.log(`[AdminApiService] Provide this token in header: Authorization: Bearer ${this.adminToken}`);
-                console.log(`==================================================\n`);
+                const tokenPreview = this.adminToken.substring(0, 4) + '...';
+                console.log(`[AdminApiService] Admin token generated (${tokenPreview}). Use Authorization: Bearer header.`);
             }
         }
         return this.adminToken;

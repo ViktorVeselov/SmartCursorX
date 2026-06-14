@@ -1,4 +1,5 @@
 import { secureStore } from '../secureStore';
+import { PathGuard } from '../services/PathGuard';
 import { checkArgs } from '../../src/helpers/invariant';
 
 export function registerSettingsHandlers(ipcMain: Electron.IpcMain) {
@@ -70,7 +71,12 @@ export function registerSettingsHandlers(ipcMain: Electron.IpcMain) {
         if (typeof settings.vertexLocation === 'string') secureStore.setVertexLocation(settings.vertexLocation);
         if (typeof settings.azureApiBase === 'string') secureStore.setAzureApiBase(settings.azureApiBase);
         if (typeof settings.azureApiVersion === 'string') secureStore.setAzureApiVersion(settings.azureApiVersion);
-        if (typeof settings.activeWorkspacePath === 'string') secureStore.setActiveWorkspacePath(settings.activeWorkspacePath);
+        if (typeof settings.activeWorkspacePath === 'string') {
+            secureStore.setActiveWorkspacePath(settings.activeWorkspacePath);
+            if (settings.activeWorkspacePath.trim().length > 0) {
+                PathGuard.setWorkspacePath(settings.activeWorkspacePath);
+            }
+        }
 
         return true;
     });

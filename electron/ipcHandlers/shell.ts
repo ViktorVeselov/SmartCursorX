@@ -55,12 +55,17 @@ export function registerShellHandlers(ipcMain: Electron.IpcMain, context: IpcHan
             context.ptyProcesses.delete(terminalId);
         }
 
+        const safeEnv = Object.fromEntries(
+            Object.entries(process.env).filter(([key]) =>
+                !/api[_-]?key|secret|token|password|credential/i.test(key)
+            )
+        );
         const ptyProcess = pty.spawn(selectedShell, [], {
             name: 'xterm-color',
             cols: 80,
             rows: 24,
             cwd: process.env.USERPROFILE || process.env.HOME,
-            env: process.env
+            env: safeEnv
         }) as any;
 
         context.ptyProcesses.set(terminalId, ptyProcess);

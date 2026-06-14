@@ -23,6 +23,7 @@ export interface IpcHandlerContext {
     native: any;
     ptyProcesses: Map<string, IPty>;
     activeStreamAborted: boolean;
+    workspacePath: string;
 }
 
 export function registerAllHandlers(context: IpcHandlerContext) {

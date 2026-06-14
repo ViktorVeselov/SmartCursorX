@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { diffLines } from 'diff';
 import console from 'console';
+import { PathGuard } from './PathGuard';
 import type { PendingFileModification, PendingPatch } from '../../src/types/appTypes';
 
 export interface PatchBlock {
@@ -15,41 +16,6 @@ export interface FilePatch {
 }
 
 export class ASTPatchingService {
-    private static getWhitelistedRoots(): string[] {
-        const workspaceRoot = path.resolve(process.cwd());
-        const parentRoot = path.resolve(workspaceRoot, '..');
-        return [
-            workspaceRoot,
-            path.resolve(parentRoot, 'adk-python-community'),
-            path.resolve(parentRoot, 'google-sdk')
-        ];
-    }
-
-    private static normalizePathForCompare(p: string): string {
-        let resolved = path.resolve(p);
-        if (process.platform === 'win32') {
-            resolved = resolved.toLowerCase();
-        }
-        return resolved;
-    }
-
-    private static resolveToAllowedRoot(relativePath: string): string | null {
-        const roots = this.getWhitelistedRoots();
-        for (const root of roots) {
-            const resolvedPath = path.isAbsolute(relativePath)
-                ? relativePath
-                : path.resolve(root, relativePath);
-            const normRoot = this.normalizePathForCompare(root);
-            const normResolved = this.normalizePathForCompare(resolvedPath);
-            
-            const relative = path.relative(normRoot, normResolved);
-            const contained = relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
-            if (contained) {
-                return resolvedPath;
-            }
-        }
-        return null;
-    }
 
     /**
      * Enforces Phase-Specific Tool Masking & Steering Policy.
@@ -168,7 +134,7 @@ export class ASTPatchingService {
 
             for (const filePatch of patches) {
                 const relativePath = filePatch.file;
-                const absolutePath = this.resolveToAllowedRoot(relativePath);
+                const absolutePath = PathGuard.resolve(relativePath);
 
                 if (!absolutePath) {
                     console.error(`[ASTPatchingService] Preview Safety Block: Out-of-bounds patch target rejected: ${relativePath}`);
@@ -249,7 +215,7 @@ export class ASTPatchingService {
 
             for (const filePatch of patches) {
                 const relativePath = filePatch.file;
-                const absolutePath = this.resolveToAllowedRoot(relativePath);
+                const absolutePath = PathGuard.resolve(relativePath);
 
                 if (!absolutePath) {
                     console.error(`[ASTPatchingService] Safety Block: Out-of-bounds patch target rejected: ${relativePath}`);

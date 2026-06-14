@@ -65,57 +65,8 @@ export class EmbeddingService {
             }
         }
 
-        console.warn('[EmbeddingService] No compatible API key set or embedding calls failed. Using deterministic word feature-hashing fallback.');
-        try {
-            dbService.addModelPerformance(
-                'local-hashing',
-                'local',
-                'embedding',
-                1,
-                1,
-                estimatedTokens,
-                Date.now() - startTime,
-                estimatedTokens,
-                0
-            );
-        } catch (perfErr) {
-            console.error('[EmbeddingService] Failed to log local-hashing embedding performance:', perfErr);
-        }
-        const fallback = new Float32Array(defaultDim);
-        const lowerText = text.toLowerCase();
-
-        const words = lowerText.split(/[^a-z0-9]+/i).filter(w => w.length >= 2);
-
-        if (words.length === 0) {
-            for (let i = 0; i < lowerText.length; i++) {
-                const charCode = lowerText.charCodeAt(i);
-                const index = (charCode * 31) % defaultDim;
-                fallback[index] += 1.0;
-            }
-        } else {
-            for (const word of words) {
-                let hash = 0;
-                for (let j = 0; j < word.length; j++) {
-                    hash = (hash * 31 + word.charCodeAt(j)) | 0;
-                }
-                const index = Math.abs(hash) % defaultDim;
-                fallback[index] += 1.0;
-            }
-        }
-
-        for (let i = 0; i < defaultDim; i++) {
-            if (fallback[i] > 0) {
-                fallback[i] = 1.0 + Math.log(fallback[i]);
-            }
-        }
-
-        let sumSqr = 0;
-        for (let i = 0; i < defaultDim; i++) sumSqr += fallback[i] * fallback[i];
-        const magnitude = Math.sqrt(sumSqr) || 1.0;
-        for (let i = 0; i < defaultDim; i++) fallback[i] /= magnitude;
-
-        console.assert(fallback.length === defaultDim, `Fallback vector must have exactly ${defaultDim} dimensions`);
-        return fallback;
+        console.warn('[EmbeddingService] No compatible API key set or embedding calls failed. Returning zero vector (semantic search unavailable).');
+        return new Float32Array(defaultDim);
     }
 
     /**

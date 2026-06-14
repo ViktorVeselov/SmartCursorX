@@ -9,18 +9,12 @@ import type { IpcHandlerContext } from './ipcHandlers'
 import { adminApiService } from './services/AdminApiService'
 import { checkCommandLineTests } from './testRunner'
 import { aiService } from './services/AIService'
+import { PathGuard } from './services/PathGuard'
 
 console.log(' [Main] Starting Electron Main Process...');
 
 // Suppress AI SDK warnings (Gemini structured output fallback, etc.)
 (globalThis as any).AI_SDK_LOG_WARNINGS = false;
-
-// Override console.assert to throw Errors instead of silently logging (NASA Rule #5)
-console.assert = function(condition: any, message?: string, ...args: any[]) {
-  if (!condition) {
-    throw new Error(`Assertion failed: ${message || 'Assert failed'} ${args.join(' ')}`);
-  }
-};
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -184,6 +178,13 @@ app.whenReady().then(async () => {
     aiService.initializeFromStore();
     console.log(' [Main] AI Service Initialized');
 
+    // Configure PathGuard with workspace root
+    const activeWorkspacePath = (await import('./secureStore')).secureStore.getActiveWorkspacePath();
+    if (activeWorkspacePath) {
+      PathGuard.configure(activeWorkspacePath);
+      console.log(' [Main] PathGuard configured with workspace:', activeWorkspacePath);
+    }
+
     // Decoupled CLI integration test suite runner
     await checkCommandLineTests();
 
@@ -192,7 +193,7 @@ app.whenReady().then(async () => {
     adminApiService.start();
 
     // Initialize IPC Handlers
-    const ipcContext: IpcHandlerContext = { mainWindow: null, native, ptyProcesses: new Map(), activeStreamAborted: false };
+    const ipcContext: IpcHandlerContext = { mainWindow: null, native, ptyProcesses: new Map(), activeStreamAborted: false, workspacePath: activeWorkspacePath || '' };
     registerAllHandlers(ipcContext);
     console.log(' [Main] Handlers Registered');
 

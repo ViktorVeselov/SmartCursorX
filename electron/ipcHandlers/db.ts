@@ -131,6 +131,9 @@ export function registerDBHandlers(ipcMain: Electron.IpcMain) {
     ipcMain.handle('ai:clear-usage-stats', () => {
         return dbService.clearUsageStats();
     });
+    ipcMain.handle('ai:get-model-stats', (_event, filterProvider?: string, filterModel?: string, filterTaskType?: string) => {
+        return dbService.getModelPerformanceStats(filterProvider, filterModel, filterTaskType);
+    });
 
     // Agent Rules
     ipcMain.handle('db:get-rules', () => {
