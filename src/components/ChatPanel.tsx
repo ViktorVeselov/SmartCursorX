@@ -241,19 +241,44 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
         };
         loadInitial();
     }, [isOpen, settingsSavedTrigger, loadConversations]);
+    const handleSelectModel = async (modelName: string, providerId: string) => {
+        setActiveModel(modelName);
+        setActiveProvider(providerId);
+
+        const matchingModel = customModels.find(cm => cm.model_name === modelName && cm.provider_id === providerId);
+        if (matchingModel) {
+            setExecutionMode(matchingModel.has_thinking === 1 ? 'think' : 'fast');
+        }
+
+        try {
+            const settings = await window.ipcRenderer.invoke('get-general-settings');
+            await window.ipcRenderer.invoke('save-general-settings', {
+                ...(settings || {}),
+                activeProvider: providerId,
+                selectedModel: modelName
+            });
+        } catch (e) {
+            console.error('Failed to save general settings when changing model:', e);
+        }
+    };
 
     useEffect(() => {
         const queryModels = async () => {
-            const dbModels = await window.ipcRenderer.invoke('ai:get-custom-models', activeProvider);
+            const dbModels = await window.ipcRenderer.invoke('ai:get-custom-models');
             setCustomModels(dbModels || []);
             const chosenNames = (dbModels as Record<string, unknown>[]).map((m: Record<string, unknown>) => m.model_name as string);
             if (chosenNames.length > 0) {
                 setAvailableModels(chosenNames);
-                if (!chosenNames.includes(activeModel) || !activeModel) setActiveModel(chosenNames[0]);
+                const currentMatch = (dbModels as Record<string, unknown>[]).find(m => m.model_name === activeModel && m.provider_id === activeProvider);
+                if (!currentMatch) {
+                    const first = (dbModels as Record<string, unknown>[])[0];
+                    setActiveModel(first.model_name as string);
+                    setActiveProvider(first.provider_id as string);
+                }
             } else { setAvailableModels([]); setActiveModel(''); }
         };
         queryModels();
-    }, [activeProvider, settingsSavedTrigger, activeModel]);
+    }, [settingsSavedTrigger]);
 
     useEffect(() => {
         if (showSettings) {
@@ -419,7 +444,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                         customModels={customModels} availableModels={availableModels}
                         showModelDropdown={showModelDropdown} setShowModelDropdown={setShowModelDropdown}
                         inlineModelInput={inlineModelInput} setInlineModelInput={setInlineModelInput}
-                        setActiveModel={setActiveModel} setCustomModels={setCustomModels} setAvailableModels={setAvailableModels}
+                        onSelectModel={handleSelectModel} setCustomModels={setCustomModels} setAvailableModels={setAvailableModels}
                         executionMode={executionMode} setExecutionMode={setExecutionMode}
                         effortLevel={effortLevel} setEffortLevel={setEffortLevel}
                         showPlusMenu={showPlusMenu} togglePlusMenu={togglePlusMenu}
