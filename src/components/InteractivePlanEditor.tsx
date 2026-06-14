@@ -183,6 +183,15 @@ export function InteractivePlanEditor({ taskId }: InteractivePlanEditorProps) {
         if (!plan) return;
         await savePlan({ ...plan, approved: true });
         window.dispatchEvent(new CustomEvent('plan-reloaded'));
+
+        try {
+            const result = await window.ipcRenderer.invoke('execution:start', taskId);
+            if (!result.success) {
+                console.error('Execution failed:', result.error);
+            }
+        } catch (err) {
+            console.error('Failed to start execution:', err);
+        }
     };
 
     const handleRevokeApproval = async () => {

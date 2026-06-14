@@ -7,11 +7,13 @@ import { TaskService } from './TaskService';
 import { ContextAssembler } from './ContextAssembler';
 import { LearningService } from './LearningService';
 import { ASTPatchingService } from './ASTPatchingService';
+import { PendingModificationsService } from './PendingModificationsService';
 import { secureStore } from '../secureStore';
 import { taxonomyService } from './taxonomy/TaxonomyService';
 import * as fs from 'fs';
 import * as path from 'path';
 import console from 'console';
+import { BrowserWindow } from 'electron';
 
 export interface ExecutionConfig {
     maxRetries: number;
@@ -158,15 +160,69 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                     throw new Error('AI Service is inactive. Code generation impossible.');
                 }
 
-                // Apply JSON AST Patch
-                let parseSuccess = ASTPatchingService.applyJSONPatch(responseContent);
+                // Generate preview patches (does NOT write to disk)
+                const previewPatches = ASTPatchingService.generatePreviewPatches(responseContent);
+                let parseSuccess = previewPatches.length > 0;
+
                 if (!parseSuccess) {
-                    console.warn(`[ExecutionLoopService] AST JSON Patching failed or returned non-JSON. Falling back to Full-File Markdown Block parser.`);
-                    
-                    // Graceful fallback to raw files blocks parser
+                    console.warn(`[ExecutionLoopService] AST JSON Preview Patching failed or returned non-JSON. Falling back to Full-File Markdown Block parser.`);
+
+                    // Fallback: use full-file blocks to build preview patches
+                    const fallbackPatches = this.generateFallbackPatches(responseContent, taskId);
+                    if (fallbackPatches.length > 0) {
+                        previewPatches.push(...fallbackPatches);
+                        parseSuccess = true;
+                    }
+                }
+
+                if (!parseSuccess) {
+                    throw new Error('Failed parsing target file structures from LLM response (both JSON AST Preview and Full-File fallbacks failed).');
+                }
+
+                // Store pending modifications and notify renderer for user review
+                const totalAdded = previewPatches.reduce((sum, p) => sum + p.addedLines, 0);
+                const totalRemoved = previewPatches.reduce((sum, p) => sum + p.removedLines, 0);
+                console.log(`[ExecutionLoopService] Generated ${previewPatches.length} file patches (+${totalAdded}/-${totalRemoved}). Awaiting user review...`);
+
+                PendingModificationsService.setPending(taskId, {
+                    taskId,
+                    modifications: previewPatches,
+                    planSnapshot: plan,
+                    createdAt: Date.now(),
+                });
+
+                // Send notification to renderer
+                const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
+                if (mainWindow) {
+                    mainWindow.webContents.send('execution:pending-modifications', {
+                        taskId,
+                        modifications: previewPatches.map(m => ({
+                            relativePath: m.relativePath,
+                            originalContent: m.originalContent,
+                            proposedContent: m.proposedContent,
+                            addedLines: m.addedLines,
+                            removedLines: m.removedLines,
+                        })),
+                    });
+                }
+
+                // BLOCK execution until user accepts or rejects
+                const userAccepted = await new Promise<boolean>((resolve) => {
+                    PendingModificationsService.setResolver(taskId, resolve);
+                });
+
+                if (!userAccepted) {
+                    throw new Error('User rejected the proposed modifications.');
+                }
+
+                console.log(`[ExecutionLoopService] User accepted modifications. Applying patches to disk...`);
+                // Now apply the patches to disk (using original method)
+                parseSuccess = ASTPatchingService.applyJSONPatch(responseContent);
+                if (!parseSuccess) {
+                    // Fallback: apply full-file blocks
                     parseSuccess = this.applyFileEdits(responseContent, taskId);
                     if (!parseSuccess) {
-                        throw new Error('Failed parsing target file structures from LLM response (both JSON AST and Full-File fallbacks failed).');
+                        throw new Error('Failed to write accepted modifications to disk.');
                     }
                 }
 
@@ -264,6 +320,86 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
 
             throw new Error(`[ExecutionLoopService] Safety threshold reached: task ${taskId} could not compile or pass validation. Rollback triggered.`);
         }
+    }
+
+    private static generateFallbackPatches(response: string, taskId: number): import('../../src/types/appTypes').PendingFileModification[] {
+        if (!response) return [];
+
+        const fileBlockRegex = /===\s*FILE:\s*([^\s=]+)\s*===([\s\S]*?)===\s*END FILE\s*===/gi;
+        let match;
+        const results: import('../../src/types/appTypes').PendingFileModification[] = [];
+
+        const workspacePath = dbService.getWorkspacePathForTask(taskId);
+        if (!workspacePath) {
+            console.error(`[ExecutionLoopService] Safety Block: No active workspace opened for task ID ${taskId}`);
+            return [];
+        }
+
+        const workspaceRoot = path.resolve(workspacePath);
+        const parentRoot = path.resolve(workspaceRoot, '..');
+
+        const allowedRoots = [
+            workspaceRoot,
+            path.resolve(parentRoot, 'adk-python-community'),
+            path.resolve(parentRoot, 'google-sdk')
+        ];
+
+        const normalizePathForCompare = (p: string) => {
+            let resolved = path.resolve(p);
+            if (process.platform === 'win32') {
+                resolved = resolved.toLowerCase();
+            }
+            return resolved;
+        };
+
+        while ((match = fileBlockRegex.exec(response)) !== null) {
+            const relativePath = match[1].trim();
+            const rawContent = match[2];
+            const cleanContent = rawContent.replace(/^\r?\n/, '').replace(/\r?\n\s*$/, '');
+
+            let absolutePath = '';
+            let isContained = false;
+
+            for (const root of allowedRoots) {
+                const resolvedPath = path.resolve(root, relativePath);
+                const normRoot = normalizePathForCompare(root);
+                const normResolved = normalizePathForCompare(resolvedPath);
+
+                const relative = path.relative(normRoot, normResolved);
+                const contained = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+                if (contained) {
+                    absolutePath = resolvedPath;
+                    isContained = true;
+                    break;
+                }
+            }
+
+            if (!isContained) {
+                console.error(`[ExecutionLoopService] Safety Block: Out-of-bounds file edit rejected: ${relativePath}`);
+                continue;
+            }
+
+            try {
+                let originalContent = '';
+                if (fs.existsSync(absolutePath)) {
+                    originalContent = fs.readFileSync(absolutePath, 'utf-8');
+                }
+
+                results.push({
+                    relativePath,
+                    absolutePath,
+                    originalContent,
+                    proposedContent: cleanContent,
+                    patches: [{ find: '', replace: cleanContent }],
+                    addedLines: 0,
+                    removedLines: 0,
+                });
+            } catch (err) {
+                console.error(`[ExecutionLoopService] Failed to read file for preview: ${relativePath}`, err);
+            }
+        }
+
+        return results;
     }
 
     private static applyFileEdits(response: string, taskId: number): boolean {

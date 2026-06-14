@@ -49,6 +49,12 @@ export interface ChatInputAreaProps {
         totalCost: number;
         totalInputTokens: number;
         totalOutputTokens: number;
+        breakdown?: {
+            inputTokens: number;
+            outputTokens: number;
+            cost: number;
+            duration?: string;
+        }[];
     };
     modelLimit: number;
 }
@@ -57,6 +63,7 @@ export interface ChatInputAreaProps {
 export function ChatInputArea(props: ChatInputAreaProps) {
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const [showDetails, setShowDetails] = useState(false);
+    const [isExpanded, setIsExpanded] = useState(false);
 
     useEffect(() => {
         const ta = textareaRef.current;
@@ -280,7 +287,7 @@ export function ChatInputArea(props: ChatInputAreaProps) {
                                     position: 'absolute',
                                     bottom: '30px',
                                     right: '0',
-                                    width: '260px',
+                                    width: isExpanded ? '380px' : '260px',
                                     background: 'var(--bg-secondary)',
                                     backdropFilter: 'blur(12px)',
                                     border: '1px solid var(--border-subtle)',
@@ -291,11 +298,33 @@ export function ChatInputArea(props: ChatInputAreaProps) {
                                     display: 'flex',
                                     flexDirection: 'column',
                                     gap: '8px',
-                                    animation: 'fadeInUp 0.15s ease-out'
+                                    animation: 'fadeInUp 0.15s ease-out',
+                                    maxHeight: isExpanded ? '400px' : '300px',
+                                    transition: 'width 0.2s, max-height 0.2s'
                                 }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '6px', marginBottom: '2px' }}>
                                         <span style={{ fontWeight: 600, fontSize: '11px', color: 'var(--text-primary)' }}>Chat Token Details</span>
-                                        <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Model Limit: {props.modelLimit.toLocaleString()}</span>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); setIsExpanded(!isExpanded); }}
+                                                style={{
+                                                    background: 'rgba(255,255,255,0.05)',
+                                                    border: '1px solid var(--border-subtle)',
+                                                    color: 'var(--text-secondary)',
+                                                    cursor: 'pointer',
+                                                    fontSize: '9px',
+                                                    padding: '1px 5px',
+                                                    borderRadius: '3px',
+                                                    outline: 'none',
+                                                    transition: 'var(--transition-smooth)'
+                                                }}
+                                                onMouseOver={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
+                                                onMouseOut={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+                                            >
+                                                {isExpanded ? 'Collapse' : 'Expand'}
+                                            </button>
+                                            <span style={{ fontSize: '9px', color: 'var(--text-secondary)' }}>Limit: {props.modelLimit.toLocaleString()}</span>
+                                        </div>
                                     </div>
                                     
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '11px' }}>
@@ -339,6 +368,46 @@ export function ChatInputArea(props: ChatInputAreaProps) {
                                             ${props.tokenDetails.totalCost === 0 ? '0.00' : props.tokenDetails.totalCost.toFixed(4)}
                                         </span>
                                     </div>
+
+                                    {isExpanded && props.tokenDetails.breakdown && props.tokenDetails.breakdown.length > 0 && (
+                                        <div style={{
+                                            borderTop: '1px solid var(--border-subtle)',
+                                            paddingTop: '8px',
+                                            display: 'flex',
+                                            flexDirection: 'column',
+                                            gap: '6px',
+                                            maxHeight: '140px',
+                                            overflowY: 'auto'
+                                        }}>
+                                            <div style={{ fontWeight: 600, fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                                Turn Breakdown ({props.tokenDetails.breakdown.length})
+                                            </div>
+                                            <table style={{ width: '100%', fontSize: '10px', borderCollapse: 'collapse', textAlign: 'left' }}>
+                                                <thead>
+                                                    <tr style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                        <th style={{ padding: '3px 0' }}>Turn</th>
+                                                        <th style={{ padding: '3px 0', textAlign: 'right' }}>Input</th>
+                                                        <th style={{ padding: '3px 0', textAlign: 'right' }}>Output</th>
+                                                        <th style={{ padding: '3px 0', textAlign: 'right' }}>Cost</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {props.tokenDetails.breakdown.map((item, index) => (
+                                                        <tr key={index} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)', color: 'var(--text-secondary)' }}>
+                                                            <td style={{ padding: '4px 0', color: 'var(--text-primary)' }}>
+                                                                #{index + 1} {item.duration ? `(${item.duration}s)` : ''}
+                                                            </td>
+                                                            <td style={{ padding: '4px 0', textAlign: 'right' }}>{item.inputTokens.toLocaleString()}</td>
+                                                            <td style={{ padding: '4px 0', textAlign: 'right' }}>{item.outputTokens.toLocaleString()}</td>
+                                                            <td style={{ padding: '4px 0', textAlign: 'right', color: '#10b981' }}>
+                                                                ${item.cost === 0 ? '0.00' : item.cost.toFixed(4)}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
 
                                     {isOverLimit && (
                                         <div style={{ color: '#ef4444', fontSize: '10px', marginTop: '4px', background: 'rgba(239, 68, 68, 0.1)', padding: '6px', borderRadius: '4px', border: '1px solid rgba(239, 68, 68, 0.2)', lineHeight: '1.4' }}>

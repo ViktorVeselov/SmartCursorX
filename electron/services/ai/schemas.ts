@@ -41,8 +41,8 @@ export const ExecutionPlanSchema = z.object({
   codePlanning: z.string().optional(),
   approved: z.boolean().optional(),
   classDependencies: z.array(ClassDependencySchema).optional(),
-  tradeoffs: z.array(TradeoffSchema).optional(),
-  consequences: z.array(ConsequenceSchema).optional(),
+  tradeoffs: z.array(TradeoffSchema),
+  consequences: z.array(ConsequenceSchema),
   planningTradeoffs: z.array(TradeoffSchema).optional(),
   planningConsequences: z.array(ConsequenceSchema).optional(),
 });

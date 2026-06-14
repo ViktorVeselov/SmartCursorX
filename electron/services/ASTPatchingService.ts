@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { diffLines } from 'diff';
 import console from 'console';
+import type { PendingFileModification, PendingPatch } from '../../src/types/appTypes';
 
 export interface PatchBlock {
     find: string;
@@ -123,6 +125,102 @@ export class ASTPatchingService {
         }
 
         return `${basePrompt}\n${steeringDirectives}\n${domainDirectives}`;
+    }
+
+    private static computeLineStats(original: string, proposed: string): { addedLines: number; removedLines: number } {
+        try {
+            const changes = diffLines(original, proposed);
+            let added = 0;
+            let removed = 0;
+            for (const change of changes) {
+                if (change.added) added += change.count ?? 0;
+                if (change.removed) removed += change.count ?? 0;
+            }
+            return { addedLines: added, removedLines: removed };
+        } catch {
+            return { addedLines: 0, removedLines: 0 };
+        }
+    }
+
+    /**
+     * Parses JSON AST patches and returns preview data without writing to disk.
+     * Used by the Change Review system to show users pending modifications before applying.
+     */
+    static generatePreviewPatches(patchJson: string): PendingFileModification[] {
+        if (!patchJson) return [];
+
+        try {
+            let cleaned = patchJson.trim();
+            if (cleaned.startsWith('```')) {
+                const firstLine = cleaned.indexOf('\n');
+                const lastFence = cleaned.lastIndexOf('```');
+                if (firstLine !== -1 && lastFence !== -1 && lastFence > firstLine) {
+                    cleaned = cleaned.substring(firstLine, lastFence).trim();
+                }
+            }
+
+            const patches = JSON.parse(cleaned) as FilePatch[];
+            if (!Array.isArray(patches)) {
+                throw new Error("JSON Patch payload is not a valid array.");
+            }
+
+            const results: PendingFileModification[] = [];
+
+            for (const filePatch of patches) {
+                const relativePath = filePatch.file;
+                const absolutePath = this.resolveToAllowedRoot(relativePath);
+
+                if (!absolutePath) {
+                    console.error(`[ASTPatchingService] Preview Safety Block: Out-of-bounds patch target rejected: ${relativePath}`);
+                    continue;
+                }
+
+                if (!fs.existsSync(absolutePath)) {
+                    console.error(`[ASTPatchingService] Preview: Patch target file does not exist: ${relativePath}`);
+                    continue;
+                }
+
+                let content = fs.readFileSync(absolutePath, 'utf-8');
+                const originalContent = content;
+                const appliedPatches: PendingPatch[] = [];
+
+                for (const patch of filePatch.patches) {
+                    const findStr = patch.find;
+                    const replaceStr = patch.replace;
+
+                    const index = content.indexOf(findStr);
+                    if (index === -1) {
+                        console.error(`[ASTPatchingService] Preview: could not locate target block in ${relativePath}. Skipping patch.`);
+                        continue;
+                    }
+
+                    content = content.substring(0, index) + replaceStr + content.substring(index + findStr.length);
+                    appliedPatches.push({ find: findStr, replace: replaceStr });
+                }
+
+                if (appliedPatches.length === 0) {
+                    console.error(`[ASTPatchingService] Preview: No patches applied for ${relativePath}, skipping.`);
+                    continue;
+                }
+
+                const lineStats = this.computeLineStats(originalContent, content);
+
+                results.push({
+                    relativePath,
+                    absolutePath,
+                    originalContent,
+                    proposedContent: content,
+                    patches: appliedPatches,
+                    addedLines: lineStats.addedLines,
+                    removedLines: lineStats.removedLines,
+                });
+            }
+
+            return results;
+        } catch (err: any) {
+            console.error('[ASTPatchingService] Failed to generate preview patches:', err);
+            return [];
+        }
     }
 
     /**

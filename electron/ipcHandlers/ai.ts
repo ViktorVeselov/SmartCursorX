@@ -197,8 +197,9 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                 console.error('Failed to save plan performance metrics to DB:', dbErr);
             }
 
-            console.log('[PlanStream] Sending ai:plan-end, final plan exists:', !!finalPlan);
-            event.sender.send('ai:plan-end', finalPlan);
+            const planCost = CostEstimatorService.estimateCost(targetModel, actualInputTokens, actualOutputTokens, targetProvider);
+            console.log('[PlanStream] Sending ai:plan-end, final plan exists:', !!finalPlan, 'tokens:', { input: actualInputTokens, output: actualOutputTokens, cost: planCost });
+            event.sender.send('ai:plan-end', finalPlan, { inputTokens: actualInputTokens, outputTokens: actualOutputTokens, cost: planCost });
 
         } catch (error: unknown) {
             const errMsg = error instanceof Error ? error.message : String(error);

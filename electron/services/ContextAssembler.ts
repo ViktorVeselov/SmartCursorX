@@ -3,6 +3,8 @@ import { CodeAnalysisService } from './CodeAnalysisService';
 import { EmbeddingService } from './EmbeddingService';
 import { taxonomyService } from './taxonomy/TaxonomyService';
 import { TaxonomyPromptComposer } from './taxonomy/TaxonomyPromptComposer';
+import { RuleDiscoveryService } from './RuleDiscoveryService';
+import { ContextReconciler } from './ContextReconciler';
 import console from 'console';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -242,6 +244,21 @@ export class ContextAssembler {
             console.warn('[ContextAssembler] Failed to read project-context.md blueprint:', e);
         }
 
+        // Load Localized Rules (.replacerrules, .cursorrules, AGENTS.md)
+        let localizedRulesBlock = '';
+        try {
+            if (workspacePath) {
+                const startFile = Array.from(filesToParse)[0] || '';
+                const startPath = startFile ? path.resolve(workspacePath, startFile) : workspacePath;
+                const rules = RuleDiscoveryService.discoverRules(startPath, workspacePath);
+                if (rules) {
+                    localizedRulesBlock = `\n=== LOCAL WORKSPACE RULES & AGENT DIRECTIVES ===\n${rules}\n=== END LOCAL RULES ===\n`;
+                }
+            }
+        } catch (e) {
+            console.warn('[ContextAssembler] Failed to discover local rules:', e);
+        }
+
         // Query matched memories vector/keyword logs from SQLite
         let matchedMemoriesBlock = '';
         try {
@@ -254,6 +271,25 @@ export class ContextAssembler {
             }
         } catch (e) {
             console.error('[ContextAssembler] Failed to search memories:', e);
+        }
+
+        // Reconcile context blocks to optimize token usage in multi-turn chat sessions
+        let reconciledBlueprint = blueprintBlock;
+        let reconciledMemories = matchedMemoriesBlock;
+        let reconciledSymbols = symbolContextBlock;
+        let reconciledRag = ragBlock;
+
+        if (conversationId) {
+            const reconciled = ContextReconciler.reconcile(conversationId, {
+                blueprint: blueprintBlock,
+                memories: matchedMemoriesBlock,
+                symbols: symbolContextBlock,
+                rag: ragBlock
+            });
+            reconciledBlueprint = reconciled.blueprint;
+            reconciledMemories = reconciled.memories;
+            reconciledSymbols = reconciled.symbols;
+            reconciledRag = reconciled.rag;
         }
 
         // Build file contents map for taxonomy scanning
@@ -294,11 +330,12 @@ export class ContextAssembler {
 {{slot:concurrency_guidance}}
 {{slot:lifecycle_context}}
 
-${blueprintBlock}
-${matchedMemoriesBlock}
+${reconciledBlueprint}
+${reconciledMemories}
+${localizedRulesBlock}
 ${taskContextBlock}
-${symbolContextBlock}
-${ragBlock}
+${reconciledSymbols}
+${reconciledRag}
 
 Observe previous conversation history where appropriate:
 ${chatContextBlock}
@@ -339,13 +376,7 @@ Execute the active task effectively using the predefined plan.`;
 
     private static getWhitelistedRoots(workspacePath?: string | null): string[] {
         if (workspacePath && workspacePath.trim().length > 0) {
-            const workspaceRoot = path.resolve(workspacePath);
-            const parentRoot = path.resolve(workspaceRoot, '..');
-            return [
-                workspaceRoot,
-                path.resolve(parentRoot, 'adk-python-community'),
-                path.resolve(parentRoot, 'google-sdk')
-            ];
+            return [path.resolve(workspacePath)];
         }
         return [];
     }

@@ -238,23 +238,36 @@ export function useChatSending(params: ChatSendingParams) {
             };
 
             // eslint-disable-next-line complexity
-            const handleEnd = async (_event: unknown, usageData?: { inputTokens?: number; outputTokens?: number; cost?: number }) => {
-                if (!streamActiveRef.current) return;
+            const handleEnd = async (
+                arg1?: any,
+                arg2?: { inputTokens?: number; outputTokens?: number; cost?: number }
+            ) => {
+                console.log('[useChatSending:handleEnd] Entered. isPlanModeActive:', isPlanModeActive, 'arg1:', arg1, 'arg2:', arg2);
+                if (!streamActiveRef.current) {
+                    console.log('[useChatSending:handleEnd] Stream not active, returning');
+                    return;
+                }
                 streamActiveRef.current = false;
                 setIsLoading(false);
                 cleanupActiveListeners();
                 if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+                
+                const usageData = isPlanModeActive ? arg2 : arg1;
+                console.log('[useChatSending:handleEnd] usageData identified:', usageData);
                 let responseToSave = fullResponse;
+                
                 if (isPlanModeActive) {
                     try {
-                        const parsed = fullPlanJson ? JSON.parse(fullPlanJson) : null;
+                        const parsed = arg1 || (fullPlanJson ? JSON.parse(fullPlanJson) : null);
+                        console.log('[useChatSending:handleEnd] Parsed plan:', parsed);
                         if (!parsed) throw new Error('Could not parse execution plan from stream.');
                         const activeTaskId = getNumericTaskId(currentConvId || '');
                         await window.ipcRenderer.invoke('plan:save', activeTaskId, JSON.stringify(parsed));
+
                         const finalDuration = planStartTimeRef.current ? ((Date.now() - planStartTimeRef.current) / 1000).toFixed(1) : '0.0';
                         const thinkingMeta = JSON.stringify({ duration: finalDuration, files: parsed.filesRead || [], stepsCount: Array.isArray(parsed.steps) ? parsed.steps.length : 0, expectedOutcome: parsed.expectedOutcome || '', confidence: parsed.confidence || 1.0, designDoc: parsed.designDoc || '', steps: (Array.isArray(parsed.steps) ? (parsed.steps as unknown[]) : []).map((s) => { const step = s as Record<string, unknown>; return { order: step.order, action: step.action, target: step.target, rationale: step.rationale, notes: step.notes, agent: step.agent }; }) });
                         const stepsCount = Array.isArray(parsed.steps) ? parsed.steps.length : 0;
-                        responseToSave = `[ARCHITECTURAL_THINKING_START]${thinkingMeta}[ARCHITECTURAL_THINKING_END]**Implementation Plan Generated Successfully**\n\nA detailed roadmap with ${stepsCount} steps has been drafted for this task.\n\n[Click to Open Interactive Plan](plan://${activeTaskId})`;
+                        responseToSave = `[ARCHITECTURAL_THINKING_START]${thinkingMeta}[ARCHITECTURAL_THINKING_END]**Implementation Plan Generated Successfully**\n\nA detailed roadmap with ${stepsCount} steps has been drafted for this task.\n\n[Click to Open Interactive Plan](plan://${activeTaskId})\n\n[CHAT_METADATA_START]${JSON.stringify({ duration: finalDuration, filesRead: parsed.filesRead || [], filesEdited: [], thoughts: '', activities: currentActivitiesRef.current, inputTokens: usageData?.inputTokens || 0, outputTokens: usageData?.outputTokens || 0, cost: usageData?.cost || 0 })}[CHAT_METADATA_END]`;
                         setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: responseToSave, isPlanMode: false, isStreaming: false, filesRead: (Array.isArray(parsed.filesRead) ? parsed.filesRead : []) as string[], planSteps: (Array.isArray(parsed.steps) ? parsed.steps : []) as unknown[], activities: currentActivitiesRef.current }]; return prev; });
                         if (onOpenPlan) onOpenPlan(activeTaskId, `Task #${activeTaskId}`);
                     } catch (err) {

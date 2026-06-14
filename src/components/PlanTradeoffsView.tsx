@@ -22,7 +22,7 @@ export function PlanTradeoffsView({
     showPlanningCommentsRoom,
 }: PlanTradeoffsViewProps) {
     const isPlanningTradeoffs = activeTab === 'planning';
-    const tradeoffsList = (isPlanningTradeoffs ? plan.planningTradeoffs : plan.tradeoffs) || [];
+    const tradeoffsList = (isPlanningTradeoffs ? plan.planningTradeoffs : (plan.tradeoffs && plan.tradeoffs.length > 0 ? plan.tradeoffs : plan.planningTradeoffs)) || [];
 
     return (
         <div style={{

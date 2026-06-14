@@ -82,6 +82,8 @@ test('ExecutionPlanSchema - valid plan', async () => {
     filesToModify: ['file.ts'],
     verificationCriteria: ['Compiles'],
     confidence: 0.9,
+    tradeoffs: [],
+    consequences: [],
   });
   ok(result.success, `Expected valid, got: ${JSON.stringify(result.error)}`);
 });

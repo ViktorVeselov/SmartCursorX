@@ -131,5 +131,73 @@ export class SnapshotService {
 
         console.log('[SnapshotService] Rollback completed successfully.');
     }
+
+    /**
+     * Retrieves a snapshot ID by its name pattern.
+     */
+    static getSnapshotIdByName(name: string): number | null {
+        try {
+            const snapshots = dbService.getSnapshots();
+            const match = (snapshots as any[]).find((s: any) => s.name === name || s.name.includes(name));
+            return match ? Number(match.id) : null;
+        } catch (err) {
+            console.error('[SnapshotService] Failed to find snapshot by name:', err);
+            return null;
+        }
+    }
+
+    /**
+     * Restores a single file from a snapshot (used when user rejects individual file changes).
+     */
+    static rollbackSingleFile(snapshotId: number, filePath: string): void {
+        console.assert(typeof snapshotId === 'number' && snapshotId > 0, 'snapshotId must be a positive number');
+        console.assert(typeof filePath === 'string' && filePath.length > 0, 'filePath must be a non-empty string');
+        console.log(`[SnapshotService] Rolling back single file: ${filePath} from snapshot ID ${snapshotId}...`);
+
+        const files = dbService.getSnapshotFiles(snapshotId);
+        if (!files || files.length === 0) {
+            console.warn(`[SnapshotService] Snapshot ID ${snapshotId} has no files archived. Single rollback aborted.`);
+            return;
+        }
+
+        const snapshot = dbService.getSnapshot(snapshotId);
+        let workspacePath: string | null = null;
+        if (snapshot && snapshot.name) {
+            const match = snapshot.name.match(/_task_(\d+)/);
+            if (match) {
+                const taskId = parseInt(match[1], 10);
+                workspacePath = dbService.getWorkspacePathForTask(taskId);
+            }
+        }
+
+        const f = files.find((file: any) => {
+            const normSnapshot = this.normalizePathForCompare(file.file_path);
+            const normTarget = this.normalizePathForCompare(filePath);
+            return normSnapshot === normTarget;
+        });
+
+        if (!f) {
+            console.warn(`[SnapshotService] File ${filePath} not found in snapshot ID ${snapshotId}. Cannot rollback single file.`);
+            return;
+        }
+
+        const resolvedPath = this.resolveToAllowedRoot(f.file_path, workspacePath);
+        if (!resolvedPath) {
+            console.error(`[SnapshotService] Safety Block: Out-of-bounds rollback attempt rejected for path: ${f.file_path}`);
+            throw new Error(`Rollback safety violation on path: ${f.file_path}`);
+        }
+
+        try {
+            const parentDir = path.dirname(resolvedPath);
+            if (!fs.existsSync(parentDir)) {
+                fs.mkdirSync(parentDir, { recursive: true });
+            }
+            fs.writeFileSync(resolvedPath, f.content, 'utf-8');
+            console.log(`[SnapshotService] Restored single file: ${resolvedPath}`);
+        } catch (err) {
+            console.error(`[SnapshotService] Failed restoring file ${resolvedPath} during single rollback:`, err);
+            throw new Error(`Single rollback failed on file ${resolvedPath}: ${err}`);
+        }
+    }
 }
 
