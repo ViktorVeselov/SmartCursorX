@@ -41,6 +41,8 @@ export interface ChatInputAreaProps {
     handleSend: (queuedMsg?: Record<string, unknown>) => void;
     handleAbort: () => void;
     currentModelCanThink: boolean;
+    currentTokens: number;
+    modelLimit: number;
 }
 
 // eslint-disable-next-line complexity
@@ -57,8 +59,37 @@ export function ChatInputArea(props: ChatInputAreaProps) {
         resize();
     }, [props.input]);
 
+    const effectiveLimit = Math.min(props.modelLimit, 200000);
+    const isOverLimit = props.currentTokens > effectiveLimit;
+    const isNearLimit = props.currentTokens > effectiveLimit * 0.8 && props.currentTokens <= effectiveLimit;
+
     return (
         <div className="chat-input-area" style={{ padding: '12px 16px 16px 16px', background: 'var(--bg-primary)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+            {/* Context utilization bar */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '8px', fontSize: '11px', userSelect: 'none' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-secondary)' }}>
+                    <span>Context Utilization</span>
+                    <span style={{ fontWeight: '500', color: isOverLimit ? '#ef4444' : isNearLimit ? '#f59e0b' : 'var(--text-secondary)' }}>
+                        {props.currentTokens.toLocaleString()} / {props.modelLimit.toLocaleString()} tokens {props.modelLimit > 200000 && `(cap: 200k)`}
+                    </span>
+                </div>
+                <div style={{ width: '100%', height: '4px', background: 'var(--bg-active)', borderRadius: '2px', overflow: 'hidden' }}>
+                    <div style={{
+                        width: `${Math.min(100, (props.currentTokens / props.modelLimit) * 100)}%`,
+                        height: '100%',
+                        background: isOverLimit ? '#ef4444' : isNearLimit ? '#f59e0b' : 'var(--accent-primary)',
+                        transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease',
+                        boxShadow: isOverLimit ? '0 0 8px rgba(239, 68, 68, 0.5)' : isNearLimit ? '0 0 8px rgba(245, 158, 11, 0.5)' : 'none'
+                    }} />
+                </div>
+                {isOverLimit && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#ef4444', marginTop: '2px' }}>
+                        <span className="codicon codicon-warning" style={{ fontSize: '12px' }} />
+                        <span>⚠️ <strong>High Pollution:</strong> Reasoning quality may degrade. Consider using <strong>Fork Chat</strong> or <strong>Fork Sub-Thread</strong>.</span>
+                    </div>
+                )}
+            </div>
+
             <div style={{
                 background: 'var(--bg-secondary)',
                 border: '1px solid var(--border-subtle)',

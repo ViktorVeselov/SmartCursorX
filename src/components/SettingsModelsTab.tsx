@@ -18,6 +18,8 @@ interface SettingsModelsTabProps {
     setAnthropicKey: (v: string) => void;
     geminiKey: string;
     setGeminiKey: (v: string) => void;
+    openrouterKey: string;
+    setOpenrouterKey: (v: string) => void;
     liteLLMKey: string;
     setLiteLLMKey: (v: string) => void;
     customApiKey: string;
@@ -83,6 +85,7 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
         openAIKey, setOpenAIKey,
         anthropicKey, setAnthropicKey,
         geminiKey, setGeminiKey,
+        openrouterKey, setOpenrouterKey,
         liteLLMKey, setLiteLLMKey,
         customApiKey, setCustomApiKey,
         customProviderIsLocal, setCustomProviderIsLocal,
@@ -132,6 +135,7 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                                 <option value="openai">OpenAI (Official)</option>
                                 <option value="anthropic">Anthropic (Official)</option>
                                 <option value="gemini">Google Gemini (Official)</option>
+                                <option value="openrouter">OpenRouter (Free Models)</option>
                                 <option value="litellm">LiteLLM (Local Proxy)</option>
                                 <option value="ollama">Ollama (Local)</option>
                                 <option value="zen">OpenCode Zen — Free Models</option>
@@ -189,6 +193,8 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                                         ? anthropicKey
                                         : modelProvider === 'gemini'
                                         ? geminiKey
+                                        : modelProvider === 'openrouter'
+                                        ? openrouterKey
                                         : modelProvider === 'litellm'
                                         ? liteLLMKey
                                         : customApiKey
@@ -198,6 +204,7 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                                     if (modelProvider === 'openai') setOpenAIKey(val);
                                     else if (modelProvider === 'anthropic') setAnthropicKey(val);
                                     else if (modelProvider === 'gemini') setGeminiKey(val);
+                                    else if (modelProvider === 'openrouter') setOpenrouterKey(val);
                                     else if (modelProvider === 'litellm') setLiteLLMKey(val);
                                     else setCustomApiKey(val);
                                 }}
@@ -208,6 +215,8 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                                         ? 'sk-ant-...'
                                         : modelProvider === 'gemini'
                                         ? 'AIzaSy...'
+                                        : modelProvider === 'openrouter'
+                                        ? 'sk-or-v1-...'
                                         : modelProvider === 'litellm'
                                         ? 'Enter LiteLLM proxy API key (Optional)'
                                         : 'Enter API key or token if required'
@@ -249,6 +258,28 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                             </div>
                             <div style={{ marginBottom: 4 }}>
                                 Free models cost nothing and need no signup. Free models are available for a limited time and data may be used to improve them.
+                            </div>
+                        </div>
+                    )}
+
+                    {/* OpenRouter Free Models Info Banner */}
+                    {modelProvider === 'openrouter' && (
+                        <div style={{
+                            marginTop: 12,
+                            padding: '10px 12px',
+                            background: 'rgba(34, 197, 94, 0.08)',
+                            border: '1px solid rgba(34, 197, 94, 0.25)',
+                            borderRadius: 'var(--radius-md)',
+                            fontSize: 11,
+                            color: 'var(--text-secondary)',
+                            lineHeight: '1.4'
+                        }}>
+                            <div style={{ fontWeight: 600, color: '#22c55e', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                <span className="codicon codicon-key" style={{ fontSize: 12 }} />
+                                API Key Required (Free Models Available)
+                            </div>
+                            <div style={{ marginBottom: 4 }}>
+                                OpenRouter requires an API key, but offers 20+ free models. Get a free API key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'underline' }}>openrouter.ai/keys</a>. Use the special model <strong>openrouter/free</strong> to auto-route to available free models.
                             </div>
                         </div>
                     )}

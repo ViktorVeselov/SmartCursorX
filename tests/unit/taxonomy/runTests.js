@@ -115,6 +115,9 @@ var secureStore = {
       return void 0;
     }
   },
+  deleteGitHubToken() {
+    store.delete("githubToken_encrypted");
+  },
   // Non-sensitive settings
   getTheme() {
     return store.get("theme") || "dark";
@@ -991,7 +994,7 @@ var CostEstimatorService = class {
     if (provider === "ollama" || normModel.includes("llama") || normModel.includes("mistral") || normModel.includes("phi")) {
       return { inputCostPerM: 0, outputCostPerM: 0 };
     }
-    if (normModel.includes("-free")) {
+    if (provider === "openrouter" || normModel.includes("-free") || normModel.includes(":free") || normModel.includes("free")) {
       return { inputCostPerM: 0, outputCostPerM: 0 };
     }
     if (this.pricing[normModel]) {

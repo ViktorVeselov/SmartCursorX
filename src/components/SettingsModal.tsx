@@ -31,6 +31,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [openAIKey, setOpenAIKey] = useState('');
     const [anthropicKey, setAnthropicKey] = useState('');
     const [geminiKey, setGeminiKey] = useState('');
+    const [openrouterKey, setOpenrouterKey] = useState('');
     const [liteLLMKey, setLiteLLMKey] = useState('');
     const [githubToken, setGithubToken] = useState('');
 
@@ -140,6 +141,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
             const gKey = await getIpc().invoke('ai:get-provider-key', 'gemini');
             if (gKey) setGeminiKey(gKey);
+
+            const orKey = await getIpc().invoke('ai:get-provider-key', 'openrouter');
+            if (orKey) setOpenrouterKey(orKey);
 
             const lKey = await getIpc().invoke('ai:get-provider-key', 'litellm');
             if (lKey) setLiteLLMKey(lKey);
@@ -265,21 +269,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     // eslint-disable-next-line complexity
     const handleSave = async () => {
         // Unify and encrypt API keys
-        if (modelProvider === 'openai' && openAIKey) {
+        if (modelProvider === 'openai') {
             await getIpc().invoke('set-api-key', openAIKey);
-        } else if (modelProvider === 'anthropic' && anthropicKey) {
+        } else if (modelProvider === 'anthropic') {
             await getIpc().invoke('ai:save-config', { providerId: 'anthropic', apiKey: anthropicKey });
-        } else if (modelProvider === 'gemini' && geminiKey) {
+        } else if (modelProvider === 'gemini') {
             await getIpc().invoke('ai:save-config', { providerId: 'gemini', apiKey: geminiKey });
-        } else if (modelProvider === 'litellm' && liteLLMKey) {
+        } else if (modelProvider === 'openrouter') {
+            await getIpc().invoke('ai:save-config', { providerId: 'openrouter', apiKey: openrouterKey });
+        } else if (modelProvider === 'litellm') {
             await getIpc().invoke('ai:save-config', { providerId: 'litellm', apiKey: liteLLMKey });
-        } else if (customProviders.some(p => p.id === modelProvider) && customApiKey) {
+        } else if (customProviders.some(p => p.id === modelProvider)) {
             await getIpc().invoke('ai:save-config', { providerId: modelProvider, apiKey: customApiKey });
         }
 
-        if (githubToken) {
-            await getIpc().invoke('set-github-token', githubToken);
-        }
+        await getIpc().invoke('set-github-token', githubToken);
 
         // Save enterprise cloud keys securely
         if (awsAccessKeyId) {
@@ -295,7 +299,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         // Save active provider config to initialize AIService
         await getIpc().invoke('ai:save-config', {
             providerId: modelProvider,
-            apiKey: modelProvider === 'openai' ? openAIKey : modelProvider === 'anthropic' ? anthropicKey : modelProvider === 'gemini' ? geminiKey : modelProvider === 'litellm' ? liteLLMKey : modelProvider === 'ollama' || modelProvider === 'zen' ? '' : customApiKey
+            apiKey: modelProvider === 'openai' ? openAIKey : modelProvider === 'anthropic' ? anthropicKey : modelProvider === 'gemini' ? geminiKey : modelProvider === 'openrouter' ? openrouterKey : modelProvider === 'litellm' ? liteLLMKey : modelProvider === 'ollama' || modelProvider === 'zen' ? '' : customApiKey
         });
 
         // Save general & agent configuration (including cloud settings)
@@ -419,6 +423,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             openAIKey={openAIKey} setOpenAIKey={setOpenAIKey}
                             anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey}
                             geminiKey={geminiKey} setGeminiKey={setGeminiKey}
+                            openrouterKey={openrouterKey} setOpenrouterKey={setOpenrouterKey}
                             liteLLMKey={liteLLMKey} setLiteLLMKey={setLiteLLMKey}
                             customApiKey={customApiKey} setCustomApiKey={setCustomApiKey}
                             customProviderIsLocal={customProviderIsLocal} setCustomProviderIsLocal={setCustomProviderIsLocal}

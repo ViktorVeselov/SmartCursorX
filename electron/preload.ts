@@ -18,7 +18,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'litellm:get-status', 'litellm:stop', 'litellm:start', 'term-init',
   'term-input', 'term-resize', 'term-close', 'vc-create-snapshot',
   'vc-get-snapshots', 'vc-restore-snapshot', 'git-status', 'git-branch',
-  'git-clone', 'git-diff', 'ai:save-config', 'ai:get-config', 'ai:get-models', 'ai:get-zen-models-info',
+  'git-clone', 'git-diff', 'ai:save-config', 'ai:get-config', 'ai:get-models', 'ai:get-zen-models-info', 'ai:get-model-context-length',
   'get-general-settings', 'save-general-settings', 'openclaw:check-installed',
   'openclaw:get-status', 'openclaw:start-gateway', 'openclaw:stop-gateway',
   'openclaw:run-doctor', 'openclaw:approve-pairing', 'openclaw:run-agent',
