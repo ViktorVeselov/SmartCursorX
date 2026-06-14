@@ -1,5 +1,28 @@
 import { OpenFile } from '../types/appTypes';
 
+export function openReviewTab(
+  taskId: number,
+  setFiles: React.Dispatch<React.SetStateAction<OpenFile[]>>,
+  setActiveFilePath: React.Dispatch<React.SetStateAction<string>>
+) {
+  const path = `review://${taskId}`;
+  setFiles(prev => {
+    if (prev.find(f => f.path === path)) {
+      setActiveFilePath(path);
+      return prev;
+    }
+    return [...prev, {
+      path,
+      name: `Review: Task #${taskId}`,
+      content: '',
+      type: 'review',
+      flowId: taskId,
+      isDirty: false
+    }];
+  });
+  setActiveFilePath(path);
+}
+
 export function openDiffFile(
   filePath: string,
   originalContent: string,

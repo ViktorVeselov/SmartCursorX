@@ -1,10 +1,3 @@
-const canModelThink = (modelName: string) =>
-    modelName.startsWith('o1-') || modelName.startsWith('o3-') ||
-    modelName.includes('deepseek-r1') || modelName.includes('reasoner') ||
-    modelName.includes('gemini') || modelName.includes('claude');
-
-
-
 export interface ModelDropdownProps {
     showModelDropdown: boolean;
     onSetShowModelDropdown: (v: boolean) => void;
@@ -151,7 +144,8 @@ export const ModelDropdown = ({
                                                     alignItems: 'center',
                                                     gap: 6,
                                                     overflow: 'hidden',
-                                                    textAlign: 'left'
+                                                    textAlign: 'left',
+                                                    minWidth: 0
                                                 }}
                                             >
                                                 <span
@@ -167,7 +161,7 @@ export const ModelDropdown = ({
                                                 </span>
                                             </div>
 
-                                            {canModelThink(m) && (
+                                            {true && (
                                                 <button
                                                     onClick={async (e) => {
                                                         e.stopPropagation();
@@ -189,7 +183,8 @@ export const ModelDropdown = ({
                                                         alignItems: 'center',
                                                         padding: '2px',
                                                         outline: 'none',
-                                                        transition: 'var(--transition-smooth)'
+                                                        transition: 'var(--transition-smooth)',
+                                                        flexShrink: 0
                                                     }}
                                                 >
                                                     <div style={{

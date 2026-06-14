@@ -6,6 +6,7 @@ import { registerGitHandlers } from './git';
 import { registerDBHandlers } from './db';
 import { registerShellHandlers } from './shell';
 import { registerSettingsHandlers } from './settings';
+import { registerExecutionHandlers } from './execution';
 
 export interface IPty {
     pid: number;
@@ -31,4 +32,5 @@ export function registerAllHandlers(context: IpcHandlerContext) {
     registerDBHandlers(ipcMain);
     registerShellHandlers(ipcMain, context);
     registerSettingsHandlers(ipcMain);
+    registerExecutionHandlers(ipcMain, context);
 }

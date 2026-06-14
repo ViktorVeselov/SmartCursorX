@@ -30,37 +30,68 @@ export function MarkdownRenderer({ content, onApplyCode, comments, hoveredCommen
     }
 
     // A robust, lightweight custom parser for markdown elements
-    // Split the content into blocks (code blocks vs text blocks)
+    // Split the content into blocks (code blocks vs text blocks) using a line-by-line parser
     const blocks: Array<{ type: 'thinking' | 'text' | 'code'; content: string; language?: string }> = [];
-    const regex = /```(\w*)[\r\n]+([\s\S]*?)```/g;
-    let lastIndex = 0;
-    let match;
 
     if (thinkingContent) {
         blocks.push({ type: 'thinking', content: thinkingContent });
     }
 
     if (mainContent) {
-        const normalizedMainContent = mainContent
-            .replace(/^[ \t]+```/gm, '```')
-            .replace(/^[ \t]+```$/gm, '```');
+        const lines = mainContent.split('\n');
+        let inCodeBlock = false;
+        let currentCodeLines: string[] = [];
+        let currentCodeLang = '';
+        let currentTextLines: string[] = [];
 
-        while ((match = regex.exec(normalizedMainContent)) !== null) {
-            const textBefore = normalizedMainContent.substring(lastIndex, match.index);
-            const language = match[1] || 'code';
-            const code = match[2];
-
-            if (textBefore) {
-                blocks.push({ type: 'text', content: textBefore });
+        const flushText = () => {
+            if (currentTextLines.length > 0) {
+                blocks.push({ type: 'text', content: currentTextLines.join('\n') });
+                currentTextLines = [];
             }
+        };
 
-            blocks.push({ type: 'code', content: code, language });
-            lastIndex = regex.lastIndex;
+        const flushCode = () => {
+            if (currentCodeLines.length > 0) {
+                blocks.push({ type: 'code', content: currentCodeLines.join('\n'), language: currentCodeLang });
+                currentCodeLines = [];
+            }
+        };
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            if (trimmed.startsWith('```')) {
+                const lang = trimmed.substring(3).trim();
+                if (inCodeBlock) {
+                    if (lang.length > 0) {
+                        // Start of a new code block implicitly closes the previous one
+                        flushCode();
+                        currentCodeLang = lang;
+                    } else {
+                        // Regular close of the current code block
+                        flushCode();
+                        inCodeBlock = false;
+                    }
+                } else {
+                    flushText();
+                    inCodeBlock = true;
+                    currentCodeLang = lang || 'code';
+                }
+            } else {
+                if (inCodeBlock) {
+                    currentCodeLines.push(line);
+                } else {
+                    currentTextLines.push(line);
+                }
+            }
         }
 
-        const remainingText = normalizedMainContent.substring(lastIndex);
-        if (remainingText) {
-            blocks.push({ type: 'text', content: remainingText });
+        if (inCodeBlock) {
+            flushCode();
+        } else {
+            flushText();
         }
     }
 

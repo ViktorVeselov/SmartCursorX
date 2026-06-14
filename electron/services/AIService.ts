@@ -154,7 +154,7 @@ export class AIService {
     return this.config !== null;
   }
 
-  private getModel(modelId?: string) {
+  public getModel(modelId?: string) {
     if (!this.config) throw new Error('AI Service not initialized');
     const requiresApiKey = this.config.providerId !== 'ollama' && this.config.providerId !== 'zen';
     if (requiresApiKey && !this.config.apiKey) {

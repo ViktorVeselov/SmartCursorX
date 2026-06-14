@@ -144,10 +144,11 @@ export function parseAssistantResponse(
         try {
             const parsed = JSON.parse(jsonStr);
             activity = {
-                duration: parsed.duration,
-                filesRead: parsed.files || parsed.filesRead || [],
-                filesEdited: parsed.filesEdited || [],
-                thoughts: parsed.expectedOutcome || '',
+                ...activity,
+                duration: parsed.duration || activity?.duration,
+                filesRead: parsed.files || parsed.filesRead || activity?.filesRead || [],
+                filesEdited: parsed.filesEdited || activity?.filesEdited || [],
+                thoughts: parsed.expectedOutcome || activity?.thoughts || '',
                 planSteps: parsed.steps || []
             };
         } catch (e) {

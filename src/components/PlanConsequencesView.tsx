@@ -22,7 +22,7 @@ export function PlanConsequencesView({
     showPlanningCommentsRoom,
 }: PlanConsequencesViewProps) {
     const isPlanningConsequences = activeTab === 'planning';
-    const consequencesList = (isPlanningConsequences ? plan.planningConsequences : plan.consequences) || [];
+    const consequencesList = (isPlanningConsequences ? plan.planningConsequences : (plan.consequences && plan.consequences.length > 0 ? plan.consequences : plan.planningConsequences)) || [];
 
     return (
         <div style={{

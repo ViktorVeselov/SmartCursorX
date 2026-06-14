@@ -21,7 +21,7 @@ import { isBinaryFile } from './utils/fileTypes';
 
 import { OpenFile } from './types/appTypes';
 
-import { openDiffFile, acceptDiffFile, rejectDiffFile, acceptFileProposal, rejectFileProposal } from './helpers/appDiff';
+import { openDiffFile, acceptDiffFile, rejectDiffFile, acceptFileProposal, rejectFileProposal, openReviewTab } from './helpers/appDiff';
 import { useKeyboardShortcuts, useResizeHandlers } from './helpers/appKeyboard';
 import { checkArgs, assert, assertNonNull } from './helpers/invariant';
 
@@ -47,6 +47,15 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [executionContext, setExecutionContext] = useState<AppExecutionContext | null>(null);
   const [settingsSavedTrigger, setSettingsSavedTrigger] = useState(0);
+
+  // Pending review state
+  const [pendingReview, setPendingReview] = useState<{
+    taskId: number;
+    fileCount: number;
+    addedLines: number;
+    removedLines: number;
+  } | null>(null);
+  const [pendingReviewApplying, setPendingReviewApplying] = useState(false);
 
   // General Dynamic configurations
   const [appTheme, setAppTheme] = useState<'light' | 'dark'>('dark');
@@ -81,6 +90,40 @@ function App() {
 
   const handleRejectDiff = (diffFile: OpenFile) =>
     rejectDiffFile(diffFile, setFiles, setActiveFilePath, showNotification);
+
+  const handleAcceptAllChanges = async () => {
+    if (!pendingReview) return;
+    setPendingReviewApplying(true);
+    try {
+      await window.ipcRenderer.invoke('execution:apply-pending', pendingReview.taskId);
+      setPendingReview(null);
+      showNotification('All changes accepted and applied.');
+    } catch (err) {
+      console.error('Failed to accept all changes:', err);
+      showNotification('Failed to accept changes');
+    } finally {
+      setPendingReviewApplying(false);
+    }
+  };
+
+  const handleRejectAllChanges = async () => {
+    if (!pendingReview) return;
+    setPendingReviewApplying(true);
+    try {
+      await window.ipcRenderer.invoke('execution:reject-pending', pendingReview.taskId);
+      setPendingReview(null);
+      showNotification('All changes rejected.');
+    } catch (err) {
+      console.error('Failed to reject all changes:', err);
+      showNotification('Failed to reject changes');
+    } finally {
+      setPendingReviewApplying(false);
+    }
+  };
+
+  const handleOpenReviewFromBanner = (taskId: number) => {
+    openReviewTab(taskId, setFiles, setActiveFilePath);
+  };
 
   const activeChatTaskIdRef = useRef<number | null>(null);
 
@@ -145,13 +188,26 @@ function App() {
       rejectFileProposal(filePath, setFiles, setActiveFilePath, showNotification);
     };
 
+    const handlePendingModifications = (_event: any, data: {
+      taskId: number;
+      modifications: { relativePath: string; addedLines: number; removedLines: number }[];
+    }) => {
+      const fileCount = data.modifications.length;
+      const addedLines = data.modifications.reduce((sum: number, m: any) => sum + (m.addedLines || 0), 0);
+      const removedLines = data.modifications.reduce((sum: number, m: any) => sum + (m.removedLines || 0), 0);
+      setPendingReview({ taskId: data.taskId, fileCount, addedLines, removedLines });
+      openReviewTab(data.taskId, setFiles, setActiveFilePath);
+    };
+
     window.addEventListener('open-workspace-file', handleOpenWorkspaceFile);
     window.addEventListener('accept-file-proposal', handleAcceptProposal);
     window.addEventListener('reject-file-proposal', handleRejectProposal);
+    window.ipcRenderer.on('execution:pending-modifications', handlePendingModifications);
     return () => {
       window.removeEventListener('open-workspace-file', handleOpenWorkspaceFile);
       window.removeEventListener('accept-file-proposal', handleAcceptProposal);
       window.removeEventListener('reject-file-proposal', handleRejectProposal);
+      window.ipcRenderer.off('execution:pending-modifications', handlePendingModifications);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -545,6 +601,7 @@ function App() {
                     files={files}
                     setFiles={setFiles}
                     activeFilePath={activeFilePath}
+                    setActiveFilePath={setActiveFilePath}
                     vimEnabled={vimEnabled}
                     editorTargetLine={editorTargetLine}
                     symbolSearchQuery={symbolSearchQuery}
@@ -575,6 +632,11 @@ function App() {
                   activeChatTaskIdRef.current = taskId;
                 }}
                 rootPath={rootPath}
+                pendingReview={pendingReview}
+                pendingReviewApplying={pendingReviewApplying}
+                onOpenReview={handleOpenReviewFromBanner}
+                onAcceptAllChanges={handleAcceptAllChanges}
+                onRejectAllChanges={handleRejectAllChanges}
               />
             </ErrorBoundary>
           )}

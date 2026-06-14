@@ -2,6 +2,7 @@ import { VisualWorkflowEditor } from './VisualWorkflowEditor';
 import { InteractivePlanEditor } from './InteractivePlanEditor';
 import { DiffView } from './DiffView';
 import { CodeEditor } from './Editor';
+import { ChangeReviewPanel } from './ChangeReviewPanel';
 import { OpenFile } from '../types/appTypes';
 import { getFileSettings } from '../helpers/appFile';
 import type { Node, Edge } from 'reactflow';
@@ -11,6 +12,7 @@ interface ActiveFileEditorProps {
   files: OpenFile[];
   setFiles: React.Dispatch<React.SetStateAction<OpenFile[]>>;
   activeFilePath: string;
+  setActiveFilePath: React.Dispatch<React.SetStateAction<string>>;
   vimEnabled: boolean;
   editorTargetLine: { line: number; timestamp: number } | null;
   symbolSearchQuery: string;
@@ -21,7 +23,7 @@ interface ActiveFileEditorProps {
   onContentChange: (val: string | undefined) => void;
 }
 
-export function ActiveFileEditor({ activeFile, files, setFiles, activeFilePath, vimEnabled, editorTargetLine, symbolSearchQuery, appTheme, appFontSize, onAcceptDiff, onRejectDiff, onContentChange }: ActiveFileEditorProps) {
+export function ActiveFileEditor({ activeFile, files, setFiles, activeFilePath, setActiveFilePath, vimEnabled, editorTargetLine, symbolSearchQuery, appTheme, appFontSize, onAcceptDiff, onRejectDiff, onContentChange }: ActiveFileEditorProps) {
   if (!activeFile) {
     return (
       <div className="empty-state">
@@ -47,6 +49,18 @@ export function ActiveFileEditor({ activeFile, files, setFiles, activeFilePath, 
     return (
       <InteractivePlanEditor
         taskId={activeFile.flowId || 0}
+      />
+    );
+  }
+
+  if (activeFile.type === 'review') {
+    return (
+      <ChangeReviewPanel
+        taskId={activeFile.flowId || 0}
+        onComplete={() => {
+          setFiles(prev => prev.filter(f => f.path !== activeFilePath));
+          setActiveFilePath(prev => prev === activeFilePath ? (files.length > 1 ? files[files.length - 2]?.path || '' : '') : prev);
+        }}
       />
     );
   }

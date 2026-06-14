@@ -22,6 +22,7 @@
     "ai": "^6.0.200",
     "better-sqlite3": "^12.6.2",
     "chokidar": "^3.6.0",
+    "diff": "^9.0.0",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.1.8",
     "esbuild": "^0.28.1",
@@ -39,6 +40,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/diff": "^8.0.0",
     "@types/react": "^18.2.64",
     "@types/react-dom": "^18.2.21",
     "@typescript-eslint/eslint-plugin": "^7.1.1",

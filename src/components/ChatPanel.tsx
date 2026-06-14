@@ -10,6 +10,7 @@ import { ChatHistorySidebar } from './ChatHistorySidebar';
 import { ChatHeader } from './ChatHeader';
 import { MessageList } from './MessageList';
 import { ChatInputArea } from './ChatInputArea';
+import { ChangeReviewBanner } from './ChangeReviewBanner';
 import { useActivityTracking } from './useActivityTracking';
 import { usePlanSync } from './usePlanSync';
 import { useAgentHandler } from './useAgentHandler';
@@ -28,6 +29,11 @@ interface ChatPanelProps {
     onOpenPlan?: (taskId: number, taskTitle: string) => void;
     onActiveTaskIdChange?: (taskId: number | null) => void;
     rootPath?: string;
+    pendingReview?: { taskId: number; fileCount: number; addedLines: number; removedLines: number } | null;
+    pendingReviewApplying?: boolean;
+    onOpenReview?: (taskId: number) => void;
+    onAcceptAllChanges?: () => void;
+    onRejectAllChanges?: () => void;
 }
 export type { ActivityTimelineItem } from '../helpers/chatParsing';
 
@@ -47,6 +53,12 @@ const getChatTokenDetails = (
     let totalCost = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
+    const breakdown: {
+        inputTokens: number;
+        outputTokens: number;
+        cost: number;
+        duration?: string;
+    }[] = [];
 
     for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
@@ -80,6 +92,27 @@ const getChatTokenDetails = (
         }
     }
 
+    for (const msg of messages) {
+        if (msg.role === 'assistant' && msg.content) {
+            const startIdx = msg.content.indexOf('[CHAT_METADATA_START]');
+            const endIdx = msg.content.indexOf('[CHAT_METADATA_END]');
+            if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+                try {
+                    const metaStr = msg.content.substring(startIdx + '[CHAT_METADATA_START]'.length, endIdx);
+                    const meta = JSON.parse(metaStr);
+                    breakdown.push({
+                        inputTokens: typeof meta.inputTokens === 'number' ? meta.inputTokens : 0,
+                        outputTokens: typeof meta.outputTokens === 'number' ? meta.outputTokens : 0,
+                        cost: typeof meta.cost === 'number' ? meta.cost : 0,
+                        duration: meta.duration
+                    });
+                } catch (e) {
+                    console.error('Failed to parse chat metadata for breakdown:', e);
+                }
+            }
+        }
+    }
+
     let historyTokens = 0;
     if (baselineIndex !== -1) {
         let postBaselineChars = 0;
@@ -106,11 +139,12 @@ const getChatTokenDetails = (
         totalTokens,
         totalCost,
         totalInputTokens,
-        totalOutputTokens
+        totalOutputTokens,
+        breakdown
     };
 };
 
-export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, settingsSavedTrigger, onOpenPlan, onActiveTaskIdChange, rootPath = '' }: ChatPanelProps) {
+export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, settingsSavedTrigger, onOpenPlan, onActiveTaskIdChange, rootPath = '', pendingReview, pendingReviewApplying, onOpenReview, onAcceptAllChanges, onRejectAllChanges }: ChatPanelProps) {
     const [messages, setMessages] = useState<Message[]>([{ role: 'system', content: 'You are a helpful coding assistant.' }]);
     const [apiError, setApiError] = useState<{ type: string; message: string; timestamp: number; provider?: string; model?: string } | null>(null);
     const [streamElapsed, setStreamElapsed] = useState(0);
@@ -432,6 +466,18 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                                 )}
                             </div>
                         </div>
+                    )}
+                    {pendingReview && (
+                        <ChangeReviewBanner
+                            taskId={pendingReview.taskId}
+                            fileCount={pendingReview.fileCount}
+                            addedLines={pendingReview.addedLines}
+                            removedLines={pendingReview.removedLines}
+                            onOpenReview={onOpenReview || (() => {})}
+                            onAcceptAll={onAcceptAllChanges || (() => {})}
+                            onRejectAll={onRejectAllChanges || (() => {})}
+                            isApplying={pendingReviewApplying || false}
+                        />
                     )}
                     <ActiveBadges attachedFile={attachedFile} onRemoveFile={() => setAttachedFile(null)}
                         isPlanModeActive={isPlanModeActive} onTogglePlanMode={() => setIsPlanModeActive(false)}
