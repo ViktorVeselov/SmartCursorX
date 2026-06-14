@@ -16,6 +16,13 @@ console.log(' [Main] Starting Electron Main Process...');
 // Suppress AI SDK warnings (Gemini structured output fallback, etc.)
 (globalThis as any).AI_SDK_LOG_WARNINGS = false;
 
+// Override console.assert to throw Errors instead of silently logging (NASA Rule #5)
+console.assert = function(condition: any, message?: string, ...args: any[]) {
+  if (!condition) {
+    throw new Error(`Assertion failed: ${message || 'Assert failed'} ${args.join(' ')}`);
+  }
+};
+
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Polyfill for dependencies that expect __dirname (like sql.js or node-pty)
