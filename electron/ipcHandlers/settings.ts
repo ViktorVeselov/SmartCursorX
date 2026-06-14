@@ -4,6 +4,10 @@ import { checkArgs } from '../../src/helpers/invariant';
 export function registerSettingsHandlers(ipcMain: Electron.IpcMain) {
     ipcMain.handle('get-api-key', () => secureStore.getApiKey('openai'));
     ipcMain.handle('set-api-key', (_event, key: string) => {
+        if (!key) {
+            secureStore.deleteApiKey('openai');
+            return true;
+        }
         if (!key.startsWith('sk-')) throw new Error('Invalid API Key format');
         secureStore.setApiKey('openai', key);
         return true;
@@ -11,6 +15,10 @@ export function registerSettingsHandlers(ipcMain: Electron.IpcMain) {
 
     ipcMain.handle('get-github-token', () => secureStore.getGitHubToken());
     ipcMain.handle('set-github-token', (_event, token: string) => {
+        if (!token) {
+            secureStore.deleteGitHubToken();
+            return true;
+        }
         if (!token.startsWith('ghp_') && !token.startsWith('gho_') && !token.startsWith('ghu_') && !token.startsWith('ghs_') && !token.startsWith('ghr_') && !token.startsWith('github_pat_')) {
             throw new Error('Invalid GitHub token format. Must be a valid Personal Access Token.');
         }

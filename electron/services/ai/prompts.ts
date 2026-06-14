@@ -11,6 +11,8 @@ const PROVIDER_PROMPTS: Record<string, string> = {
   ollama: PROMPT_OLLAMA,
   zen: PROMPT_ZEN,
   litellm: PROMPT_DEFAULT,
+  openrouter: PROMPT_DEFAULT,
+  default: PROMPT_DEFAULT,
 };
 
 export function getProviderPrompt(modelId: string): string {

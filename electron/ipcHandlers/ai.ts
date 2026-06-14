@@ -100,7 +100,7 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
             const chatCost = CostEstimatorService.estimateCost(targetModel, finalInputTokens, outputTokens, targetProvider);
 
             console.log('[ChatStream] Sending ai:chat-end, response length:', responseText.length, 'tokens:', { input: finalInputTokens, output: outputTokens, cost: chatCost });
-            event.sender.send('ai:chat-end', { inputTokens: finalInputTokens, output: outputTokens, cost: chatCost });
+            event.sender.send('ai:chat-end', { inputTokens: finalInputTokens, output: outputTokens, outputTokens: outputTokens, cost: chatCost });
 
         } catch (error: unknown) {
             const errMsg = error instanceof Error ? error.message : String(error);
@@ -232,13 +232,21 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
 
     ipcMain.handle('ai:save-config', async (_, config) => {
         checkArgs(config && typeof config.providerId === 'string', 'config.providerId must be a valid string');
-        if (config.apiKey) {
+        if (config.apiKey !== undefined) {
             const customProviders = dbService.getCustomProviders();
             const isCustom = customProviders.some((p: any) => p.id === config.providerId);
-            if (isCustom) {
-                secureStore.setCustomProviderKey(config.providerId, config.apiKey);
+            if (config.apiKey === '') {
+                if (isCustom) {
+                    secureStore.deleteCustomProviderKey(config.providerId);
+                } else {
+                    secureStore.deleteApiKey(config.providerId);
+                }
             } else {
-                secureStore.setApiKey(config.providerId, config.apiKey);
+                if (isCustom) {
+                    secureStore.setCustomProviderKey(config.providerId, config.apiKey);
+                } else {
+                    secureStore.setApiKey(config.providerId, config.apiKey);
+                }
             }
         }
         secureStore.setActiveProvider(config.providerId);
@@ -274,6 +282,43 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
         } catch (e) {
             console.error('Failed to fetch Zen model info', e);
             return [];
+        }
+    });
+
+    ipcMain.handle('ai:get-model-context-length', async (_event, { providerId, modelId }) => {
+        checkArgs(typeof providerId === 'string', 'providerId must be a string');
+        checkArgs(typeof modelId === 'string', 'modelId must be a string');
+        
+        switch (providerId) {
+            case 'openai': {
+                const id = modelId.toLowerCase();
+                if (id.includes('gpt-4o-mini')) return 128000;
+                if (id.includes('gpt-4o')) return 128000;
+                if (id.includes('gpt-4-turbo')) return 128000;
+                if (id.includes('o1-mini')) return 128000;
+                if (id.includes('o1')) return 200000;
+                if (id.includes('gpt-4')) return 8192;
+                if (id.includes('gpt-3.5-turbo')) return 16385;
+                return 128000;
+            }
+            case 'anthropic': {
+                return 200000;
+            }
+            case 'gemini': {
+                const id = modelId.toLowerCase();
+                if (id.includes('pro')) return 2000000;
+                return 1000000;
+            }
+            case 'zen': {
+                return 128000;
+            }
+            case 'openrouter': {
+                const cached = aiBridge.getOpenRouterContextLength(modelId);
+                return cached || 128000;
+            }
+            default: {
+                return 128000;
+            }
         }
     });
 

@@ -59,6 +59,12 @@ export function createLanguageModel(config: ProviderConfig, modelId: string): La
         apiKey: config.apiKey,
         supportsStructuredOutputs: true,
       }).languageModel(modelId) as unknown as LanguageModel;
+    case 'openrouter':
+      return createOpenAICompatible({
+        name: 'openrouter',
+        baseURL: 'https://openrouter.ai/api/v1',
+        apiKey: config.apiKey,
+      }).languageModel(modelId) as unknown as LanguageModel;
     default:
       return createOpenAICompatible({
         name: config.providerId,

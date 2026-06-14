@@ -37,6 +37,59 @@ export interface Message {
     filesRead?: string[]; planSteps?: unknown[]; activities?: ActivityTimelineItem[];
 }
 
+const estimateCurrentTokens = (
+    messages: Message[],
+    currentInput: string,
+    attachedFile: { content: string } | null
+): number => {
+    let baselineTokens = 0;
+    let baselineIndex = -1;
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg.role === 'assistant' && msg.content) {
+            const startIdx = msg.content.indexOf('[CHAT_METADATA_START]');
+            const endIdx = msg.content.indexOf('[CHAT_METADATA_END]');
+            if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+                try {
+                    const metaStr = msg.content.substring(startIdx + '[CHAT_METADATA_START]'.length, endIdx);
+                    const meta = JSON.parse(metaStr);
+                    const inputTokens = typeof meta.inputTokens === 'number' ? meta.inputTokens : 0;
+                    const outputTokens = typeof meta.outputTokens === 'number' ? meta.outputTokens : 0;
+                    baselineTokens = inputTokens + outputTokens;
+                    baselineIndex = i;
+                    break;
+                } catch (e) {
+                    console.error('Failed to parse chat metadata from message', e);
+                }
+            }
+        }
+    }
+
+    let estimated = 0;
+    if (baselineIndex !== -1) {
+        let postBaselineChars = 0;
+        for (let i = baselineIndex + 1; i < messages.length; i++) {
+            postBaselineChars += (messages[i].content || '').length;
+        }
+        estimated = baselineTokens + Math.ceil(postBaselineChars / 4);
+    } else {
+        let totalChars = 0;
+        for (const msg of messages) {
+            totalChars += (msg.content || '').length;
+        }
+        estimated = Math.ceil(totalChars / 4);
+    }
+
+    let currentInputChars = currentInput.length;
+    if (attachedFile && attachedFile.content) {
+        currentInputChars += attachedFile.content.length;
+    }
+    estimated += Math.ceil(currentInputChars / 4);
+
+    return estimated;
+};
+
 export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, settingsSavedTrigger, onOpenPlan, onActiveTaskIdChange, rootPath = '' }: ChatPanelProps) {
     const [messages, setMessages] = useState<Message[]>([{ role: 'system', content: 'You are a helpful coding assistant.' }]);
     const [apiError, setApiError] = useState<{ type: string; message: string; timestamp: number; provider?: string; model?: string } | null>(null);
@@ -61,6 +114,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
     const [credentialStatuses, setCredentialStatuses] = useState<Record<string, { hasKey: boolean; encryptionAvailable: boolean }>>({});
     const [activeProvider, setActiveProvider] = useState('openai');
     const [activeModel, setActiveModel] = useState('gpt-4o');
+    const [modelLimit, setModelLimit] = useState(128000);
     const [availableModels, setAvailableModels] = useState<string[]>([]);
     const [showModelDropdown, setShowModelDropdown] = useState(false);
     const [inlineModelInput, setInlineModelInput] = useState('');
@@ -194,6 +248,27 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
             fetchStatuses();
         }
     }, [showSettings]);
+
+    useEffect(() => {
+        const fetchContextLength = async () => {
+            if (!activeProvider || !activeModel) return;
+            try {
+                const limit = await window.ipcRenderer.invoke('ai:get-model-context-length', {
+                    providerId: activeProvider,
+                    modelId: activeModel
+                });
+                if (typeof limit === 'number') {
+                    setModelLimit(limit);
+                } else {
+                    setModelLimit(128000);
+                }
+            } catch (e) {
+                console.error('[ChatPanel] Failed to fetch model context length:', e);
+                setModelLimit(128000);
+            }
+        };
+        fetchContextLength();
+    }, [activeProvider, activeModel]);
 
     useEffect(() => {
         if (!executionContext) return;
@@ -335,6 +410,8 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                         setIsPlanModeActive={setIsPlanModeActive}
                         handleFileUpload={handleFileUpload} handleSend={handleSend as unknown as (queuedMsg?: Record<string, unknown>) => void} handleAbort={handleAbort}
                         currentModelCanThink={currentModelCanThink}
+                        currentTokens={estimateCurrentTokens(messages, input, attachedFile)}
+                        modelLimit={modelLimit}
                     />
                 </div>
             </div>

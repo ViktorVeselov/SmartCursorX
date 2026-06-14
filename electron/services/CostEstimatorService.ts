@@ -1,4 +1,4 @@
-﻿export interface ModelPrice {
+export interface ModelPrice {
     inputCostPerM: number;  // Cost per 1,000,000 input tokens in USD
     outputCostPerM: number; // Cost per 1,000,000 output tokens in USD
 }
@@ -102,8 +102,8 @@ export class CostEstimatorService {
             return { inputCostPerM: 0, outputCostPerM: 0 };
         }
 
-        // Free models always cost $0 (e.g., Zen free models with "-free" suffix)
-        if (normModel.includes('-free')) {
+        // Free models always cost $0 (e.g., OpenRouter free models or Zen free models)
+        if (provider === 'openrouter' || normModel.includes('-free') || normModel.includes(':free') || normModel.includes('free')) {
             return { inputCostPerM: 0, outputCostPerM: 0 };
         }
 

@@ -14,6 +14,7 @@ interface SecureStoreSchema {
     anthropicApiKey_encrypted?: string;
     geminiApiKey_encrypted?: string;
     ollamaApiKey_encrypted?: string;
+    openrouterApiKey_encrypted?: string;
     githubToken_encrypted?: string;
     
     // Configurations and settings
@@ -125,6 +126,9 @@ export const secureStore = {
             console.error('[SecureStore] Failed to decrypt GitHub token', e);
             return undefined;
         }
+    },
+    deleteGitHubToken(): void {
+        store.delete('githubToken_encrypted');
     },
 
     // Non-sensitive settings
@@ -318,7 +322,7 @@ secureStore.setGitHubToken = function(token: string): void {
 
 // Export listEncryptedKeys separately
 export function listEncryptedKeys() {
-    const knownProviders = ['openai', 'anthropic', 'gemini', 'ollama', 'github'];
+    const knownProviders = ['openai', 'anthropic', 'gemini', 'openrouter', 'ollama', 'github'];
     const encryptionAvailable = safeStorage.isEncryptionAvailable();
     return knownProviders.map(id => {
         let hasKey = false;

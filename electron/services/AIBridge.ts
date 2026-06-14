@@ -7,8 +7,13 @@ import { dbService } from '../db';
 
 class AIBridge {
   private static instance: AIBridge;
+  private openrouterContextLengths: Record<string, number> = {};
 
   private constructor() {}
+
+  public getOpenRouterContextLength(modelId: string): number | undefined {
+    return this.openrouterContextLengths[modelId];
+  }
 
   public static getInstance(): AIBridge {
     if (!AIBridge.instance) {
@@ -38,6 +43,14 @@ class AIBridge {
           baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
           apiKey: apiKey,
           supportsStructuredOutputs: true,
+        }).languageModel(modelId) as unknown as LanguageModel;
+      }
+      case 'openrouter': {
+        const apiKey = secureStore.getApiKey('openrouter') || '';
+        return createOpenAICompatible({
+          name: 'openrouter',
+          baseURL: 'https://openrouter.ai/api/v1',
+          apiKey: apiKey,
         }).languageModel(modelId) as unknown as LanguageModel;
       }
       default: {
@@ -128,6 +141,8 @@ class AIBridge {
           'gemini-1.5-flash',
           'gemini-1.5-pro',
         ];
+      case 'openrouter':
+        return this.fetchOpenRouterModels();
       case 'ollama':
         return this.fetchOllamaModels();
       default:
@@ -194,6 +209,52 @@ class AIBridge {
       console.error('[AIBridge] Failed to fetch Ollama models', e);
     }
     return ['llama3', 'mistral', 'codellama', 'phi3'];
+  }
+
+  private async fetchOpenRouterModels(): Promise<string[]> {
+    const staticFallback = [
+      'openrouter/free',
+      'google/gemma-2-9b-it:free',
+      'meta-llama/llama-3-8b-instruct:free',
+      'mistralai/mistral-7b-instruct:free',
+    ];
+    try {
+      const apiKey = secureStore.getApiKey('openrouter');
+      const headers: Record<string, string> = {};
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+      const resp = await fetch('https://openrouter.ai/api/v1/models', { headers });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = (await resp.json()) as any;
+      if (data && Array.isArray(data.data)) {
+        for (const m of data.data) {
+          if (m.id && typeof m.context_length === 'number') {
+            this.openrouterContextLengths[m.id] = m.context_length;
+          }
+        }
+        const freeModels: string[] = data.data
+          .filter((m: any) => {
+            const isPricingFree = m.pricing && Number(m.pricing.prompt) === 0 && Number(m.pricing.completion) === 0;
+            const isSlugFree = m.id && m.id.endsWith(':free');
+            return isPricingFree || isSlugFree;
+          })
+          .map((m: any) => m.id as string);
+
+        // Ensure openrouter/free is at the top of the list
+        const sortedFreeModels = Array.from(new Set(freeModels)).sort((a: string, b: string) => {
+          if (a === 'openrouter/free') return -1;
+          if (b === 'openrouter/free') return 1;
+          return a.localeCompare(b);
+        });
+
+        return sortedFreeModels.length > 0 ? sortedFreeModels : staticFallback;
+      }
+      return staticFallback;
+    } catch (e) {
+      console.error('[AIBridge] Failed to fetch OpenRouter models', e);
+      return staticFallback;
+    }
   }
 }
 
