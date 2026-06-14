@@ -217,6 +217,80 @@
     </div>
   </section>
 
+  <!-- Capabilities Section -->
+  <section class="container capabilities-section">
+    <div class="security-header">
+      <span class="section-label">Capabilities</span>
+      <h2 class="section-title">Functional Features & Operations</h2>
+    </div>
+    <div class="capabilities-grid">
+      <div class="capability-card">
+        <div class="capability-header">
+          <span class="capability-tag">Security</span>
+          <span>Workspace Path Containment</span>
+        </div>
+        <p class="capability-text">
+          Validates and confines all code generation, search, and reading activities within the resolved active workspace directory path. Path traversal queries utilizing relative indicators (e.g., <code>../</code>) are detected and blocked at the Electron IPC execution boundary.
+        </p>
+      </div>
+
+      <div class="capability-card">
+        <div class="capability-header">
+          <span class="capability-tag">AI Engine</span>
+          <span>Pluggable Provider Support</span>
+        </div>
+        <p class="capability-text">
+          Integrates standard cloud providers alongside local interfaces and custom OpenAI-compatible proxies:
+        </p>
+        <ul class="capability-list">
+          <li><strong>OpenAI & Anthropic</strong>: Secure key registration and streaming chat integration.</li>
+          <li><strong>Ollama (Local)</strong>: Fully local model routing (e.g., Llama 3, Mistral) without external network dependencies.</li>
+          <li><strong>OpenRouter.ai & Custom Gateways</strong>: Dynamic model discovery and proxy endpoint configuration stored in SQLite.</li>
+        </ul>
+      </div>
+
+      <div class="capability-card">
+        <div class="capability-header">
+          <span class="capability-tag">Planning</span>
+          <span>Interactive Plan Editor</span>
+        </div>
+        <p class="capability-text">
+          Presents file-level code modifications in side-by-side split diff editors. Before modifications are written to disk, developers can review changes and choose to accept or reject individual files. It also maps class dependency trees in inline visual formats.
+        </p>
+      </div>
+
+      <div class="capability-card">
+        <div class="capability-header">
+          <span class="capability-tag">Steering</span>
+          <span>Taxonomy-Aware Steering</span>
+        </div>
+        <p class="capability-text">
+          Classifies local development contexts (language, framework, scale) to tailor system prompts. Dynamically modifies search tool parameters to guide the model towards analyzing specific schema, route, and configuration files relative to the target codebase.
+        </p>
+      </div>
+
+      <div class="capability-card">
+        <div class="capability-header">
+          <span class="capability-tag">Context</span>
+          <span>Token Budget Monitoring</span>
+        </div>
+        <p class="capability-text">
+          Tracks active conversation context sizes in real time. Visual warning indicators flag potential context pollution as the token usage approaches the 200,000-token threshold, displaying detailed breakdowns of inputs, outputs, history, and active files.
+        </p>
+      </div>
+
+      <div class="capability-card">
+        <div class="capability-header">
+          <span class="capability-tag">Terminal</span>
+          <span>Multi-Profile Shell Interface</span>
+        </div>
+        <p class="capability-text">
+          Hosts terminal shell sessions directly within the UI, supporting PowerShell, CMD, Git Bash on Windows, and Zsh, Bash, and Sh on macOS/Linux. Terminal configuration handles process state cleanup on window unmount to prevent listener leakage.
+        </p>
+      </div>
+    </div>
+  </section>
+
   <!-- Setup / Installation Steps -->
   <section class="container setup-guide">
     <div class="setup-header">
@@ -307,6 +381,75 @@
         </div>
       </div>
 
+    </div>
+  </section>
+
+  <!-- Usage & Operation Section -->
+  <section class="container usage-section">
+    <div class="security-header">
+      <span class="section-label">Operator Manual</span>
+      <h2 class="section-title">How to Use SmartCursorX</h2>
+    </div>
+    <div class="usage-steps-grid">
+      <div class="usage-card">
+        <div class="usage-card-header">
+          <span class="usage-step-tag">Step 1</span>
+          <span>Workspace Setup & Cloning</span>
+        </div>
+        <p class="usage-text-content">
+          Launch the application and select a local development folder. Alternatively, use the integrated Git integration to input a remote GitHub repository URL. The application executes a secure, shell-escaped clone process and opens the directory.
+        </p>
+      </div>
+
+      <div class="usage-card">
+        <div class="usage-card-header">
+          <span class="usage-step-tag">Step 2</span>
+          <span>Provider Credentials Configuration</span>
+        </div>
+        <p class="usage-text-content">
+          Open Settings (<code>Ctrl + ,</code>). Select your preferred API provider (e.g., Anthropic, OpenAI, or local Ollama). Input your API keys. Once saved, these keys are immediately encrypted via safeStorage at the OS-level before database storage.
+        </p>
+      </div>
+
+      <div class="usage-card">
+        <div class="usage-card-header">
+          <span class="usage-step-tag">Step 3</span>
+          <span>Prompting & Action Formulation</span>
+        </div>
+        <p class="usage-text-content">
+          Enter your instructions in the AI Chat Panel. The model uses the local search, read, and list-directory capabilities to gather codebase context. All context assembly operations are restricted within the workspace path to block out-of-bounds reads.
+        </p>
+      </div>
+
+      <div class="usage-card">
+        <div class="usage-card-header">
+          <span class="usage-step-tag">Step 4</span>
+          <span>Code Planning Review</span>
+        </div>
+        <p class="usage-text-content">
+          Once the AI generates a plan, the UI shows a blueprint roadmap. Check the permanently visible <strong>Implementation Trade-offs</strong> and <strong>Failure Modes &amp; Consequences</strong> tabs to review design choices and potential risk profiles.
+        </p>
+      </div>
+
+      <div class="usage-card">
+        <div class="usage-card-header">
+          <span class="usage-step-tag">Step 5</span>
+          <span>Accepting or Rejecting Edits</span>
+        </div>
+        <p class="usage-text-content">
+          Review file-level proposed edits side-by-side inside the Diff Editor. Click "Accept" on individual file changes to commit the modifications to disk, or "Reject" to discard them. You can click any text block inside the planner view to edit the markdown text directly.
+        </p>
+      </div>
+
+      <div class="usage-card">
+        <div class="usage-card-header">
+          <span class="usage-step-tag">Step 6</span>
+          <span>Compilation & Local Test Execution</span>
+        </div>
+        <p class="usage-text-content">
+          Open the integrated terminal panel, select your shell profile, and run local test/compilation tasks (e.g., <code>npm run test</code>, <code>npm run dev</code>). Process lifecycles are monitored to prevent orphaned terminal sessions.
+        </p>
+      </div>
     </div>
   </section>
 
