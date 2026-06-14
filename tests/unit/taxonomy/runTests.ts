@@ -1,6 +1,9 @@
-import { taxonomyService } from '../TaxonomyService';
-import { TaxonomyClassifier } from '../TaxonomyClassifier';
-import { dbService } from '../../../db';
+import { fileURLToPath } from 'url';
+import * as path from 'path';
+import * as fs from 'fs';
+import { taxonomyService } from '../../../electron/services/taxonomy/TaxonomyService';
+import { TaxonomyClassifier } from '../../../electron/services/taxonomy/TaxonomyClassifier';
+import { dbService } from '../../../electron/db';
 
 // Simple assertion helper
 function assert(condition: boolean, message: string) {
@@ -13,6 +16,19 @@ function assert(condition: boolean, message: string) {
 
 async function run() {
   console.log('--- STARTING TAXONOMY ENGINE TESTS ---');
+
+  // Setup: Copy JSON files from source service folder to current folder if they don't exist
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const srcDir = path.resolve(currentDir, '../../../electron/services/taxonomy');
+  for (const file of ['taxonomyTree.json', 'crossAxisRules.json']) {
+    const srcFile = path.join(srcDir, file);
+    const destFile = path.join(currentDir, file);
+    if (fs.existsSync(srcFile)) {
+      fs.copyFileSync(srcFile, destFile);
+    } else {
+      console.warn(`⚠️ Warning: Source taxonomy JSON file not found at ${srcFile}`);
+    }
+  }
 
   // Mock dbService to avoid hitting the actual database during local tests
   const runQueries: any[] = [];
@@ -134,6 +150,60 @@ async function run() {
   // Clean up the programmatically mutated cross-references to keep singleton tree pristine
   txFragment.crossReferences = null;
   console.log('✅ Soft-Threshold Cross-Referencing validated successfully.');
+
+  // Test 5a: Language-sensitive Code Pattern Filtering (Python)
+  const pythonTask = {
+    title: "Implement user authentication with rest api in python",
+    description: "Write auth handlers for fastapi web framework"
+  };
+  const pythonPlan = {
+    steps: ["Setup FastAPI app", "Add routes"],
+    filesToModify: ["main.py"]
+  };
+  const pythonResult = taxonomyService.classify(
+    pythonTask,
+    'execution',
+    pythonPlan,
+    'FastAPI app dev.',
+    { 'main.py': 'from fastapi import FastAPI\napp = FastAPI()' }
+  );
+  console.log('Python classification domain path:', pythonResult.classification.domain ? pythonResult.classification.domain.nodeIds.join(' -> ') : 'null');
+  console.log('Python classification confidence:', pythonResult.classification.domain ? pythonResult.classification.domain.confidence : 0);
+  const pythonGuidance = pythonResult.resolvedSlots.get('domain_guidance');
+  console.log('--- Python Guidance Start ---');
+  console.log(pythonGuidance);
+  console.log('--- Python Guidance End ---');
+  assert(!!pythonGuidance, "domain_guidance slot should be populated for Python REST task");
+  assert(pythonGuidance!.includes('def increment_item(item_id: str):') || pythonGuidance!.includes('def update_item(item_id: str, delta: int):'), "Guidance should include Python-specific code patterns");
+  assert(!pythonGuidance!.includes('app.get("/users/:id/activate", async (req, res) =>'), "Guidance should NOT include TS/JS code patterns when Python is detected");
+  console.log('✅ Language-sensitive code pattern filtering (Python) validated successfully.');
+
+  // Test 5b: Language-sensitive Code Pattern Filtering (Rust)
+  const rustTask = {
+    title: "Setup websocket client connection in backend API using rust",
+    description: "use tokio-tungstenite for websocket connection"
+  };
+  const rustPlan = {
+    steps: ["Connect socket", "Listen"],
+    filesToModify: ["src/main.rs"]
+  };
+  const rustResult = taxonomyService.classify(
+    rustTask,
+    'execution',
+    rustPlan,
+    'Rust socket dev.',
+    { 'src/main.rs': 'use std::net::TcpStream;\nfn main() {}' }
+  );
+  const rustGuidance = rustResult.resolvedSlots.get('domain_guidance');
+  assert(!!rustGuidance, "domain_guidance slot should be populated for Rust WS task");
+  assert(rustGuidance!.includes('async fn handle_socket(mut socket: WebSocket)'), "Guidance should include Rust-specific code patterns");
+  assert(!rustGuidance!.includes('wss.on("connection", (ws) =>'), "Guidance should NOT include TS/JS code patterns when Rust is detected");
+  console.log('✅ Language-sensitive code pattern filtering (Rust) validated successfully.');
+
+  // Test 5c: Dynamic Contextualization Header
+  const contextualizedGuidance = pythonResult.resolvedSlots.get('domain_guidance');
+  assert(contextualizedGuidance!.includes('This task touches file(s): **main.py**'), "Guidance should include dynamic contextual note with filenames");
+  console.log('✅ Dynamic Contextualization Header validated successfully.');
 
   // Test 6: Database Logging & Tracking
   taxonomyService.trackResult(101, result, 'planning');

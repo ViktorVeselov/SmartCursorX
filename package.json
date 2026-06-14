@@ -9,7 +9,8 @@
     "build": "npm run build:native && tsc && vite build && electron-builder",
     "build:all": "npm run build:native && tsc && vite build && electron-builder -w -m",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:taxonomy": "npx esbuild tests/unit/taxonomy/runTests.ts --bundle --platform=node --format=esm --alias:electron=./tests/unit/taxonomy/electron-mock.js --alias:electron-store=./tests/unit/taxonomy/electron-store-mock.js --outfile=tests/unit/taxonomy/runTests.js && node tests/unit/taxonomy/runTests.js"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.82",

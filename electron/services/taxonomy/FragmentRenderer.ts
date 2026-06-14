@@ -1,7 +1,85 @@
 import { ExpertFragment, DecisionNode, ClassificationSignals, CrossAxisRule } from './types';
 
 export class FragmentRenderer {
-  static renderFragment(fragment: ExpertFragment, _signals: ClassificationSignals): string {
+  static detectLanguage(signals: ClassificationSignals): string {
+    const fileNames = (signals.fileNames || []).map(f => f.toLowerCase());
+    const imports = (signals.importStatements || []).map(i => i.toLowerCase());
+    const packageDeps = (signals.packageJsonDeps || []).map(p => p.toLowerCase());
+    const codeBody = (signals.codeBody || '').toLowerCase();
+
+    // 1. Rust detection
+    if (
+      fileNames.some(f => f.endsWith('.rs')) ||
+      imports.some(i => i.includes('use std::') || i.includes('extern crate')) ||
+      codeBody.includes('fn main()') ||
+      codeBody.includes('use std::') ||
+      codeBody.includes('impl ')
+    ) {
+      return 'rust';
+    }
+
+    // 2. Go detection
+    if (
+      fileNames.some(f => f.endsWith('.go')) ||
+      imports.some(i => i.includes('import "') || i.includes('package main')) ||
+      codeBody.includes('package ') ||
+      codeBody.includes('func ')
+    ) {
+      return 'go';
+    }
+
+    // 3. C++ detection
+    if (
+      fileNames.some(f => f.endsWith('.cpp') || f.endsWith('.h') || f.endsWith('.hpp') || f.endsWith('.cc') || f.endsWith('.cxx')) ||
+      imports.some(i => i.includes('#include')) ||
+      codeBody.includes('#include') ||
+      codeBody.includes('std::cout') ||
+      codeBody.includes('int main()')
+    ) {
+      return 'cpp';
+    }
+
+    // 4. Java detection
+    if (
+      fileNames.some(f => f.endsWith('.java')) ||
+      imports.some(i => i.includes('import java.')) ||
+      codeBody.includes('public class ') ||
+      codeBody.includes('system.out.println')
+    ) {
+      return 'java';
+    }
+
+    // 5. Python detection
+    if (
+      fileNames.some(f => f.endsWith('.py')) ||
+      imports.some(i => i.includes('import ') && (i.includes('from ') || i.includes('def '))) ||
+      codeBody.includes('def ') ||
+      codeBody.includes('import sys') ||
+      codeBody.includes('print(')
+    ) {
+      return 'python';
+    }
+
+    // 6. TS/JS (default Web environment)
+    if (
+      fileNames.some(f => f.endsWith('.ts') || f.endsWith('.tsx')) ||
+      packageDeps.includes('typescript') ||
+      imports.some(i => i.includes('from "') || i.includes('require('))
+    ) {
+      return 'typescript';
+    }
+
+    if (
+      fileNames.some(f => f.endsWith('.js') || f.endsWith('.jsx')) ||
+      packageDeps.length > 0
+    ) {
+      return 'javascript';
+    }
+
+    return 'typescript';
+  }
+
+  static renderFragment(fragment: ExpertFragment, signals: ClassificationSignals): string {
     const lines: string[] = [];
 
     // Header
@@ -23,15 +101,34 @@ export class FragmentRenderer {
 
     // Code Patterns
     if (fragment.codePatterns && fragment.codePatterns.length > 0) {
-      lines.push('\n**Code Examples:**');
-      for (const pattern of fragment.codePatterns) {
-        lines.push(`*Concern: ${pattern.concern}*`);
-        lines.push(`❌ **DON'T (Wrong):**\n\`\`\`${pattern.wrong.language}\n${pattern.wrong.code}\n\`\`\`\n*Why: ${pattern.wrong.explanation}*\n`);
-        lines.push(`✅ **DO (Correct):**\n\`\`\`${pattern.correct.language}\n${pattern.correct.code}\n\`\`\`\n*Why: ${pattern.correct.explanation}*`);
-        if (pattern.detectionHint) {
-          lines.push(`*Detection Hint: ${pattern.detectionHint}*`);
+      const activeLanguage = this.detectLanguage(signals);
+      let filteredPatterns = fragment.codePatterns.filter(pattern => {
+        const patternLang = pattern.wrong.language.toLowerCase();
+        
+        if (activeLanguage === 'typescript' || activeLanguage === 'javascript') {
+          return patternLang === 'typescript' || patternLang === 'javascript' || patternLang === 'js' || patternLang === 'ts';
         }
-        lines.push('');
+        if (activeLanguage === 'cpp') {
+          return patternLang === 'cpp' || patternLang === 'c++';
+        }
+        return patternLang === activeLanguage;
+      });
+
+      if (filteredPatterns.length === 0) {
+        filteredPatterns = fragment.codePatterns;
+      }
+
+      if (filteredPatterns.length > 0) {
+        lines.push('\n**Code Examples:**');
+        for (const pattern of filteredPatterns) {
+          lines.push(`*Concern: ${pattern.concern}*`);
+          lines.push(`❌ **DON'T (Wrong):**\n\`\`\`${pattern.wrong.language}\n${pattern.wrong.code}\n\`\`\`\n*Why: ${pattern.wrong.explanation}*\n`);
+          lines.push(`✅ **DO (Correct):**\n\`\`\`${pattern.correct.language}\n${pattern.correct.code}\n\`\`\`\n*Why: ${pattern.correct.explanation}*`);
+          if (pattern.detectionHint) {
+            lines.push(`*Detection Hint: ${pattern.detectionHint}*`);
+          }
+          lines.push('');
+        }
       }
     }
 
@@ -114,6 +211,19 @@ export class FragmentRenderer {
 
     const lines: string[] = [];
     lines.push(`\n=== TAXONOMY DOMAIN AWARENESS: ${axisName.toUpperCase()} (${resolvedPath}) ===`);
+
+    // Dynamic Signal Contextualization Header
+    if (signals.fileNames && signals.fileNames.length > 0) {
+      const activeFiles = signals.fileNames.slice(0, 3).join(', ');
+      lines.push(`> [!NOTE]`);
+      lines.push(`> This task touches file(s): **${activeFiles}**.`);
+      if (signals.codeSymbols && signals.codeSymbols.length > 0) {
+        const activeSymbols = signals.codeSymbols.slice(0, 5).join(', ');
+        lines.push(`> Active symbols detected: \`${activeSymbols}\`.`);
+      }
+      lines.push(`> When implementing the patterns below, ensure they align with the interfaces and styles of these files.`);
+      lines.push('');
+    }
 
     const alwaysTriggered = fragments.filter(f => f.trigger === 'always');
     const conditionalTriggered = fragments.filter(f => {
