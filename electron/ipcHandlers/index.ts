@@ -7,6 +7,7 @@ import { registerDBHandlers } from './db';
 import { registerShellHandlers } from './shell';
 import { registerSettingsHandlers } from './settings';
 import { registerExecutionHandlers } from './execution';
+import { registerFinetuningHandlers } from './finetuning';
 
 export interface IPty {
     pid: number;
@@ -34,4 +35,5 @@ export function registerAllHandlers(context: IpcHandlerContext) {
     registerShellHandlers(ipcMain, context);
     registerSettingsHandlers(ipcMain);
     registerExecutionHandlers(ipcMain, context);
+    registerFinetuningHandlers(ipcMain);
 }

@@ -1,0 +1,40 @@
+# ============================================================
+# ML Dependencies for Smart Cursor X Fine-Tuning
+# ============================================================
+# Install with: pip install -r requirements-ml.txt
+#
+# Minimum (LoRA + QLoRA via PEFT/transformers):
+#   torch>=2.1.0
+#   transformers>=4.36.0
+#   peft>=0.7.0
+#   bitsandbytes>=0.41.0
+#   datasets>=2.14.0
+#   accelerate>=0.25.0
+#   scipy>=1.11.0
+#
+# Optional (2x faster training, 70% less memory):
+#   unsloth>=2024.5.0
+#   trl>=0.7.0
+#   xformers>=0.0.23
+#
+# Apple Silicon (MLX):
+#   mlx>=0.10.0
+#   mlx-lm>=0.5.0
+# ============================================================
+
+# Core ML
+torch>=2.1.0
+transformers>=4.36.0
+peft>=0.7.0
+datasets>=2.14.0
+accelerate>=0.25.0
+scipy>=1.11.0
+
+# Quantization
+bitsandbytes>=0.41.0
+
+# Training optimization
+trl>=0.7.0
+
+# Evaluation
+sentencepiece>=0.1.99

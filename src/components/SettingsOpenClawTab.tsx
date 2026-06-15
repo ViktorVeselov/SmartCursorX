@@ -44,7 +44,7 @@ export function SettingsOpenClawTab(props: SettingsOpenClawTabProps) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3 style={{ marginTop: 0, marginBottom: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontSize: 20 }}>🦞</span> OpenClaw Personal AI Assistant
+                    <span style={{ fontSize: 20, fontWeight: 700, color: 'var(--accent-primary)' }}>OpenClaw</span> Personal AI Assistant
                 </h3>
                 <span style={{
                     fontSize: 11,

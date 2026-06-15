@@ -68,7 +68,7 @@ export const EffortLevelSelector = ({ effortLevel, onChange }: EffortLevelSelect
                             onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                         >
                             <span>{level === 'default' ? 'Default' : level.charAt(0).toUpperCase() + level.slice(1)}</span>
-                            {effortLevel === level && <span style={{ color: '#a78bfa' }}>✓</span>}
+                            {effortLevel === level && <span style={{ color: '#a78bfa', fontSize: 11 }}>selected</span>}
                         </button>
                     ))}
                 </div>

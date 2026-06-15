@@ -54,7 +54,7 @@ export function OpenClawPanel() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: 12 }}>
                 <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 16 }}>🦞</span>
+                    <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--accent-primary)' }}>OC</span>
                     <span>OpenClaw Gateway Assistant</span>
                 </h3>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

@@ -159,4 +159,14 @@ export function registerShellHandlers(ipcMain: Electron.IpcMain, context: IpcHan
     ipcMain.handle('openclaw:get-logs', () => {
         return openClawService.getLogs();
     });
+
+    ipcMain.handle('shell:exec', async (_event, command: string) => {
+        const { execSync } = require('child_process');
+        try {
+            const stdout = execSync(command, { encoding: 'utf-8', timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
+            return { stdout: stdout.trim(), stderr: '' };
+        } catch (err: any) {
+            return { stdout: err.stdout?.trim() || '', stderr: err.stderr?.trim() || err.message };
+        }
+    });
 }

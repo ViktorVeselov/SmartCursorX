@@ -14,7 +14,12 @@
     "test:pathguard": "npx esbuild tests/unit/pathGuard/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/pathGuard/runTests.js && node tests/unit/pathGuard/runTests.js",
     "test:pm": "npx esbuild tests/unit/pendingModifications/runTests.ts --bundle --platform=node --format=esm --alias:electron=./tests/unit/taxonomy/electron-mock.js --outfile=tests/unit/pendingModifications/runTests.js && node tests/unit/pendingModifications/runTests.js",
     "test:ipcsec": "npx esbuild tests/unit/ipcSecurity/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/ipcSecurity/runTests.js && node tests/unit/ipcSecurity/runTests.js",
-    "test": "npm run test:pathguard && npm run test:pm && npm run test:ipcsec"
+    "test:dlq": "npx esbuild tests/unit/dlq/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/dlq/runTests.js && node tests/unit/dlq/runTests.js",
+    "test:dlq:int": "npx esbuild tests/unit/dlq/runIntegration.ts --bundle --platform=node --format=esm --external:@ai-sdk/* --external:ai --external:ollama-ai-provider --external:@vercel/* --external:@opentelemetry/* --alias:electron=./tests/unit/taxonomy/electron-mock.js --alias:electron-store=./tests/unit/taxonomy/electron-store-mock.js --alias:better-sqlite3=./tests/unit/dlq/better-sqlite3-mock.js --outfile=tests/unit/dlq/runIntegration.js && node tests/unit/dlq/runIntegration.js",
+    "test:vram": "npx esbuild tests/unit/vramCalculator/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/vramCalculator/runTests.js && node tests/unit/vramCalculator/runTests.js",
+    "test:models": "npx esbuild tests/unit/models/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/models/runTests.js && node tests/unit/models/runTests.js",
+    "test:scripts": "npx esbuild tests/unit/scriptsArgs/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/scriptsArgs/runTests.js && node tests/unit/scriptsArgs/runTests.js",
+    "test": "npm run test:pathguard && npm run test:pm && npm run test:ipcsec && npm run test:dlq && npm run test:dlq:int"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.82",

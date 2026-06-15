@@ -133,7 +133,7 @@ export function SettingsPerformanceTab() {
                                                 fontSize: 10,
                                                 fontWeight: 600
                                             }}>
-                                                ★ Recommended
+                                                Recommended
                                             </span>
                                         )}
                                     </td>
@@ -145,7 +145,7 @@ export function SettingsPerformanceTab() {
             )}
 
             <div style={{ marginTop: 16, color: 'var(--text-secondary)', fontSize: 11 }}>
-                <span style={{ color: '#22c55e' }}>★ Recommended</span> = 10+ runs and ≥85% success rate.
+                <span style={{ color: '#22c55e', fontWeight: 600 }}>Recommended</span> = 10+ runs and +85% success rate.
                 Data is read-only. Use this to make informed model selections.
             </div>
         </div>

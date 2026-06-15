@@ -109,4 +109,10 @@ export function registerExecutionHandlers(ipcMain: Electron.IpcMain, _context: I
     ipcMain.handle('execution:has-pending', async () => {
         return PendingModificationsService.hasPending();
     });
+
+    ipcMain.handle('execution:dlq-respond', async (_event, taskId: number, guidance: string | null) => {
+        console.log(`[ExecutionHandler] DLQ response for task ${taskId}: ${guidance ? 'guidance provided' : 'cancelled'}`);
+        ExecutionLoopService.resolveDlq(taskId, guidance);
+        return { success: true };
+    });
 }

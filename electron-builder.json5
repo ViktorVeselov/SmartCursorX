@@ -18,6 +18,13 @@
         "package.json",
         "*.node"
       ]
+    },
+    {
+      "from": "data-set",
+      "to": "datasets",
+      "filter": [
+        "fable5_ft_instruction.jsonl"
+      ]
     }
   ],
   "productName": "SmartCursorX",

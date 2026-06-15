@@ -74,7 +74,7 @@ export function ApiErrorBanner({ error, onDismiss, onRetry }: ApiErrorBannerProp
       }}
       role="alert"
     >
-      <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>{style.icon}</span>
+      <span className={`codicon codicon-warning`} style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>
           {style.label}

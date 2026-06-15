@@ -17,6 +17,7 @@ import './styles/animations.css';
 import { ActiveFileEditor } from './components/ActiveFileEditor';
 import { NewFileDialog } from './components/NewFileDialog';
 import { NotificationToast } from './components/NotificationToast';
+import { DlqGuidanceModal } from './components/DlqGuidanceModal';
 import { isBinaryFile } from './utils/fileTypes';
 
 import { OpenFile } from './types/appTypes';
@@ -56,6 +57,15 @@ function App() {
     removedLines: number;
   } | null>(null);
   const [pendingReviewApplying, setPendingReviewApplying] = useState(false);
+
+  // DLQ guidance state
+  const [dlqData, setDlqData] = useState<{
+    taskId: number;
+    taskTitle: string;
+    failureFeedback: string;
+    attemptHistory: string[];
+    maxRetries: number;
+  } | null>(null);
 
   // General Dynamic configurations
   const [appTheme, setAppTheme] = useState<'light' | 'dark'>('dark');
@@ -202,12 +212,24 @@ function App() {
     window.addEventListener('open-workspace-file', handleOpenWorkspaceFile);
     window.addEventListener('accept-file-proposal', handleAcceptProposal);
     window.addEventListener('reject-file-proposal', handleRejectProposal);
+    const handleDlqNotify = (_event: any, data: {
+      taskId: number;
+      taskTitle: string;
+      failureFeedback: string;
+      attemptHistory: string[];
+      maxRetries: number;
+    }) => {
+      setDlqData(data);
+    };
+
     window.ipcRenderer.on('execution:pending-modifications', handlePendingModifications);
+    window.ipcRenderer.on('execution:dlq-notify', handleDlqNotify);
     return () => {
       window.removeEventListener('open-workspace-file', handleOpenWorkspaceFile);
       window.removeEventListener('accept-file-proposal', handleAcceptProposal);
       window.removeEventListener('reject-file-proposal', handleRejectProposal);
       window.ipcRenderer.off('execution:pending-modifications', handlePendingModifications);
+      window.ipcRenderer.off('execution:dlq-notify', handleDlqNotify);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -669,6 +691,16 @@ function App() {
           loadAppSettings();
           setSettingsSavedTrigger(prev => prev + 1);
         }}
+      />
+
+      <DlqGuidanceModal
+        isOpen={dlqData !== null}
+        taskId={dlqData?.taskId ?? 0}
+        taskTitle={dlqData?.taskTitle ?? ''}
+        failureFeedback={dlqData?.failureFeedback ?? ''}
+        attemptHistory={dlqData?.attemptHistory ?? []}
+        maxRetries={dlqData?.maxRetries ?? 3}
+        onClose={() => setDlqData(null)}
       />
     </div>
   );

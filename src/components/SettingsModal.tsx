@@ -2,18 +2,20 @@ import { useState, useEffect } from 'react';
 import { AgentRule } from './SettingsRulesTab';
 import { SettingsGeneralTab } from './SettingsGeneralTab';
 import { SettingsModelsTab } from './SettingsModelsTab';
+import { Icon } from './Icons';
 import { SettingsAgentTab } from './SettingsAgentTab';
 import { SettingsRulesTab } from './SettingsRulesTab';
 import { SettingsOpenClawTab } from './SettingsOpenClawTab';
 import { SettingsUsageTab } from './SettingsUsageTab';
 import { SettingsPerformanceTab } from './SettingsPerformanceTab';
+import { SettingsFinetuningTab } from './SettingsFinetuningTab';
 
 interface SettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
 }
 
-type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'openclaw' | 'local' | 'usage' | 'performance';
+type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'openclaw' | 'local' | 'usage' | 'performance' | 'finetuning';
 
 const getIpc = () => window.ipcRenderer;
 
@@ -386,7 +388,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         Settings
                     </div>
                     {(() => {
-                        const baseTabs = ['general', 'models', 'agent', 'rules', 'openclaw', 'usage', 'performance'];
+                        const baseTabs = ['general', 'models', 'agent', 'rules', 'openclaw', 'usage', 'performance', 'finetuning'];
                         const isLocalProvider = modelProvider === 'ollama' || modelProvider === 'litellm' || customProviders.some((p: Record<string, unknown>) => p.id === modelProvider && (p.isLocal || p.is_local));
                         if (isLocalProvider) baseTabs.push('local');
                         return baseTabs.map(tab => (
@@ -400,10 +402,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     background: activeTab === tab ? 'var(--bg-active)' : 'transparent',
                                     borderLeft: activeTab === tab ? '2px solid var(--accent-primary)' : '2px solid transparent',
                                     textTransform: 'capitalize',
-                                    fontSize: 13
+                                    fontSize: 13,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 8,
                                 }}
                             >
-                                {tab === 'openclaw' ? '🦞 OpenClaw' : tab === 'local' ? 'Local LLMs' : tab === 'usage' ? '📊 Usage & Costs' : tab === 'performance' ? '⚡ Performance' : tab === 'rules' ? '📜 Rules' : tab}
+                                <Icon name={tab === 'general' ? 'general' : tab === 'models' ? 'models' : tab === 'agent' ? 'agent' : tab === 'rules' ? 'rules' : tab === 'openclaw' ? 'openclaw' : tab === 'local' ? 'local' : tab === 'usage' ? 'usage' : tab === 'performance' ? 'performance' : tab === 'finetuning' ? 'finetune' : 'general'} size={14} />
+                                {tab === 'openclaw' ? 'OpenClaw' : tab === 'local' ? 'Local LLMs' : tab === 'usage' ? 'Usage & Costs' : tab === 'performance' ? 'Performance' : tab === 'finetuning' ? 'Fine-Tune' : tab === 'rules' ? 'Rules' : tab}
                             </div>
                         ));
                     })()}
@@ -495,6 +501,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                     {activeTab === 'performance' && (
                         <SettingsPerformanceTab />
+                    )}
+
+                    {activeTab === 'finetuning' && (
+                        <SettingsFinetuningTab />
                     )}
                 </div>
 
