@@ -22,7 +22,7 @@ export function SettingsUsageTab({ usageStats, setUsageStats }: SettingsUsageTab
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3 style={{ marginTop: 0, marginBottom: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontSize: 20 }}>📊</span> Usage & Costs
+                    <span style={{ fontSize: 16, color: 'var(--text-primary)' }}>Usage & Costs</span>
                 </h3>
                 <button
                     onClick={async () => {

@@ -39,7 +39,7 @@ export const OpenClawNode = memo(({ data, isConnectable }: NodeProps) => {
             {/* Header Section */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: 6 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 13 }}>🦞</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent-primary)' }}>OC</span>
                     <strong style={{ fontSize: 11, letterSpacing: '0.05em', color: '#ff5a36', textTransform: 'uppercase' }}>OpenClaw Step</strong>
                 </div>
                 <span style={{

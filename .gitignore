@@ -80,4 +80,9 @@ pnpm-debug.log*
 
 # Exclude migration documentation from being tracked or pushed
 docs/migrations/
+memory/
+scratch/
+
+# Local fine-tuning datasets
+data-set/
 

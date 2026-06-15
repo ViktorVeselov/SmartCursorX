@@ -6,7 +6,12 @@ export const safeStorage = {
 export const app = {
   getPath: (name) => '.'
 };
+export class BrowserWindow {
+  static getAllWindows() { return []; }
+  get webContents() { return { send: () => {} }; }
+}
 export default {
   safeStorage,
-  app
+  app,
+  BrowserWindow,
 };

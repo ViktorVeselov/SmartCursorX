@@ -177,7 +177,7 @@ export function AgentsPanel({ onRunFlow, onOpenFlow }: AgentsPanelProps) {
                             transition: 'all 0.2s'
                         }}
                     >
-                        🦞 OpenClaw
+                        OpenClaw
                     </button>
                 </div>
             </div>

@@ -9,6 +9,7 @@ import { LearningService } from './LearningService';
 import { PathGuard } from './PathGuard';
 import { ASTPatchingService } from './ASTPatchingService';
 import { PendingModificationsService } from './PendingModificationsService';
+import { EmbeddingService } from './EmbeddingService';
 import { secureStore } from '../secureStore';
 import { taxonomyService } from './taxonomy/TaxonomyService';
 import * as fs from 'fs';
@@ -20,9 +21,30 @@ export interface ExecutionConfig {
     maxRetries: number;
     baseTemperature: number;
     escalateModel: boolean;
+    userGuidance?: string;
+}
+
+interface DlqEntry {
+    resolve: (guidance: string | null) => void;
+    taskId: number;
+    failureFeedback: string;
+    attemptHistory: string[];
 }
 
 export class ExecutionLoopService {
+    private static dlqEntries = new Map<number, DlqEntry>();
+
+    static setDlqResolver(taskId: number, resolve: (guidance: string | null) => void, failureFeedback: string, attemptHistory: string[]): void {
+        this.dlqEntries.set(taskId, { resolve, taskId, failureFeedback, attemptHistory });
+    }
+
+    static resolveDlq(taskId: number, guidance: string | null): void {
+        const entry = this.dlqEntries.get(taskId);
+        if (entry) {
+            this.dlqEntries.delete(taskId);
+            entry.resolve(guidance);
+        }
+    }
     /**
      * Executes a task through the complete planned plan-execute-verify self-healing loop.
      * Integrates all 5 master framework phases (Pre-flight discovery, Tool masking, JSON AST patching, compiler loops).
@@ -50,6 +72,7 @@ export class ExecutionLoopService {
         let success = false;
         let finalOutputStatus: 'passed' | 'failed' | 'needs_review' = 'failed';
         let failureFeedback = '';
+        let attemptHistory: string[] = [];
 
         const startTime = Date.now();
 
@@ -85,6 +108,10 @@ export class ExecutionLoopService {
                 // Expose ONLY modify instructions and ask for JSON AST Patch!
                 let systemInstructions = ASTPatchingService.shapeSystemInstructions('modify', assembled.systemPrompt, undefined, assembled.taxonomyResult);
                 
+                if (config.userGuidance) {
+                    systemInstructions += `\n\n⚠️ USER GUIDANCE\n${config.userGuidance}\nAdjust your approach according to this guidance.`;
+                }
+
                 if (attempt > 1 && failureFeedback) {
                     // Inject Compiler-Audited Self-Healing instructions!
                     const fileExt = filesToModify.length > 0 ? path.extname(filesToModify[0]) : '';
@@ -230,14 +257,35 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                 } else {
                     const verificationLogs = dbService.getVerificationResults(outputId);
                     const failedLogs = verificationLogs.filter((l: any) => l.result === 'failed');
-                    failureFeedback = failedLogs.map((l: any) => `Rule Check failed: ${l.details || 'No details provided'}`).join('\n');
+                    const attemptFeedback = failedLogs.map((l: any) => `Rule Check failed: ${l.details || 'No details provided'}`).join('\n');
+                    failureFeedback = attemptFeedback;
+                    attemptHistory.push(`Attempt ${attempt}/${config.maxRetries}: ${attemptFeedback}`);
+
+                    // Store failure in RAG for future reference
+                    try {
+                        const ragContent = `Task #${taskId} ("${activeTask.title}"): ${attemptFeedback}`;
+                        EmbeddingService.indexKnowledge('execution_failure', `task_${taskId}_attempt_${attempt}`, ragContent, { taskId, attempt }).catch(() => {});
+                    } catch {
+                        // Non-critical
+                    }
+
                     console.warn(`[ExecutionLoopService] Attempt ${attempt} failed verification. Details:\n${failureFeedback}`);
                 }
 
             } catch (err: any) {
                 console.error(`[ExecutionLoopService] Exception on attempt ${attempt}:`, err);
-                failureFeedback = `Execution Exception occurred: ${err.message || err}`;
-                
+                const attemptFeedback = `Attempt ${attempt}/${config.maxRetries} failed: ${err.message || err}`;
+                failureFeedback = attemptFeedback;
+                attemptHistory.push(attemptFeedback);
+
+                // Store failure in RAG for future reference
+                try {
+                    const ragContent = `Task #${taskId} ("${activeTask.title}"): ${attemptFeedback}`;
+                    EmbeddingService.indexKnowledge('execution_failure', `task_${taskId}_attempt_${attempt}`, ragContent, { taskId, attempt }).catch(() => {});
+                } catch {
+                    // Non-critical
+                }
+
                 dbService.addExecutionAttempt(
                     taskId,
                     attempt,
@@ -262,21 +310,51 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
             });
 
             return 'passed';
-        } else {
-            console.error(`[ExecutionLoopService] Task ID ${taskId} failed after exhausting ${config.maxRetries} attempts.`);
-            
-            console.log('[ExecutionLoopService] Restoring workspace to pristine pre-execution snapshot.');
-            SnapshotService.rollbackToSnapshot(preSnapshotId);
+        }
 
+        // === DLQ Escalation: All retries exhausted, ask user for guidance ===
+        console.error(`[ExecutionLoopService] Task ID ${taskId} failed after exhausting ${config.maxRetries} attempts. Escalating to user...`);
+
+        console.log('[ExecutionLoopService] Restoring workspace to pristine pre-execution snapshot.');
+        SnapshotService.rollbackToSnapshot(preSnapshotId);
+
+        // Notify renderer
+        const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
+        if (mainWindow) {
+            mainWindow.webContents.send('execution:dlq-notify', {
+                taskId,
+                taskTitle: activeTask?.title || 'Unknown Task',
+                failureFeedback,
+                attemptHistory,
+                maxRetries: config.maxRetries,
+            });
+        }
+
+        // Wait for user guidance (or cancel)
+        const userGuidance = await new Promise<string | null>((resolve) => {
+            ExecutionLoopService.setDlqResolver(taskId, resolve, failureFeedback, attemptHistory);
+        });
+
+        if (!userGuidance) {
+            // User cancelled — mark failed and throw
             dbService.updateTaskStatus(taskId, 'failed');
-            TaskService.failTask(taskId, `Failed all self-healing verification checks up to ${config.maxRetries} attempts. Details: ${failureFeedback}`);
-            
+            TaskService.failTask(taskId, `User cancelled after ${config.maxRetries} failed attempts. Details: ${failureFeedback}`);
+
             await LearningService.captureLearning(taskId).catch(err => {
-                console.error('[ExecutionLoopService] LearningService capture failed on failure block:', err);
+                console.error('[ExecutionLoopService] LearningService capture failed on cancel:', err);
             });
 
-            throw new Error(`[ExecutionLoopService] Safety threshold reached: task ${taskId} could not compile or pass validation. Rollback triggered.`);
+            throw new Error(`[ExecutionLoopService] User cancelled task ${taskId} after ${config.maxRetries} failed attempts.`);
         }
+
+        // Retry with user guidance — reset attempt counter for guided retry
+        console.log(`[ExecutionLoopService] User provided guidance. Retrying task ${taskId} with injected guidance...`);
+        attempt = 1;
+        config = { ...config, maxRetries: 3, userGuidance };
+
+        // Re-enter the retry loop
+        const guidedResult = await this.executeTask(taskId, config);
+        return guidedResult;
     }
 
     private static async performInvestigation(

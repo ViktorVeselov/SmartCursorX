@@ -27,7 +27,11 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'chat:delete-conv', 'chat:update-title', 'chat:truncate-from-message', 'chat:fork-conv', 'plan:get', 'plan:save', 'secure:list-keys', 'test:secure-run',
   'db:get-rules', 'db:add-rule', 'db:update-rule', 'db:delete-rule', 'db:toggle-rule',
   'execution:start', 'execution:get-pending', 'execution:apply-pending', 'execution:reject-pending',
-  'execution:apply-single', 'execution:reject-single', 'execution:has-pending'
+  'execution:apply-single', 'execution:reject-single', 'execution:has-pending', 'execution:dlq-respond',
+  'finetune:detect-hardware', 'finetune:get-models', 'finetune:get-state', 'finetune:get-recommendation',
+  'finetune:prepare-dataset', 'finetune:export-dataset', 'finetune:start', 'finetune:stop',
+  'finetune:reset', 'finetune:get-adapter-path', 'finetune:get-builtin-dataset',
+  'shell:exec'
 ]);
 
 const ALLOWED_SEND_CHANNELS = new Set([
@@ -41,7 +45,8 @@ const ALLOWED_ON_CHANNELS = new Set([
   'terminal-incoming', 'terminal-exit', 'git-clone-progress', 'ai:chat-chunk',
   'ai:chat-end', 'ai:plan-chunk', 'ai:plan-end',
   'openclaw:agent-stream', 'openclaw:agent-complete', 'main-process-message',
-  'execution:pending-modifications'
+  'execution:pending-modifications', 'execution:dlq-notify',
+  'finetune:progress'
 ]);
 
 // Map to track active subscription wrappers to ensure ipcRenderer.off can correctly unregister them
