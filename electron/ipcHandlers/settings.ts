@@ -27,6 +27,19 @@ export function registerSettingsHandlers(ipcMain: Electron.IpcMain) {
         return true;
     });
 
+    ipcMain.handle('get-huggingface-token', () => secureStore.getHuggingFaceToken());
+    ipcMain.handle('set-huggingface-token', (_event, token: string) => {
+        if (!token) {
+            secureStore.deleteHuggingFaceToken();
+            return true;
+        }
+        if (!token.startsWith('hf_')) {
+            throw new Error('Invalid Hugging Face token format. Must start with hf_.');
+        }
+        secureStore.setHuggingFaceToken(token);
+        return true;
+    });
+
     ipcMain.handle('get-general-settings', () => {
         return {
             theme: secureStore.getTheme(),

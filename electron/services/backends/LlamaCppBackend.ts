@@ -8,12 +8,19 @@ import {
   FinetuneOptions,
   TrainingEvent,
   DEFAULT_FINETUNE_OPTIONS,
+  BackendAvailability,
+  QUANT_FORMAT_MAP,
+  BYTES_PER_GB,
+  STOP_TIMEOUT_MS,
+  commandExists,
+  runCommand,
 } from './BaseFinetuneBackend'
 
 export class LlamaCppBackend implements FinetuneBackend {
   readonly name = 'llama.cpp'
   readonly capabilities: BackendCapability[] = ['llamacpp']
   private process: ChildProcess | null = null
+  private wasStoppedIntentionally = false
 
   private get finetuneBin(): string {
     return process.platform === 'win32' ? 'llama-finetune.exe' : 'llama-finetune'
@@ -23,15 +30,20 @@ export class LlamaCppBackend implements FinetuneBackend {
     return process.platform === 'win32' ? 'llama-quantize.exe' : 'llama-quantize'
   }
 
-  async isAvailable(): Promise<boolean> {
-    try {
-      execSync(`${this.finetuneBin} --help 2>&1 || ${this.quantizeBin} --help 2>&1`, {
-        stdio: 'pipe',
-        timeout: 5000,
-      })
-      return true
-    } catch {
-      return false
+  async isAvailable(): Promise<BackendAvailability> {
+    if (commandExists(this.finetuneBin)) {
+      return { available: true }
+    }
+
+    if (commandExists(this.quantizeBin)) {
+      return { available: true }
+    }
+
+    const binName = process.platform === 'win32' ? 'llama-finetune.exe' : 'llama-finetune'
+    return {
+      available: false,
+      error: `llama.cpp not found. Install from https://github.com/ggml-org/llama.cpp/releases and add ${binName} to PATH.`,
+      missing: ['llama-finetune'],
     }
   }
 
@@ -42,18 +54,15 @@ export class LlamaCppBackend implements FinetuneBackend {
       vramGB: 0,
       cudaCores: 0,
       cpuCores: require('os').cpus().length,
-      ramGB: Math.round(require('os').totalmem() / (1024 ** 3)),
+      ramGB: Math.round(require('os').totalmem() / BYTES_PER_GB),
       backendType: 'llamacpp',
       numGPUs: 1,
       isAMD: false,
     }
 
-    try {
-      const out = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>&1', {
-        timeout: 5000,
-        encoding: 'utf-8',
-      })
-      const parts = out.trim().split(', ')
+    const nvidiaResult = await runCommand('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader')
+    if (nvidiaResult.ok) {
+      const parts = nvidiaResult.stdout.split(', ')
       if (parts.length >= 2) {
         spec.gpuAvailable = true
         spec.gpuName = parts[0]
@@ -61,21 +70,19 @@ export class LlamaCppBackend implements FinetuneBackend {
         if (vramMatch) spec.vramGB = parseInt(vramMatch[1]) / 1024
         spec.backendType = 'llamacpp'
       }
-    } catch {
-      // no NVIDIA GPU detected
     }
 
     if (process.platform === 'darwin') {
-      try {
-        const mem = execSync('sysctl -n hw.memsize', { encoding: 'utf-8' }).trim()
-        spec.ramGB = Math.round(parseInt(mem) / (1024 ** 3))
+      const memResult = await runCommand('sysctl -n hw.memsize')
+      if (memResult.ok) {
+        spec.ramGB = Math.round(parseInt(memResult.stdout) / BYTES_PER_GB)
         if (spec.ramGB >= 8) {
           spec.gpuAvailable = true
           spec.gpuName = 'Apple Silicon (Unified Memory)'
           spec.vramGB = spec.ramGB
           spec.backendType = 'llamacpp'
         }
-      } catch {}
+      }
     }
 
     return spec
@@ -86,16 +93,10 @@ export class LlamaCppBackend implements FinetuneBackend {
     fs.mkdirSync(outputDir, { recursive: true })
   }
 
-  async startTraining(
-    options: FinetuneOptions,
-    onEvent: (event: TrainingEvent) => void
-  ): Promise<void> {
-    const outputPath = path.join(
-      options.outputDir || this.defaultOutputDir(options),
-      'finetuned.gguf'
-    )
-
-    const merged = { ...DEFAULT_FINETUNE_OPTIONS, ...options }
+  private buildArgs(
+    merged: FinetuneOptions,
+    outputPath: string
+  ): string[] {
     const args = [
       '--model', merged.modelId,
       '--dataset', merged.datasetPath,
@@ -107,35 +108,37 @@ export class LlamaCppBackend implements FinetuneBackend {
       '--batch-size', String(merged.batchSize),
       '--threads', String(require('os').cpus().length),
     ]
+    if (merged.quantization === '4bit') args.push('--quantize', QUANT_FORMAT_MAP['4bit'])
+    else if (merged.quantization === '8bit') args.push('--quantize', QUANT_FORMAT_MAP['8bit'])
+    return args
+  }
 
-    if (merged.quantization === '4bit') args.push('--quantize', 'q4_0')
-    else if (merged.quantization === '8bit') args.push('--quantize', 'q8_0')
-
-    onEvent({ type: 'log', message: `Starting llama-finetune: ${this.finetuneBin} ${args.join(' ')}` })
-
+  private spawnAndMonitor(
+    args: string[],
+    outputPath: string,
+    onEvent: (event: TrainingEvent) => void
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       this.process = spawn(this.finetuneBin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
 
-      let stdout = ''
       this.process.stdout?.on('data', (data: Buffer) => {
-        const text = data.toString()
-        stdout += text
-        this.parseLlamacppOutput(text, onEvent)
+        this.parseLlamacppOutput(data.toString(), onEvent)
       })
 
       this.process.stderr?.on('data', (data: Buffer) => {
-        const text = data.toString()
-        this.parseLlamacppOutput(text, onEvent)
+        this.parseLlamacppOutput(data.toString(), onEvent)
       })
 
       this.process.on('close', (code) => {
         this.process = null
+        if (this.wasStoppedIntentionally) {
+          this.wasStoppedIntentionally = false
+          onEvent({ type: 'log', message: 'Training stopped by user.' })
+          resolve()
+          return
+        }
         if (code === 0) {
-          onEvent({
-            type: 'done',
-            adapterPath: outputPath,
-            modelPath: outputPath,
-          })
+          onEvent({ type: 'done', adapterPath: outputPath, modelPath: outputPath })
           resolve()
         } else {
           onEvent({ type: 'error', message: `llama-finetune exited with code ${code}` })
@@ -149,6 +152,18 @@ export class LlamaCppBackend implements FinetuneBackend {
         reject(err)
       })
     })
+  }
+
+  async startTraining(
+    options: FinetuneOptions,
+    onEvent: (event: TrainingEvent) => void
+  ): Promise<void> {
+    const outputPath = path.join(options.outputDir || this.defaultOutputDir(options), 'finetuned.gguf')
+    const merged = { ...DEFAULT_FINETUNE_OPTIONS, ...options }
+    const args = this.buildArgs(merged, outputPath)
+
+    onEvent({ type: 'log', message: `Starting llama-finetune: ${this.finetuneBin} ${args.join(' ')}` })
+    return this.spawnAndMonitor(args, outputPath, onEvent)
   }
 
   private parseLlamacppOutput(text: string, onEvent: (event: TrainingEvent) => void): void {
@@ -180,10 +195,34 @@ export class LlamaCppBackend implements FinetuneBackend {
   }
 
   async stopTraining(): Promise<void> {
-    if (this.process) {
-      this.process.kill('SIGTERM')
-      this.process = null
+    const proc = this.process
+    if (!proc) return
+    this.wasStoppedIntentionally = true
+    try {
+      if (process.platform === 'win32' && proc.pid) {
+        try {
+          execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: 'pipe', timeout: STOP_TIMEOUT_MS })
+        } catch {
+          try { proc.kill('SIGKILL') } catch {}
+        }
+      } else {
+        proc.kill('SIGTERM')
+        await new Promise<void>((resolve) => {
+          const killTimer = setTimeout(() => {
+            try { proc.kill('SIGKILL') } catch {}
+            resolve()
+          }, 5000)
+          proc.once('exit', () => {
+            clearTimeout(killTimer)
+            resolve()
+          })
+        })
+      }
+    } catch {
+      // Process may already be dead
     }
+
+    this.process = null
   }
 
   getModelPath(options: FinetuneOptions): string {
@@ -194,6 +233,12 @@ export class LlamaCppBackend implements FinetuneBackend {
   }
 
   private defaultOutputDir(options: FinetuneOptions): string {
+    try {
+      const { app } = require('electron')
+      if (app.isPackaged) {
+        return path.join(app.getPath('documents'), 'SmartCursorX', 'finetuned', options.modelId)
+      }
+    } catch {}
     return path.join(process.cwd(), 'finetuned', options.modelId)
   }
 }

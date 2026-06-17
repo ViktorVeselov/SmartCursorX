@@ -37,7 +37,7 @@ export function SettingsModelRegistration(props: SettingsModelRegistrationProps)
                 >
                     <option value="openai">OpenAI</option>
                     <option value="anthropic">Anthropic</option>
-                    <option value="google">Google</option>
+                    <option value="gemini">Google Gemini</option>
                     <option value="ollama">Ollama (Local)</option>
                     <option value="zen">OpenCode Zen — Free Models</option>
                     {customModelsList.length > 0 && (

@@ -156,7 +156,7 @@ export class AIService {
 
   public getModel(modelId?: string) {
     if (!this.config) throw new Error('AI Service not initialized');
-    const requiresApiKey = this.config.providerId !== 'ollama' && this.config.providerId !== 'zen';
+    const requiresApiKey = this.config.providerId !== 'ollama' && this.config.providerId !== 'zen' && this.config.providerId !== 'local';
     if (requiresApiKey && !this.config.apiKey) {
       throw new Error(`API Key for provider "${this.config.providerId}" is not configured. Please set it in Settings > Models.`);
     }

@@ -11,7 +11,8 @@ import {
     addAgent, getAgents, deleteAgent,
     addFlow, getFlows, deleteFlow, updateFlow,
     addCustomProvider, getCustomProviders, deleteCustomProvider,
-    addCustomModel, getCustomModels, toggleCustomModelThinking, deleteCustomModel
+    addCustomModel, getCustomModels, toggleCustomModelThinking, deleteCustomModel,
+    addFineTunedModel, getFineTunedModels, getFineTunedModel, deleteFineTunedModel
 } from './agents';
 import {
     addMemory, getMemories, searchMemories, deleteMemory,
@@ -32,7 +33,7 @@ export class DatabaseService {
 
     constructor() {
         console.log('[DatabaseService] Constructor');
-        this.dbPath = path.join(app.getPath('userData'), 'cursor-replacer.sqlite');
+        this.dbPath = path.join(app.getPath('userData'), 'smart-cursor-x.sqlite');
     }
 
     async init() {
@@ -165,6 +166,29 @@ export class DatabaseService {
     }
     deleteCustomModel(providerId: string, modelName: string) {
         return deleteCustomModel(this.db, providerId, modelName);
+    }
+
+    // ── Fine-Tuned Models ──
+    addFineTunedModel(model: {
+        id: string;
+        name: string;
+        baseModelId: string;
+        baseModelHfRepo: string;
+        adapterPath: string;
+        backend: 'llamacpp' | 'python';
+        quantization: '4bit' | '8bit' | '16bit';
+        tags: string[];
+    }) {
+        return addFineTunedModel(this.db, model);
+    }
+    getFineTunedModels() {
+        return getFineTunedModels(this.db);
+    }
+    getFineTunedModel(id: string) {
+        return getFineTunedModel(this.db, id);
+    }
+    deleteFineTunedModel(id: string) {
+        return deleteFineTunedModel(this.db, id);
     }
 
     // ── Memories ──

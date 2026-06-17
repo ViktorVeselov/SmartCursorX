@@ -5,7 +5,7 @@
 
 /** A single search match result */
 export interface SearchMatch {
-  /** File path where match was found */
+  /** File path relative to search root */
   filePath: string
   /** Line number (1-indexed) */
   lineNumber: number
@@ -32,16 +32,14 @@ export interface SearchOptions {
   includeExtensions?: string[] | undefined
 }
 /**
- * Search for a pattern across files in a directory
- *
- * # Arguments
- * * `options` - Search configuration
- *
- * # Returns
- * Vector of search matches
+ * Search for a pattern across files in a directory.
+ * Respects .gitignore automatically. Runs asynchronously off the main thread.
  */
 export declare function searchFiles(options: SearchOptions): Array<SearchMatch>
-/** Quick search that returns just file paths (faster for "find file" use case) */
+/**
+ * Quick search that returns just file paths matching a pattern.
+ * Useful for "find file" use cases.
+ */
 export declare function searchFileNames(pattern: string, rootPath: string): Array<string>
 /** Health check function to verify native module is loaded */
 export declare function nativeHealthCheck(): string

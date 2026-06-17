@@ -1,6 +1,3 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
 import { dbService } from '../../db';
 import {
   TaxonomyNode,
@@ -12,6 +9,8 @@ import {
 } from './types';
 import { TaxonomyClassifier } from './TaxonomyClassifier';
 import { TaxonomyPromptComposer } from './TaxonomyPromptComposer';
+import taxonomyTreeData from './taxonomyTree.json';
+import crossAxisRulesData from './crossAxisRules.json';
 
 export class TaxonomyService {
   private static instance: TaxonomyService | null = null;
@@ -35,22 +34,8 @@ export class TaxonomyService {
     if (this.isInitialized) return;
 
     try {
-      const servicesDir = typeof __filename !== 'undefined'
-        ? path.dirname(__filename)
-        : path.dirname(fileURLToPath(import.meta.url));
-      const treePath = path.join(servicesDir, 'taxonomyTree.json');
-      const rulesPath = path.join(servicesDir, 'crossAxisRules.json');
-
-      if (!fs.existsSync(treePath)) {
-        throw new Error(`Taxonomy tree JSON file not found at ${treePath}`);
-      }
-      if (!fs.existsSync(rulesPath)) {
-        throw new Error(`Cross-axis rules JSON file not found at ${rulesPath}`);
-      }
-
-      this.taxonomyTree = JSON.parse(fs.readFileSync(treePath, 'utf8'));
-      const rulesJson = JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
-      this.crossAxisRules = rulesJson.rules || [];
+      this.taxonomyTree = taxonomyTreeData as unknown as Record<string, TaxonomyNode>;
+      this.crossAxisRules = (crossAxisRulesData as any).rules || [];
 
       // Build indices
       this.buildIndices();

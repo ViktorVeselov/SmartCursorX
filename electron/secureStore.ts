@@ -16,6 +16,7 @@ interface SecureStoreSchema {
     ollamaApiKey_encrypted?: string;
     openrouterApiKey_encrypted?: string;
     githubToken_encrypted?: string;
+    huggingfaceToken_encrypted?: string;
     
     // Configurations and settings
     theme?: 'light' | 'dark';
@@ -41,6 +42,18 @@ interface SecureStoreSchema {
     activeWorkspacePath?: string;
     
     windowBounds?: { width: number; height: number };
+
+    // Hardware detection cache (TTL: 30 days)
+    hardwareSpec?: {
+        gpuName: string;
+        vramGB: number;
+        ramGB: number;
+        cpuCores: number;
+        numGPUs: number;
+        isAMD: boolean;
+        backendType: string;
+        timestamp: number;
+    };
 }
 
 const store = new Store<SecureStoreSchema>({
@@ -129,6 +142,23 @@ export const secureStore = {
     },
     deleteGitHubToken(): void {
         store.delete('githubToken_encrypted');
+    },
+
+    setHuggingFaceToken(token: string): void {
+        store.set('huggingfaceToken_encrypted', encryptValue(token));
+    },
+    getHuggingFaceToken(): string | undefined {
+        const encrypted = store.get('huggingfaceToken_encrypted');
+        if (!encrypted) return undefined;
+        try {
+            return decryptValue(encrypted);
+        } catch (e) {
+            console.error('[SecureStore] Failed to decrypt Hugging Face token', e);
+            return undefined;
+        }
+    },
+    deleteHuggingFaceToken(): void {
+        store.delete('huggingfaceToken_encrypted');
     },
 
     // Non-sensitive settings
@@ -275,6 +305,17 @@ export const secureStore = {
         store.set('activeWorkspacePath', pathStr);
     },
 
+    getHardwareSpec(): SecureStoreSchema['hardwareSpec'] {
+        return store.get('hardwareSpec');
+    },
+    setHardwareSpec(spec: SecureStoreSchema['hardwareSpec']): void {
+        console.assert(spec && typeof spec.timestamp === 'number', 'Hardware spec must have timestamp');
+        store.set('hardwareSpec', spec);
+    },
+    deleteHardwareSpec(): void {
+        store.delete('hardwareSpec');
+    },
+
     setCustomProviderKey(providerId: string, key: string): void {
         console.assert(typeof providerId === 'string', 'providerId must be a string');
         checkEncryptionGuard();
@@ -320,14 +361,22 @@ secureStore.setGitHubToken = function(token: string): void {
     originalSetGitHubToken.call(secureStore, token);
 };
 
+const originalSetHuggingFaceToken = secureStore.setHuggingFaceToken;
+secureStore.setHuggingFaceToken = function(token: string): void {
+    checkEncryptionGuard();
+    originalSetHuggingFaceToken.call(secureStore, token);
+};
+
 // Export listEncryptedKeys separately
 export function listEncryptedKeys() {
-    const knownProviders = ['openai', 'anthropic', 'gemini', 'openrouter', 'ollama', 'github'];
+    const knownProviders = ['openai', 'anthropic', 'gemini', 'openrouter', 'ollama', 'github', 'huggingface'];
     const encryptionAvailable = safeStorage.isEncryptionAvailable();
     return knownProviders.map(id => {
         let hasKey = false;
         if (id === 'github') {
             hasKey = !!secureStore.getGitHubToken();
+        } else if (id === 'huggingface') {
+            hasKey = !!secureStore.getHuggingFaceToken();
         } else {
             hasKey = !!secureStore.getApiKey(id);
         }

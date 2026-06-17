@@ -148,6 +148,7 @@ export function useChatSending(params: ChatSendingParams) {
         if (!queuedMsg) setInput('');
         setCurrentlyReadingFiles([]);
         setIsLoading(true);
+        streamActiveRef.current = true;
 
         planStartTimeRef.current = Date.now();
         setStreamElapsed(0);
@@ -161,17 +162,51 @@ export function useChatSending(params: ChatSendingParams) {
             if (!currentConvId) {
                 currentConvId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
                 await window.ipcRenderer.invoke('chat:create-conv', currentConvId, finalContent.trim().slice(0, 35) || 'New Chat', activeModel, activeProvider, rootPath);
+                if (!streamActiveRef.current) return;
                 setActiveConversationId(currentConvId);
                 await loadConversations();
+                if (!streamActiveRef.current) return;
             }
             await window.ipcRenderer.invoke('chat:add-message', currentConvId, 'user', finalContent);
+            if (!streamActiveRef.current) return;
 
             let fullResponse = '';
             let fullPlanJson = '';
 
             // eslint-disable-next-line complexity
-            const handleChunk = (_: unknown, chunk: string) => {
+            const handleChunk = (_: unknown, chunk: any) => {
                 if (!streamActiveRef.current) return;
+
+                let isError = false;
+                let errorType = 'UNKNOWN';
+                let errorMsg = '';
+
+                if (typeof chunk === 'object' && chunk !== null && chunk.error) {
+                    isError = true;
+                    errorMsg = chunk.error;
+                    errorType = chunk.errorType || 'UNKNOWN';
+                } else if (typeof chunk === 'string' && chunk.startsWith('Error:')) {
+                    isError = true;
+                    const rest = chunk.substring(6).trim();
+                    errorMsg = rest;
+                    const parts = rest.match(/^(TIMEOUT|AUTH|RATE_LIMIT|NETWORK|UNKNOWN):\s*(.*)/s);
+                    if (parts) {
+                        errorType = parts[1];
+                        errorMsg = parts[2].trim();
+                    }
+                }
+
+                if (isError) {
+                    setApiError({ type: errorType, message: errorMsg, timestamp: Date.now(), provider: activeProvider, model: activeModel });
+                    const fullErrorMsg = `⚠️ **AI ${errorType === 'TIMEOUT' ? 'Request Timeout' : errorType === 'AUTH' ? 'Auth Error' : errorType === 'RATE_LIMIT' ? 'Rate Limited' : errorType === 'NETWORK' ? 'Network Error' : 'Stream Error'}:** ${errorMsg}`;
+                    setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: fullErrorMsg, isPlanMode: isPlanModeActive, isStreaming: false, activities: lm.activities || [] }]; return prev; });
+                    setIsLoading(false);
+                    cleanupActiveListeners();
+                    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+                    if (currentConvId) window.ipcRenderer.invoke('chat:add-message', currentConvId, 'assistant', fullErrorMsg).then(() => loadConversations()).catch(() => { });
+                    return;
+                }
+
                 if (isPlanModeActive) {
                     fullPlanJson = chunk;
                     try {
@@ -197,20 +232,6 @@ export function useChatSending(params: ChatSendingParams) {
                             }
                         }
                     } catch { }
-                    return;
-                }
-                if (chunk.startsWith('Error:')) {
-                    const rest = chunk.substring(6).trim();
-                    let errorType: string = 'UNKNOWN', errorMsg = rest;
-                    const parts = rest.match(/^(TIMEOUT|AUTH|RATE_LIMIT|NETWORK|UNKNOWN):\s*(.*)/s);
-                    if (parts) { errorType = parts[1]; errorMsg = parts[2].trim(); }
-                    setApiError({ type: errorType, message: errorMsg, timestamp: Date.now(), provider: activeProvider, model: activeModel });
-                    const fullErrorMsg = `⚠️ **AI ${errorType === 'TIMEOUT' ? 'Request Timeout' : errorType === 'AUTH' ? 'Auth Error' : errorType === 'RATE_LIMIT' ? 'Rate Limited' : errorType === 'NETWORK' ? 'Network Error' : 'Stream Error'}:** ${errorMsg}`;
-                    setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: fullErrorMsg, isPlanMode: isPlanModeActive, isStreaming: false, activities: lm.activities || [] }]; return prev; });
-                    setIsLoading(false);
-                    cleanupActiveListeners();
-                    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-                    if (currentConvId) window.ipcRenderer.invoke('chat:add-message', currentConvId, 'assistant', fullErrorMsg).then(() => loadConversations()).catch(() => { });
                     return;
                 }
                 fullResponse += chunk;
@@ -305,6 +326,7 @@ export function useChatSending(params: ChatSendingParams) {
             }
 
             const activeRules = await window.ipcRenderer.invoke('db:get-rules');
+            if (!streamActiveRef.current) return;
             const enabledRules = ((activeRules || []) as Record<string, unknown>[]).filter((r: Record<string, unknown>) => r.is_active === 1);
             let rulesSystemMessage: Message | null = null;
             if (enabledRules.length > 0) {
@@ -323,13 +345,16 @@ export function useChatSending(params: ChatSendingParams) {
             let finalSystemMessages = [...systemMessages];
             try {
                 const taskTree = await window.ipcRenderer.invoke('task:get-tree');
+                if (!streamActiveRef.current) return;
                 const targetTaskId = getNumericTaskId(activeConversationId || '');
                 const activeTask = (taskTree as Record<string, unknown>[]).find((t: Record<string, unknown>) => t.id === targetTaskId && t.status === 'in_progress');
                 if (activeTask) {
                     const budgetContext = await window.ipcRenderer.invoke('task:assemble-context', activeTask.id, messages, undefined, activeConversationId, rootPath);
+                    if (!streamActiveRef.current) return;
                     if (budgetContext?.systemPrompt) finalSystemMessages = [...(rulesSystemMessage ? [rulesSystemMessage] : []), { role: 'system', content: budgetContext.systemPrompt }];
                 }
             } catch (e) { console.error('Failed to assemble budget context, falling back:', e); }
+            if (!streamActiveRef.current) return;
             const messagesToSend = [...finalSystemMessages, ...messages.filter((m: Message) => m.role !== 'system'), llmUserMsg];
             lastSentMessageRef.current = { content: sendContent, attachedFile: sendAttachedFile, isPlanMode: sendPlanModeActive };
             window.ipcRenderer.send(isPlanModeActive ? 'ai:plan-start' : 'ai:chat-start', {

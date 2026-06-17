@@ -2,13 +2,13 @@ import { useState, useEffect } from 'react';
 import { AgentRule } from './SettingsRulesTab';
 import { SettingsGeneralTab } from './SettingsGeneralTab';
 import { SettingsModelsTab } from './SettingsModelsTab';
-import { Icon } from './Icons';
 import { SettingsAgentTab } from './SettingsAgentTab';
 import { SettingsRulesTab } from './SettingsRulesTab';
 import { SettingsOpenClawTab } from './SettingsOpenClawTab';
 import { SettingsUsageTab } from './SettingsUsageTab';
 import { SettingsPerformanceTab } from './SettingsPerformanceTab';
 import { SettingsFinetuningTab } from './SettingsFinetuningTab';
+import { SettingsLocalModels } from './SettingsLocalModels';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -21,6 +21,7 @@ const getIpc = () => window.ipcRenderer;
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+    const [expanded, setExpanded] = useState(false);
 
     // General & Agent State
     const [theme, setTheme] = useState<'light' | 'dark'>('dark');
@@ -37,6 +38,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [openrouterKey, setOpenrouterKey] = useState('');
     const [liteLLMKey, setLiteLLMKey] = useState('');
     const [githubToken, setGithubToken] = useState('');
+    const [huggingfaceToken, setHuggingfaceToken] = useState('');
 
     // Dynamic models selection inside Settings
     const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -67,6 +69,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [liteLLMModel, setLiteLLMModel] = useState('gpt-4o');
     const [liteLLMPort, setLiteLLMPort] = useState(4000);
     const [isProxyRunning, setIsProxyRunning] = useState(false);
+
+    // Local LLMs Server States
+    const [isLocalServerRunning, setIsLocalServerRunning] = useState(false);
+    const [runningLocalModel, setRunningLocalModel] = useState<string | null>(null);
+
+    // Fine-Tuned Models
+    const [fineTunedModels, setFineTunedModels] = useState<any[]>([]);
 
     // Enterprise Cloud Credentials
     const [awsAccessKeyId, setAwsAccessKeyId] = useState('');
@@ -154,6 +163,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             const gh = await getIpc().invoke('get-github-token');
             if (gh) setGithubToken(gh);
 
+            const hf = await getIpc().invoke('get-huggingface-token');
+            if (hf) setHuggingfaceToken(hf);
+
             // Fetch stored enterprise credentials securely
             const keyAwsId = await getIpc().invoke('ai:get-provider-key', 'awsAccessKeyId');
             if (keyAwsId) setAwsAccessKeyId(keyAwsId);
@@ -172,10 +184,31 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             const proxyStatus = await getIpc().invoke('litellm:get-status');
             setIsProxyRunning(!!proxyStatus?.isActive);
 
+            // Local server status is now handled by a separate polling useEffect
+
             // Load rules
             await loadRules();
         };
         loadSettings();
+    }, [isOpen]);
+
+    // Poll local server status dynamically while settings is open
+    useEffect(() => {
+        if (!isOpen) return;
+        const checkStatus = async () => {
+            try {
+                const localStatus = await getIpc().invoke('local:server-status');
+                if (localStatus) {
+                    setIsLocalServerRunning(localStatus.running);
+                    setRunningLocalModel(localStatus.model);
+                }
+            } catch (e) {
+                console.error('Failed to get local server status in settings modal:', e);
+            }
+        };
+        checkStatus();
+        const interval = setInterval(checkStatus, 3000);
+        return () => clearInterval(interval);
     }, [isOpen]);
 
     // OpenClaw Status Polling and detection hook
@@ -271,22 +304,22 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
     // eslint-disable-next-line complexity
     const handleSave = async () => {
-        // Unify and encrypt API keys
-        if (modelProvider === 'openai') {
-            await getIpc().invoke('set-api-key', openAIKey);
-        } else if (modelProvider === 'anthropic') {
-            await getIpc().invoke('ai:save-config', { providerId: 'anthropic', apiKey: anthropicKey });
-        } else if (modelProvider === 'gemini') {
-            await getIpc().invoke('ai:save-config', { providerId: 'gemini', apiKey: geminiKey });
-        } else if (modelProvider === 'openrouter') {
-            await getIpc().invoke('ai:save-config', { providerId: 'openrouter', apiKey: openrouterKey });
-        } else if (modelProvider === 'litellm') {
-            await getIpc().invoke('ai:save-config', { providerId: 'litellm', apiKey: liteLLMKey });
-        } else if (customProviders.some(p => p.id === modelProvider)) {
-            await getIpc().invoke('ai:save-config', { providerId: modelProvider, apiKey: customApiKey });
+        // Save all keys so changes across multiple providers are preserved on Save Changes
+        await getIpc().invoke('set-api-key', openAIKey);
+        await getIpc().invoke('ai:save-provider-key', { providerId: 'anthropic', apiKey: anthropicKey });
+        await getIpc().invoke('ai:save-provider-key', { providerId: 'gemini', apiKey: geminiKey });
+        if (openrouterKey && !openrouterKey.startsWith('sk-or-v1-')) {
+            alert('OpenRouter API key must start with "sk-or-v1-". Check your key at https://openrouter.ai/keys');
+            return;
+        }
+        await getIpc().invoke('ai:save-provider-key', { providerId: 'openrouter', apiKey: openrouterKey });
+        await getIpc().invoke('ai:save-provider-key', { providerId: 'litellm', apiKey: liteLLMKey });
+        if (customProviders.some(p => p.id === modelProvider)) {
+            await getIpc().invoke('ai:save-provider-key', { providerId: modelProvider, apiKey: customApiKey });
         }
 
         await getIpc().invoke('set-github-token', githubToken);
+        await getIpc().invoke('set-huggingface-token', huggingfaceToken);
 
         // Save enterprise cloud keys securely
         if (awsAccessKeyId) {
@@ -302,7 +335,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         // Save active provider config to initialize AIService
         await getIpc().invoke('ai:save-config', {
             providerId: modelProvider,
-            apiKey: modelProvider === 'openai' ? openAIKey : modelProvider === 'anthropic' ? anthropicKey : modelProvider === 'gemini' ? geminiKey : modelProvider === 'openrouter' ? openrouterKey : modelProvider === 'litellm' ? liteLLMKey : modelProvider === 'ollama' || modelProvider === 'zen' ? '' : customApiKey
+            apiKey: modelProvider === 'openai' ? openAIKey : modelProvider === 'anthropic' ? anthropicKey : modelProvider === 'gemini' ? geminiKey : modelProvider === 'openrouter' ? openrouterKey : modelProvider === 'litellm' ? liteLLMKey : modelProvider === 'ollama' || modelProvider === 'zen' || modelProvider === 'local' ? '' : customApiKey
         });
 
         // Save general & agent configuration (including cloud settings)
@@ -364,15 +397,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             justifyContent: 'center'
         }} onClick={onClose}>
             <div style={{
-                width: 900,
-                height: 540,
+                width: expanded ? 1200 : 900,
+                height: expanded ? 800 : 540,
                 background: 'var(--bg-secondary)',
                 borderRadius: 'var(--radius-lg)',
                 boxShadow: 'var(--shadow-lg)',
                 display: 'flex',
                 overflow: 'hidden',
                 border: '1px solid var(--border-subtle)',
-                position: 'relative'
+                position: 'relative',
+                transition: 'width 0.2s ease, height 0.2s ease',
             }} onClick={e => e.stopPropagation()}>
 
                 {/* Sidebar */}
@@ -388,9 +422,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         Settings
                     </div>
                     {(() => {
-                        const baseTabs = ['general', 'models', 'agent', 'rules', 'openclaw', 'usage', 'performance', 'finetuning'];
-                        const isLocalProvider = modelProvider === 'ollama' || modelProvider === 'litellm' || customProviders.some((p: Record<string, unknown>) => p.id === modelProvider && (p.isLocal || p.is_local));
-                        if (isLocalProvider) baseTabs.push('local');
+                        const baseTabs = ['general', 'models', 'agent', 'rules', 'openclaw', 'usage', 'performance', 'finetuning', 'local'];
                         return baseTabs.map(tab => (
                             <div
                                 key={tab}
@@ -408,12 +440,52 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     gap: 8,
                                 }}
                             >
-                                <Icon name={tab === 'general' ? 'general' : tab === 'models' ? 'models' : tab === 'agent' ? 'agent' : tab === 'rules' ? 'rules' : tab === 'openclaw' ? 'openclaw' : tab === 'local' ? 'local' : tab === 'usage' ? 'usage' : tab === 'performance' ? 'performance' : tab === 'finetuning' ? 'finetune' : 'general'} size={14} />
-                                {tab === 'openclaw' ? 'OpenClaw' : tab === 'local' ? 'Local LLMs' : tab === 'usage' ? 'Usage & Costs' : tab === 'performance' ? 'Performance' : tab === 'finetuning' ? 'Fine-Tune' : tab === 'rules' ? 'Rules' : tab}
+                                <span className={`codicon codicon-${tab === 'general' ? 'gear' : tab === 'models' ? 'circuit-board' : tab === 'agent' ? 'hubot' : tab === 'rules' ? 'checklist' : tab === 'openclaw' ? 'server-process' : tab === 'local' ? 'server-environment' : tab === 'usage' ? 'graph-line' : tab === 'performance' ? 'dashboard' : tab === 'finetuning' ? 'wand' : 'gear'}`} style={{ fontSize: 14 }} />
+                                <span style={{ flex: 1, textAlign: 'left' }}>
+                                    {tab === 'openclaw' ? 'OpenClaw' : tab === 'local' ? 'Local LLMs (Exp)' : tab === 'usage' ? 'Usage & Costs' : tab === 'performance' ? 'Performance' : tab === 'finetuning' ? 'Fine-Tune (Exp)' : tab === 'rules' ? 'Rules' : tab}
+                                </span>
+                                {tab === 'local' && isLocalServerRunning && (
+                                    <span style={{
+                                        width: 8,
+                                        height: 8,
+                                        borderRadius: '50%',
+                                        background: '#22c55e',
+                                        boxShadow: '0 0 8px #22c55e',
+                                        display: 'inline-block',
+                                        marginLeft: 6
+                                    }} title={`Local model running: ${runningLocalModel || ''}`} />
+                                )}
                             </div>
                         ));
                     })()}
                 </div>
+
+                {/* Expand/Collapse toggle */}
+                <button
+                    onClick={() => setExpanded(!expanded)}
+                    title={expanded ? 'Collapse' : 'Expand'}
+                    style={{
+                        position: 'absolute',
+                        top: 8,
+                        right: 8,
+                        width: 24,
+                        height: 24,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'var(--text-secondary)',
+                        cursor: 'pointer',
+                        borderRadius: 'var(--radius-sm)',
+                        fontSize: 14,
+                        zIndex: 10,
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
+                    onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-secondary)')}
+                >
+                    <span className={`codicon codicon-${expanded ? 'screen-normal' : 'screen-full'}`} />
+                </button>
 
                 {/* Content */}
                 <div style={{ flex: 1, padding: 30, overflowY: 'auto', paddingBottom: 80 }}>
@@ -458,6 +530,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             liteLLMModel={liteLLMModel} setLiteLLMModel={setLiteLLMModel}
                             liteLLMPort={liteLLMPort} setLiteLLMPort={setLiteLLMPort}
                             isProxyRunning={isProxyRunning} setIsProxyRunning={setIsProxyRunning}
+                            fineTunedModels={fineTunedModels} setFineTunedModels={setFineTunedModels}
                         />
                     )}
 
@@ -504,7 +577,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     )}
 
                     {activeTab === 'finetuning' && (
-                        <SettingsFinetuningTab />
+                        <SettingsFinetuningTab
+                            huggingfaceToken={huggingfaceToken}
+                            setHuggingfaceToken={setHuggingfaceToken}
+                        />
+                    )}
+
+                    {activeTab === 'local' && (
+                        <SettingsLocalModels />
                     )}
                 </div>
 

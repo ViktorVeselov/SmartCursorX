@@ -1,6 +1,7 @@
 import { spawn, ChildProcess, execSync } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
+import { secureStore } from '../../secureStore'
 import {
   FinetuneBackend,
   BackendCapability,
@@ -8,38 +9,96 @@ import {
   FinetuneOptions,
   TrainingEvent,
   DEFAULT_FINETUNE_OPTIONS,
+  BackendAvailability,
+  BYTES_PER_GB,
+  DDP_MAX_GPUS,
+  TORCHRUN_MASTER_PORT,
+  STOP_TIMEOUT_MS,
+  PYTHON_IMPORT_TIMEOUT_MS,
+  runCommand,
 } from './BaseFinetuneBackend'
 
 export class PythonBackend implements FinetuneBackend {
   readonly name = 'Python (PyTorch)'
   readonly capabilities: BackendCapability[] = ['python_cuda', 'python_mps', 'python_cpu']
   private process: ChildProcess | null = null
+  private wasStoppedIntentionally = false
 
   private get pythonCmd(): string {
     return process.platform === 'win32' ? 'python' : 'python3'
   }
 
   private get scriptDir(): string {
+    try {
+      const { app } = require('electron')
+      if (app.isPackaged) {
+        return path.join(process.resourcesPath, 'scripts')
+      }
+    } catch {}
     return path.join(process.cwd(), 'scripts')
   }
 
-  async isAvailable(): Promise<boolean> {
-    try {
-      execSync(`${this.pythonCmd} -c "import torch; import transformers; import peft; import bitsandbytes" 2>&1`, {
-        stdio: 'pipe',
-        timeout: 15000,
-      })
-      return true
-    } catch {
-      try {
-        execSync(`${this.pythonCmd} -c "import torch; import transformers; import peft" 2>&1`, {
-          stdio: 'pipe',
-          timeout: 15000,
-        })
-        return true
-      } catch {
-        return false
+  async isAvailable(): Promise<BackendAvailability> {
+    const required = [
+      { pkg: 'torch', label: 'PyTorch' },
+      { pkg: 'transformers', label: 'Transformers' },
+      { pkg: 'peft', label: 'PEFT (LoRA)' },
+    ]
+    const optional = [
+      { pkg: 'bitsandbytes', label: 'BitsAndBytes (QLoRA 4-bit)' },
+    ]
+
+    const missing: string[] = []
+
+    // Check Python is reachable
+    const pythonCheck = await runCommand(`${this.pythonCmd} --version`)
+    if (!pythonCheck.ok) {
+      return {
+        available: false,
+        error: `Python not found. Install Python 3.8+ and add it to PATH.`,
+        missing: ['Python'],
       }
+    }
+
+    // Check required packages
+    for (const check of required) {
+      const result = await runCommand(`${this.pythonCmd} -c "import ${check.pkg}"`, PYTHON_IMPORT_TIMEOUT_MS)
+      if (!result.ok) missing.push(check.label)
+    }
+
+    // Check optional packages (warn but don't block)
+    const missingOptional: string[] = []
+    for (const check of optional) {
+      const result = await runCommand(`${this.pythonCmd} -c "import ${check.pkg}"`, PYTHON_IMPORT_TIMEOUT_MS)
+      if (!result.ok) missingOptional.push(check.label)
+    }
+
+    if (missing.length > 0) {
+      const installCmd = missing.map(p => p.toLowerCase().replace(/ \(.*\)/, '')).join(' ')
+      return {
+        available: false,
+        error: `Missing required packages: ${missing.join(', ')}. Install with: pip install ${installCmd}`,
+        missing,
+        details: missingOptional.length > 0
+          ? `Optional (for 4-bit QLoRA): ${missingOptional.join(', ')}. Install with: pip install bitsandbytes`
+          : undefined,
+      }
+    }
+
+    // Check PyTorch GPU support
+    let gpuNote = ''
+    const gpuCheck = await runCommand(
+      `${this.pythonCmd} -c "import torch; print('cuda' if torch.cuda.is_available() else 'mps' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() else 'cpu')"`
+    )
+    if (gpuCheck.ok && gpuCheck.stdout.trim() === 'cpu') {
+      gpuNote = 'PyTorch is CPU-only. Training will be slow. For GPU support, install PyTorch with CUDA/ROCm.'
+    }
+
+    return {
+      available: true,
+      details: missingOptional.length > 0
+        ? `Optional: ${missingOptional.join(', ')} not installed (4-bit QLoRA unavailable). Install with: pip install bitsandbytes`
+        : gpuNote || undefined,
     }
   }
 
@@ -50,14 +109,13 @@ export class PythonBackend implements FinetuneBackend {
       vramGB: 0,
       cudaCores: 0,
       cpuCores: require('os').cpus().length,
-      ramGB: Math.round(require('os').totalmem() / (1024 ** 3)),
+      ramGB: Math.round(require('os').totalmem() / BYTES_PER_GB),
       backendType: 'python_cpu',
       numGPUs: 0,
       isAMD: false,
     }
 
-    try {
-      const detectScript = `${this.pythonCmd} -c "
+    const detectScript = `${this.pythonCmd} -c "
 import torch, sys
 if not torch.cuda.is_available():
     sys.exit(0)
@@ -68,9 +126,11 @@ name = torch.cuda.get_device_name(0)
 mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
 hip_ver = torch.version.hip if has_hip else ''
 print(f'{name}|{mem:.0f}|{n}|{int(is_amd)}|{hip_ver}')
-" 2>&1`
-      const out = execSync(detectScript, { timeout: 15000, encoding: 'utf-8' })
-      const parts = out.trim().split('|')
+"`
+
+    const cudaResult = await runCommand(detectScript, 15000)
+    if (cudaResult.ok && cudaResult.stdout) {
+      const parts = cudaResult.stdout.split('|')
       if (parts[0] && parts[0] !== '') {
         spec.gpuAvailable = true
         spec.gpuName = parts[0]
@@ -80,21 +140,20 @@ print(f'{name}|{mem:.0f}|{n}|{int(is_amd)}|{hip_ver}')
         spec.rocmVersion = parts[4] || undefined
         spec.backendType = spec.isAMD ? 'python_rocm' : 'python_cuda'
       }
-    } catch {
-      try {
-        const out = execSync(
-          `${this.pythonCmd} -c "import torch; v='MPS' if torch.backends.mps.is_available() else ''; print(v)" 2>&1`,
-          { timeout: 10000, encoding: 'utf-8' }
-        )
-        if (out.trim() === 'MPS') {
-          spec.gpuAvailable = true
-          spec.gpuName = 'Apple Silicon (MPS)'
-          spec.vramGB = spec.ramGB
-          spec.numGPUs = 1
-          spec.isAMD = false
-          spec.backendType = 'python_mps'
-        }
-      } catch {}
+    } else {
+      // Fallback: check for MPS (Apple Silicon)
+      const mpsResult = await runCommand(
+        `${this.pythonCmd} -c "import torch; v='MPS' if torch.backends.mps.is_available() else ''; print(v)"`,
+        10000
+      )
+      if (mpsResult.ok && mpsResult.stdout.trim() === 'MPS') {
+        spec.gpuAvailable = true
+        spec.gpuName = 'Apple Silicon (MPS)'
+        spec.vramGB = spec.ramGB
+        spec.numGPUs = 1
+        spec.isAMD = false
+        spec.backendType = 'python_mps'
+      }
     }
 
     return spec
@@ -110,14 +169,12 @@ print(f'{name}|{mem:.0f}|{n}|{int(is_amd)}|{hip_ver}')
     }
   }
 
-  async startTraining(
+  private buildScriptArgs(
     options: FinetuneOptions,
-    onEvent: (event: TrainingEvent) => void
-  ): Promise<void> {
-    const scriptPath = path.join(this.scriptDir, 'finetune_qlora.py')
-
-    const merged = { ...DEFAULT_FINETUNE_OPTIONS, ...options }
-    const scriptArgs = [
+    merged: FinetuneOptions,
+    isAMD: boolean
+  ): string[] {
+    const args = [
       '--dataset', merged.datasetPath,
       '--output-dir', merged.outputDir || this.defaultOutputDir(options),
       '--quantization', merged.quantization,
@@ -132,69 +189,101 @@ print(f'{name}|{mem:.0f}|{n}|{int(is_amd)}|{hip_ver}')
       '--num-gpus', String(merged.numGPUs),
       '--hf-model', (merged as any).modelHfId || this.resolveModelRepo(merged.modelId),
     ]
+    if (merged.useUnsloth) args.push('--use-unsloth')
+    if (isAMD) args.push('--rocm')
+    return args
+  }
 
-    const isAMD = merged.isAMD
-
-    if (merged.useUnsloth) scriptArgs.push('--use-unsloth')
-    if (isAMD) scriptArgs.push('--rocm')
-
-    // Determine multi-GPU mode
+  private determineMultiGpuConfig(
+    merged: FinetuneOptions,
+    isAMD: boolean,
+    onEvent: (event: TrainingEvent) => void
+  ): { mode: string; flags: string[] } {
     const numGPUs = merged.numGPUs
-    const useDDP = merged.multiGPUMode === 'ddp' || (numGPUs > 1 && numGPUs < 8 && merged.multiGPUMode !== 'fsdp' && merged.multiGPUMode !== 'deepspeed')
-    const useFSDP = merged.multiGPUMode === 'fsdp' || (numGPUs >= 8 && merged.multiGPUMode !== 'deepspeed')
+    const useDDP = merged.multiGPUMode === 'ddp' ||
+      (numGPUs > 1 && numGPUs < DDP_MAX_GPUS && merged.multiGPUMode !== 'fsdp' && merged.multiGPUMode !== 'deepspeed')
+    const useFSDP = merged.multiGPUMode === 'fsdp' ||
+      (numGPUs >= DDP_MAX_GPUS && merged.multiGPUMode !== 'deepspeed')
     const useDeepSpeed = merged.multiGPUMode === 'deepspeed' && !isAMD
 
     if (isAMD && merged.multiGPUMode === 'deepspeed') {
       onEvent({ type: 'log', message: 'DeepSpeed is CUDA-only. Falling back to DDP for AMD ROCm.' })
     }
 
-    if (useDDP || useFSDP || useDeepSpeed) {
-      scriptArgs.push('--ddp')
+    const flags: string[] = []
+    if (useDDP || useFSDP || useDeepSpeed) flags.push('--ddp')
+    if (useFSDP) flags.push('--fsdp')
+    if (useDeepSpeed) flags.push('--deepspeed')
+
+    const mode = useFSDP ? 'FSDP' : useDeepSpeed ? 'DeepSpeed' : 'DDP'
+    return { mode, flags }
+  }
+
+  private buildCommandArgs(
+    scriptPath: string,
+    scriptArgs: string[],
+    gpuFlags: string[],
+    merged: FinetuneOptions,
+    isMultiGPU: boolean
+  ): { command: string; commandArgs: string[] } {
+    const args = [...scriptArgs, ...gpuFlags]
+    if (!isMultiGPU) {
+      return { command: this.pythonCmd, commandArgs: [scriptPath, ...args] }
     }
-    if (useFSDP) {
-      scriptArgs.push('--fsdp')
+    return {
+      command: 'torchrun',
+      commandArgs: [
+        '--nproc_per_node', String(merged.numGPUs),
+        '--nnodes', String(merged.nnodes || 1),
+        '--node_rank', String(merged.nodeRank || 0),
+        '--master_addr', merged.masterAddr || '127.0.0.1',
+        '--master_port', TORCHRUN_MASTER_PORT,
+        scriptPath,
+        ...args,
+      ],
     }
-    if (useDeepSpeed) {
-      scriptArgs.push('--deepspeed')
-    }
+  }
 
-    const isMultiGPU = numGPUs > 1
-
-    if (isMultiGPU) {
-      onEvent({
-        type: 'log',
-        message: `Starting multi-GPU training: ${numGPUs} GPU(s), mode=${useFSDP ? 'FSDP' : useDeepSpeed ? 'DeepSpeed' : 'DDP'}`,
-      })
-    }
-
-    const command = isMultiGPU ? 'torchrun' : this.pythonCmd
-    const commandArgs: string[] = isMultiGPU
-      ? [
-          '--nproc_per_node', String(numGPUs),
-          '--nnodes', String(merged.nnodes || 1),
-          '--node_rank', String(merged.nodeRank || 0),
-          '--master_addr', merged.masterAddr || '127.0.0.1',
-          '--master_port', '29500',
-          scriptPath,
-          ...scriptArgs,
-        ]
-      : [scriptPath, ...scriptArgs]
-
-    onEvent({ type: 'log', message: `Starting Python trainer: ${command} ${commandArgs.join(' ')}` })
-
+  private spawnAndMonitor(
+    command: string,
+    commandArgs: string[],
+    merged: FinetuneOptions,
+    options: FinetuneOptions,
+    onEvent: (event: TrainingEvent) => void
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.process = spawn(command, commandArgs, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
-      })
+      const hfToken = secureStore.getHuggingFaceToken();
+      const spawnEnv: NodeJS.ProcessEnv = { ...process.env, PYTHONUNBUFFERED: '1' };
+      if (hfToken) {
+        spawnEnv.HF_TOKEN = hfToken;
+      }
 
-      this.process.stdout?.on('data', (data: Buffer) => {
+      const lastOutputLines: string[] = [];
+      const collectOutput = (text: string) => {
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          lastOutputLines.push(line);
+          if (lastOutputLines.length > 50) {
+            lastOutputLines.shift();
+          }
+        }
+      };
+
+      const proc = spawn(command, commandArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: spawnEnv,
+      })
+      this.process = proc
+
+      proc.stdout?.on('data', (data: Buffer) => {
         const text = data.toString()
+        collectOutput(text)
         this.parsePythonOutput(text, onEvent)
       })
 
-      this.process.stderr?.on('data', (data: Buffer) => {
+      proc.stderr?.on('data', (data: Buffer) => {
         const text = data.toString()
+        collectOutput(text)
         if (text.includes('Error') || text.includes('Traceback')) {
           onEvent({ type: 'error', message: text })
         } else {
@@ -202,24 +291,68 @@ print(f'{name}|{mem:.0f}|{n}|{int(is_amd)}|{hip_ver}')
         }
       })
 
-      this.process.on('close', (code) => {
+      proc.on('close', (code) => {
         this.process = null
+        if (this.wasStoppedIntentionally) {
+          this.wasStoppedIntentionally = false
+          onEvent({ type: 'log', message: 'Training stopped by user.' })
+          resolve()
+          return
+        }
         if (code === 0) {
           const outputDir = merged.outputDir || this.defaultOutputDir(options)
           onEvent({ type: 'done', adapterPath: path.join(outputDir, 'adapter'), modelPath: outputDir })
           resolve()
         } else {
-          onEvent({ type: 'error', message: `Python trainer exited with code ${code}` })
-          reject(new Error(`Training failed: exit code ${code}`))
+          let errorDetails = `Python trainer exited with code ${code}`;
+          const errorLine = [...lastOutputLines].reverse().find(
+            line => line.includes('Error:') || line.includes('Exception:') || line.startsWith('Training failed:') || line.includes('Traceback')
+          );
+          if (errorLine) {
+            errorDetails = errorLine;
+          } else if (lastOutputLines.length > 0) {
+            const lastLine = lastOutputLines[lastOutputLines.length - 1];
+            if (lastLine && !lastLine.startsWith('LOSS:')) {
+              errorDetails = `${lastLine} (exit code ${code})`;
+            }
+          }
+
+          onEvent({ type: 'error', message: errorDetails })
+          reject(new Error(errorDetails))
         }
       })
 
-      this.process.on('error', (err) => {
+      proc.on('error', (err) => {
         this.process = null
         onEvent({ type: 'error', message: err.message })
         reject(err)
       })
     })
+  }
+
+  async startTraining(
+    options: FinetuneOptions,
+    onEvent: (event: TrainingEvent) => void
+  ): Promise<void> {
+    const scriptPath = path.join(this.scriptDir, 'finetune_qlora.py')
+    const merged = { ...DEFAULT_FINETUNE_OPTIONS, ...options }
+    const isAMD = merged.isAMD
+
+    const scriptArgs = this.buildScriptArgs(options, merged, isAMD)
+    const { flags: gpuFlags } = this.determineMultiGpuConfig(merged, isAMD, onEvent)
+
+    const isMultiGPU = merged.numGPUs > 1
+    if (isMultiGPU) {
+      onEvent({
+        type: 'log',
+        message: `Starting multi-GPU training: ${merged.numGPUs} GPU(s), mode=${gpuFlags.includes('--fsdp') ? 'FSDP' : gpuFlags.includes('--deepspeed') ? 'DeepSpeed' : 'DDP'}`,
+      })
+    }
+
+    const { command, commandArgs } = this.buildCommandArgs(scriptPath, scriptArgs, gpuFlags, merged, isMultiGPU)
+    onEvent({ type: 'log', message: `Starting Python trainer: ${command} ${commandArgs.join(' ')}` })
+
+    return this.spawnAndMonitor(command, commandArgs, merged, options, onEvent)
   }
 
   private parsePythonOutput(text: string, onEvent: (event: TrainingEvent) => void): void {
@@ -254,13 +387,39 @@ print(f'{name}|{mem:.0f}|{n}|{int(is_amd)}|{hip_ver}')
   }
 
   async stopTraining(): Promise<void> {
-    if (this.process) {
-      this.process.kill('SIGTERM')
-      setTimeout(() => {
-        if (this.process) this.process.kill('SIGKILL')
-      }, 5000)
-      this.process = null
+    const proc = this.process
+    if (!proc) return
+
+    this.wasStoppedIntentionally = true
+
+    try {
+      if (process.platform === 'win32' && proc.pid) {
+        // On Windows, SIGTERM is unreliable. Use taskkill to force kill the process tree.
+        try {
+          execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: 'pipe', timeout: STOP_TIMEOUT_MS })
+        } catch {
+          // If taskkill fails, try direct kill
+          try { proc.kill('SIGKILL') } catch {}
+        }
+      } else {
+        proc.kill('SIGTERM')
+        // Fallback: SIGKILL after 5 seconds if process is still alive
+        await new Promise<void>((resolve) => {
+          const killTimer = setTimeout(() => {
+            try { proc.kill('SIGKILL') } catch {}
+            resolve()
+          }, 5000)
+          proc.once('exit', () => {
+            clearTimeout(killTimer)
+            resolve()
+          })
+        })
+      }
+    } catch {
+      // Process may already be dead
     }
+
+    this.process = null
   }
 
   getModelPath(options: FinetuneOptions): string {
@@ -268,6 +427,12 @@ print(f'{name}|{mem:.0f}|{n}|{int(is_amd)}|{hip_ver}')
   }
 
   private defaultOutputDir(options: FinetuneOptions): string {
+    try {
+      const { app } = require('electron')
+      if (app.isPackaged) {
+        return path.join(app.getPath('documents'), 'SmartCursorX', 'finetuned', options.modelId)
+      }
+    } catch {}
     return path.join(process.cwd(), 'finetuned', options.modelId)
   }
 

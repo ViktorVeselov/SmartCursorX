@@ -86,3 +86,6 @@ scratch/
 # Local fine-tuning datasets
 data-set/
 
+# llama.cpp binaries (downloaded via npm run fetch:llama)
+resources/
+

@@ -181,3 +181,15 @@ export interface ModelPerformanceRow {
     output_tokens: number;
     created_at: string;
 }
+
+export interface FineTunedModelRow {
+    id: string;
+    name: string;
+    baseModelId: string;
+    baseModelHfRepo: string;
+    adapterPath: string;
+    backend: 'llamacpp' | 'python';
+    quantization: '4bit' | '8bit' | '16bit';
+    tags: string;
+    createdAt: string;
+}

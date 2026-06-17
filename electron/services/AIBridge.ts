@@ -4,6 +4,10 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { LanguageModel, EmbeddingModel, embed } from 'ai';
 import { secureStore } from '../secureStore';
 import { dbService } from '../db';
+import { LocalModelService } from './LocalModelService';
+import * as fs from 'fs';
+import * as path from 'path';
+import { app } from 'electron';
 
 class AIBridge {
   private static instance: AIBridge;
@@ -51,7 +55,14 @@ class AIBridge {
           name: 'openrouter',
           baseURL: 'https://openrouter.ai/api/v1',
           apiKey: apiKey,
+          headers: {
+            'HTTP-Referer': 'https://github.com/anomalyco/opencode',
+            'X-Title': 'SmartCursor-X',
+          },
         }).languageModel(modelId) as unknown as LanguageModel;
+      }
+      case 'finetuned': {
+        return this.getFineTunedLanguageModel(modelId);
       }
       default: {
         if (providerConfig) {
@@ -67,6 +78,65 @@ class AIBridge {
     }
   }
 
+  public getFineTunedLanguageModel(modelId: string): LanguageModel {
+    const model = dbService.getFineTunedModel(modelId);
+    if (!model) {
+      throw new Error(`Fine-tuned model not found: ${modelId}`);
+    }
+
+    if (model.backend === 'llamacpp') {
+      // For llama.cpp, we need to use the base GGUF model with LoRA adapter
+      // This requires llama-cpp-python or llama.cpp server with --lora flag
+      // For now, we'll use a local llama.cpp compatible endpoint
+      const baseModelPath = this.resolveBaseModelPath(model.baseModelHfRepo);
+      const adapterPath = model.adapterPath;
+
+      if (!fs.existsSync(baseModelPath)) {
+        throw new Error(`Base model not found: ${baseModelPath}. Please download the base model first.`);
+      }
+      if (!fs.existsSync(adapterPath)) {
+        throw new Error(`Adapter not found: ${adapterPath}`);
+      }
+
+      // Use llama-cpp-python compatible endpoint (llama.cpp server)
+      // The server should be started with: llama-server -m <base_model> --lora <adapter>
+      return createOpenAICompatible({
+        name: `finetuned-${model.name}`,
+        baseURL: 'http://localhost:8080/v1', // Default llama.cpp server port
+        apiKey: 'not-needed',
+      }).languageModel('finetuned-model') as unknown as LanguageModel;
+    } else {
+      // For Python backend, we need a Python inference server
+      // This would be a separate process that loads the base model + PEFT adapter
+      return createOpenAICompatible({
+        name: `finetuned-${model.name}`,
+        baseURL: 'http://localhost:8081/v1', // Default Python inference server port
+        apiKey: 'not-needed',
+      }).languageModel('finetuned-model') as unknown as LanguageModel;
+    }
+  }
+
+  private resolveBaseModelPath(hfRepo: string): string {
+    const modelName = hfRepo.split('/').pop() || hfRepo;
+    const possiblePaths = [
+      path.join(app.getPath('userData'), 'models', modelName),
+      path.join(app.getPath('userData'), 'models', `${modelName}.gguf`),
+    ];
+
+    // Dev fallback: check cwd-based paths only when not packaged
+    if (!app.isPackaged) {
+      possiblePaths.unshift(
+        path.join(process.cwd(), 'models', modelName),
+        path.join(process.cwd(), 'models', `${modelName}.gguf`),
+      )
+    }
+
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) return p;
+    }
+    return possiblePaths[0];
+  }
+
   public async getEmbedding(provider: string, model: string, text: string): Promise<number[]> {
     const providerConfig = dbService.getCustomProviders().find((p: any) => p.id === provider);
 
@@ -77,6 +147,20 @@ class AIBridge {
         const apiKey = secureStore.getApiKey('openai');
         const params = apiKey ? { apiKey } : {};
         embeddingModel = createOpenAI(params).embeddingModel(model);
+        break;
+      }
+      case 'openrouter': {
+        const apiKey = secureStore.getApiKey('openrouter') || '';
+        const targetModel = model === 'text-embedding-3-small' ? 'openai/text-embedding-3-small' : model;
+        embeddingModel = createOpenAICompatible({
+          name: 'openrouter',
+          baseURL: 'https://openrouter.ai/api/v1',
+          apiKey: apiKey,
+          headers: {
+            'HTTP-Referer': 'https://github.com/anomalyco/opencode',
+            'X-Title': 'SmartCursor-X',
+          },
+        }).embeddingModel(targetModel);
         break;
       }
       case 'gemini': {
@@ -145,9 +229,18 @@ class AIBridge {
         return this.fetchOpenRouterModels();
       case 'ollama':
         return this.fetchOllamaModels();
+      case 'finetuned':
+        return this.fetchFineTunedModels();
+      case 'local':
+        return LocalModelService.getInstance().listModels().map(m => m.name);
       default:
         return ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
     }
+  }
+
+  private fetchFineTunedModels(): string[] {
+    const models = dbService.getFineTunedModels();
+    return models.map((m: any) => m.id);
   }
 
   private async fetchOpenAIModels(): Promise<string[]> {

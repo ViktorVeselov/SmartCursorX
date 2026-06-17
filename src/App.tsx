@@ -292,6 +292,25 @@ function App() {
 
   const [editorTargetLine, setEditorTargetLine] = useState<{ line: number; timestamp: number } | null>(null);
   const [symbolSearchQuery, setSymbolSearchQuery] = useState('');
+  const [runningLocalModel, setRunningLocalModel] = useState<string | null>(null);
+
+  useEffect(() => {
+    const checkLocalStatus = async () => {
+      try {
+        const status = await window.ipcRenderer.invoke('local:server-status');
+        if (status && status.running) {
+          setRunningLocalModel(status.model);
+        } else {
+          setRunningLocalModel(null);
+        }
+      } catch (err) {
+        console.error('Failed to get local server status in App:', err);
+      }
+    };
+    checkLocalStatus();
+    const interval = setInterval(checkLocalStatus, 5000);
+    return () => clearInterval(interval);
+  }, [settingsSavedTrigger]);
 
   // Derived active file
   const activeFile = files.find(f => f.path === activeFilePath) || files[0];
@@ -664,7 +683,7 @@ function App() {
           )}
         </div>
 
-        <StatusBar vimEnabled={vimEnabled} />
+        <StatusBar vimEnabled={vimEnabled} runningLocalModel={runningLocalModel} />
       </div>
 
       <NewFileDialog

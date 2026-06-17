@@ -64,6 +64,20 @@ export function createLanguageModel(config: ProviderConfig, modelId: string): La
         name: 'openrouter',
         baseURL: 'https://openrouter.ai/api/v1',
         apiKey: config.apiKey,
+        headers: {
+          'HTTP-Referer': 'https://github.com/anomalyco/opencode',
+          'X-Title': 'SmartCursor-X',
+        },
+      }).languageModel(modelId) as unknown as LanguageModel;
+    case 'finetuned':
+      // Fine-tuned models require special handling (adapter loading)
+      // This is handled in AIBridge.getFineTunedLanguageModel()
+      throw new Error('finetuned provider requires AIBridge.getFineTunedLanguageModel()');
+    case 'local':
+      return createOpenAICompatible({
+        name: 'local',
+        baseURL: config.baseUrl || 'http://localhost:8080/v1',
+        apiKey: 'not-needed',
       }).languageModel(modelId) as unknown as LanguageModel;
     default:
       return createOpenAICompatible({

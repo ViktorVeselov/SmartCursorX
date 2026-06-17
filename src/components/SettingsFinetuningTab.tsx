@@ -106,6 +106,16 @@ function hardwareStatus(hw: HardwareSpec | null): { level: 'ok' | 'limited' | 'u
   return { level: 'unknown', label: 'Not detected', tip: 'Will attempt CPU-only training. Expect slow speeds.' };
 }
 
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return 'calculating...';
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
 const styles: Record<string, React.CSSProperties> = {
   container: { display: 'flex', flexDirection: 'column', gap: 16, height: '100%', overflow: 'auto' },
   section: { background: 'var(--bg-tertiary)', borderRadius: 'var(--radius-md)', padding: 16, border: '1px solid var(--border-subtle)' },
@@ -127,7 +137,12 @@ const styles: Record<string, React.CSSProperties> = {
   tooltip: { fontSize: 10, color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 2 },
 };
 
-export function SettingsFinetuningTab() {
+interface SettingsFinetuningTabProps {
+  huggingfaceToken: string;
+  setHuggingfaceToken: (v: string) => void;
+}
+
+export function SettingsFinetuningTab({ huggingfaceToken, setHuggingfaceToken }: SettingsFinetuningTabProps) {
   const [hardware, setHardware] = useState<HardwareSpec | null>(null);
   const [models, setModels] = useState<FinetuneModel[]>([]);
   const [selectedModel, setSelectedModel] = useState('qwen2.5-coder-7b');
@@ -159,14 +174,50 @@ export function SettingsFinetuningTab() {
   const [nnodes, setNnodes] = useState(1);
   const [nodeRank, setNodeRank] = useState(0);
   const [masterAddr, setMasterAddr] = useState('127.0.0.1');
+  const [refreshingHardware, setRefreshingHardware] = useState(false);
+  const [missingPackages, setMissingPackages] = useState<string[]>([]);
+  const [installingDeps, setInstallingDeps] = useState(false);
+  const [packageCheckDetails, setPackageCheckDetails] = useState<string | null>(null);
 
   const hwStatus = hardwareStatus(hardware);
   const selectedModelDef = models.find(m => m.id === selectedModel);
   const isTraining = status === 'training';
 
+  const checkPackageStatus = async () => {
+    try {
+      const status = await getIpc().invoke('finetune:check-packages');
+      if (!status.available) {
+        setMissingPackages(status.missing || []);
+        setPackageCheckDetails(status.error || status.details || null);
+      } else {
+        setMissingPackages([]);
+        setPackageCheckDetails(status.details || null);
+      }
+    } catch (err: any) {
+      console.error('Failed to check packages:', err);
+    }
+  };
+
+  const handleInstallDeps = async () => {
+    setInstallingDeps(true);
+    setLogs([]);
+    setLogs(prev => [...prev, 'Starting dependency installer...']);
+    try {
+      await getIpc().invoke('finetune:install-dependencies');
+      setLogs(prev => [...prev, 'Dependency installation finished successfully!']);
+      await checkPackageStatus();
+    } catch (err: any) {
+      setLogs(prev => [...prev, `ERROR installing dependencies: ${err.message}`]);
+    }
+    setInstallingDeps(false);
+  };
+
   useEffect(() => {
-    getIpc().invoke('finetune:get-models').then(setModels).catch(() => {});
+    getIpc().invoke('finetune:get-models').then(setModels).catch((err: any) => {
+      setLogs(prev => [...prev, `ERROR: Failed to load models: ${err.message}`]);
+    });
     initHardware();
+    checkPackageStatus();
     // Auto-load the built-in dataset
     getIpc().invoke('finetune:get-builtin-dataset').then((info: any) => {
       if (info) {
@@ -175,7 +226,9 @@ export function SettingsFinetuningTab() {
         setLogs(prev => [...prev, `Built-in dataset loaded: ${info.name}`]);
         setStatus('ready');
       }
-    }).catch(() => {});
+    }).catch((err: any) => {
+      setLogs(prev => [...prev, `ERROR: Failed to load built-in dataset: ${err.message}`]);
+    });
     const listener = (_: any, event: TrainingEvent) => {
       if (event.type === 'progress' && event.data) {
         setProgress(event.data);
@@ -219,22 +272,38 @@ export function SettingsFinetuningTab() {
       const hw = await getIpc().invoke('finetune:detect-hardware');
       setHardware(hw);
       if (hw.numGPUs > 0) setGpusToUse(hw.numGPUs);
-      const rec = await getIpc().invoke('finetune:get-recommendation');
+      const rec = await getIpc().invoke('finetune:get-recommendation', hw);
       setRecommendation(rec);
-      if (rec) {
-        setSelectedModel(rec.model);
-        setQuantization(rec.quantization);
-        setBackend(rec.backend);
+      if (rec?.primary) {
+        setSelectedModel(rec.primary.model);
+        setQuantization(rec.primary.quantization);
+        setBackend(rec.primary.backend);
       }
-    } catch {}
+      await checkPackageStatus();
+    } catch (err: any) {
+      setLogs(prev => [...prev, `ERROR: Hardware detection failed: ${err.message || 'Unknown error'}`]);
+    }
   };
 
-  const applyRecommendation = () => {
-    if (recommendation) {
-      setSelectedModel(recommendation.model);
-      setQuantization(recommendation.quantization);
-      setBackend(recommendation.backend);
+  const refreshHardware = async () => {
+    setRefreshingHardware(true);
+    try {
+      const hw = await getIpc().invoke('finetune:refresh-hardware');
+      setHardware(hw);
+      if (hw.numGPUs > 0) setGpusToUse(hw.numGPUs);
+      const rec = await getIpc().invoke('finetune:get-recommendation', hw);
+      setRecommendation(rec);
+      if (rec?.primary) {
+        setSelectedModel(rec.primary.model);
+        setQuantization(rec.primary.quantization);
+        setBackend(rec.primary.backend);
+      }
+      await checkPackageStatus();
+      setLogs(prev => [...prev, 'Hardware detection refreshed']);
+    } catch (err: any) {
+      setLogs(prev => [...prev, `ERROR refreshing hardware: ${err.message}`]);
     }
+    setRefreshingHardware(false);
   };
 
   const toggleTaskType = (t: string) => {
@@ -310,13 +379,11 @@ export function SettingsFinetuningTab() {
   const handleStart = async () => {
     setLogs([]);
     setProgress(null);
-    setStatus('training');
     try {
       const modelHfId = useCustomModel
         ? customModelId.trim()
         : (selectedModelDef?.hfRepo || selectedModel);
       if (!modelHfId) {
-        setStatus('error');
         setLogs(prev => [...prev, 'ERROR: No model specified. Select a model or enter a HuggingFace ID.']);
         return;
       }
@@ -341,7 +408,9 @@ export function SettingsFinetuningTab() {
         nodeRank,
         masterAddr,
         isAMD: hardware?.isAMD || false,
+        huggingfaceToken,
       };
+      setStatus('training');
       await getIpc().invoke('finetune:start', params);
     } catch (err: any) {
       setStatus('error');
@@ -350,13 +419,22 @@ export function SettingsFinetuningTab() {
   };
 
   const handleStop = async () => {
-    setStatus('stopping');
-    await getIpc().invoke('finetune:stop');
-    setStatus('idle');
+    try {
+      setStatus('stopping');
+      await getIpc().invoke('finetune:stop');
+      setStatus('idle');
+    } catch (err: any) {
+      setLogs(prev => [...prev, `ERROR: Failed to stop training: ${err.message}`]);
+      setStatus('error');
+    }
   };
 
   const handleReset = async () => {
-    await getIpc().invoke('finetune:reset');
+    try {
+      await getIpc().invoke('finetune:reset');
+    } catch (err: any) {
+      setLogs(prev => [...prev, `ERROR: Reset failed: ${err.message}`]);
+    }
     setStatus('idle');
     setProgress(null);
     setLogs([]);
@@ -372,9 +450,17 @@ export function SettingsFinetuningTab() {
       <div style={{ ...styles.section, borderLeft: `4px solid ${hwColor}` }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div style={styles.sectionTitle}>Hardware Compatibility</div>
-          {!hardware && (
+          {!hardware ? (
             <button style={{ ...styles.button, ...styles.secondaryButton, fontSize: 11 }} onClick={initHardware}>
               Detect Hardware
+            </button>
+          ) : (
+            <button
+              style={{ ...styles.button, ...styles.secondaryButton, fontSize: 10, padding: '2px 8px' }}
+              onClick={refreshHardware}
+              disabled={refreshingHardware}
+            >
+              {refreshingHardware ? 'Refreshing...' : 'Refresh'}
             </button>
           )}
         </div>
@@ -392,19 +478,131 @@ export function SettingsFinetuningTab() {
                 {hardware.vramGB > 0 ? `${hardware.vramGB} GB VRAM` : ''} · {hardware.ramGB} GB RAM · {hardware.cpuCores} cores
                 {hardware.numGPUs > 1 ? ` · ${hardware.numGPUs} GPUs` : ''}
               </span>
-              <button style={{ ...styles.button, ...styles.secondaryButton, fontSize: 10, padding: '2px 8px' }} onClick={initHardware}>
-                Refresh
-              </button>
+              {refreshingHardware && <span style={{ fontSize: 10, color: 'var(--accent-primary)' }}>Updating...</span>}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{hwStatus.tip}</div>
-            {recommendation && (
-              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, color: 'var(--accent-primary)', fontWeight: 500 }}>
-                  Recommended: {models.find(m => m.id === recommendation.model)?.name || recommendation.model} ({recommendation.quantization})
-                </span>
-                <button style={{ ...styles.button, ...styles.successButton, fontSize: 11, padding: '4px 12px' }}
-                  onClick={applyRecommendation}>
-                  Quick Start (Recommended)
+
+            {missingPackages.length > 0 && (
+              <div style={{ marginTop: 12, padding: 12, background: 'rgba(228, 68, 68, 0.1)', border: '1px solid #e44', borderRadius: 'var(--radius-sm)', fontSize: 12 }}>
+                <div style={{ fontWeight: 600, color: '#e44', marginBottom: 4 }}>
+                  Missing Python ML Dependencies: {missingPackages.join(', ')}
+                </div>
+                <div style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>
+                  To fine-tune models with the Python backend, you need these libraries installed. Click below to install them automatically.
+                </div>
+                <button
+                  style={{ ...styles.button, ...styles.dangerButton, fontSize: 11, padding: '4px 12px' }}
+                  onClick={handleInstallDeps}
+                  disabled={installingDeps}
+                >
+                  {installingDeps ? 'Installing Dependencies...' : 'One-Click Dependency Installer'}
+                </button>
+              </div>
+            )}
+
+            {missingPackages.length === 0 && packageCheckDetails && (
+              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                Note: {packageCheckDetails}
+              </div>
+            )}
+
+            {recommendation && recommendation.primary && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, color: 'var(--accent-primary)', fontWeight: 500 }}>
+                    Primary: {models.find(m => m.id === recommendation.primary.model)?.name || recommendation.primary.model} ({recommendation.primary.quantization})
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 400, marginLeft: 8 }}>({recommendation.primary.reason})</span>
+                  </span>
+                  <button style={{ ...styles.button, ...styles.successButton, fontSize: 11, padding: '4px 12px' }}
+                    onClick={() => {
+                      setSelectedModel(recommendation.primary.model);
+                      setQuantization(recommendation.primary.quantization);
+                      setBackend(recommendation.primary.backend);
+                    }}>
+                    Use Primary
+                  </button>
+                  <button
+                    style={{ ...styles.button, ...styles.secondaryButton, fontSize: 11, padding: '4px 12px' }}
+                    onClick={() => {
+                      // Switch to fine-tuned models tab
+                      const tabElement = document.querySelector('[data-tab="fine-tuned-models"]');
+                      if (tabElement) {
+                        tabElement.scrollIntoView({ behavior: 'smooth' });
+                      }
+                    }}
+                  >
+                    Register for Inference
+                  </button>
+                </div>
+
+                {/* Language-specific alternatives */}
+                {(() => {
+                  const alt = recommendation.alternatives;
+                  const sections = [];
+                  if (alt.python && alt.python.length > 0) {
+                    sections.push(
+                      <div key="python" style={{ marginTop: 8 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>Python</div>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          {alt.python.map((a: any) => (
+                            <button key={a.model} style={{ ...styles.button, ...styles.secondaryButton, fontSize: 10, padding: '3px 10px' }}
+                              onClick={() => { setSelectedModel(a.model); setQuantization(a.quantization); setBackend(a.backend); }}>
+                            {models.find(m => m.id === a.model)?.name || a.model} ({a.quantization}, ~{a.vramGB}GB)
+                          </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  if (alt.javascript && alt.javascript.length > 0) {
+                    sections.push(
+                      <div key="javascript" style={{ marginTop: 8 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>JavaScript / TypeScript</div>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          {alt.javascript.map((a: any) => (
+                            <button key={a.model} style={{ ...styles.button, ...styles.secondaryButton, fontSize: 10, padding: '3px 10px' }}
+                              onClick={() => { setSelectedModel(a.model); setQuantization(a.quantization); setBackend(a.backend); }}>
+                            {models.find(m => m.id === a.model)?.name || a.model} ({a.quantization}, ~{a.vramGB}GB)
+                          </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  if (alt.general && alt.general.length > 0) {
+                    sections.push(
+                      <div key="general" style={{ marginTop: 8 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>General</div>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          {alt.general.map((a: any) => (
+                            <button key={a.model} style={{ ...styles.button, ...styles.secondaryButton, fontSize: 10, padding: '3px 10px' }}
+                              onClick={() => { setSelectedModel(a.model); setQuantization(a.quantization); setBackend(a.backend); }}>
+                            {models.find(m => m.id === a.model)?.name || a.model} ({a.quantization}, ~{a.vramGB}GB)
+                          </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return sections;
+                })()}
+              </div>
+            )}
+
+            {/* Register for Inference Button - always visible when hardware is detected */}
+            {hardware && (
+              <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center' }}>
+                <button
+                  style={{ ...styles.button, ...styles.secondaryButton, fontSize: 11, padding: '6px 16px' }}
+                  onClick={() => {
+                    // Scroll to fine-tuned models section
+                    const fineTunedSection = document.querySelector('[data-tab="fine-tuned-models"]');
+                    if (fineTunedSection) {
+                      fineTunedSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                  }}
+                >
+                  Register Fine-Tuned Model for Inference
                 </button>
               </div>
             )}
@@ -551,6 +749,35 @@ export function SettingsFinetuningTab() {
               </div>
             </div>
           )}
+
+          {/* Hugging Face Access Token */}
+          <div style={{ marginTop: 12, borderTop: '1px solid var(--border-subtle)', paddingTop: 12 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 6, fontWeight: 500 }}>
+              Hugging Face Access Token
+            </span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                type="password"
+                value={huggingfaceToken}
+                onChange={e => setHuggingfaceToken(e.target.value)}
+                placeholder="hf_..."
+                style={{ ...styles.input, flex: 1, width: 'auto', fontSize: 12 }}
+                disabled={isTraining}
+              />
+              <button
+                type="button"
+                onClick={() => setHuggingfaceToken('')}
+                title="Clear Token"
+                style={{ ...styles.button, ...styles.secondaryButton, padding: '4px 10px' }}
+                disabled={isTraining}
+              >
+                Clear
+              </button>
+            </div>
+            <div style={{ ...styles.tooltip, marginTop: 4 }}>
+              Required for gated/private models (e.g. CodeGemma) on Hugging Face.
+            </div>
+          </div>
         </div>
 
         <div style={{ ...styles.section, flex: 1 }}>
@@ -732,7 +959,7 @@ export function SettingsFinetuningTab() {
 
       {/* ===== ACTIONS ===== */}
       <div style={styles.row}>
-        {status === 'ready' || status === 'idle' ? (
+        {status === 'ready' || status === 'idle' || status === 'error' || status === 'done' ? (
           <button style={{ ...styles.button, ...styles.primaryButton }}
             onClick={handleStart} disabled={!manifest || isTraining}>
             Start Training
@@ -748,6 +975,25 @@ export function SettingsFinetuningTab() {
             Reset
           </button>
         )}
+        {status === 'error' && (
+          <span style={{ color: '#e44', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+            ⚠️ Training failed. Check logs below.
+          </span>
+        )}
+        {status === 'done' && (
+          <button
+            style={{ ...styles.button, ...styles.successButton, fontSize: 11, padding: '4px 12px' }}
+            onClick={() => {
+              // Switch to fine-tuned models tab
+              const fineTunedSection = document.querySelector('[data-tab="fine-tuned-models"]');
+              if (fineTunedSection) {
+                fineTunedSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            }}
+          >
+            Register for Inference
+          </button>
+        )}
       </div>
 
       {/* ===== PROGRESS ===== */}
@@ -759,6 +1005,11 @@ export function SettingsFinetuningTab() {
             {' · '}Loss: {progress.loss.toFixed(4)}
             {' · '}LR: {progress.learningRate.toExponential(2)}
             {' · '}Tokens/s: {progress.tokensPerSecond.toFixed(0)}
+            {progress.estimatedTotalSeconds > 0 && progress.elapsedSeconds > 0 && (
+              <span style={{ marginLeft: 12, color: 'var(--accent-primary)' }}>
+                ETA: {formatDuration(progress.estimatedTotalSeconds - progress.elapsedSeconds)}
+              </span>
+            )}
           </div>
           <div style={styles.progressBar}>
             <div style={{

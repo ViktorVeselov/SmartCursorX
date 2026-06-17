@@ -123,6 +123,82 @@ export const TOP_CODING_MODELS: FinetuneModel[] = [
     benchmarks: { humaneval: 61, liveCodeBench: 28 },
     knownIssues: ['Limited third-party validation; fewer community fine-tunes available'],
   },
+  {
+    id: 'qwen2.5-coder-1.5b',
+    name: 'Qwen 2.5 Coder 1.5B',
+    description: 'Ultra-light Python/JS coder. Fits on 4GB VRAM with 4-bit. Strong for its size.',
+    hfRepo: 'Qwen/Qwen2.5-Coder-1.5B-Instruct',
+    parameterSize: '1.5B',
+    archParams: { numParams: 1.5e9, hiddenSize: 1536, numLayers: 28, numHeads: 12 },
+    recommendedVRAM: computeRecommendedVRAM(
+      { numParams: 1.5e9, hiddenSize: 1536, numLayers: 28, numHeads: 12 },
+      defaultVramOpts
+    ),
+    defaultQuantization: '4bit',
+    contextWindow: 32768,
+    tags: ['python', 'javascript', 'rust'],
+    rank: 6,
+    tier: 'verified',
+    benchmarks: { humaneval: 58, liveCodeBench: 42 },
+    knownIssues: ['Limited capacity for complex multi-file tasks'],
+  },
+  {
+    id: 'deepseek-coder-1.3b',
+    name: 'DeepSeek Coder 1.3B',
+    description: 'Tiny but strong for JavaScript/TypeScript (28.46% win rate). Excellent repo-level FIM.',
+    hfRepo: 'deepseek-ai/deepseek-coder-1.3b-instruct',
+    parameterSize: '1.3B',
+    archParams: { numParams: 1.3e9, hiddenSize: 1536, numLayers: 24, numHeads: 12 },
+    recommendedVRAM: computeRecommendedVRAM(
+      { numParams: 1.3e9, hiddenSize: 1536, numLayers: 24, numHeads: 12 },
+      defaultVramOpts
+    ),
+    defaultQuantization: '4bit',
+    contextWindow: 16384,
+    tags: ['javascript', 'typescript', 'python', 'fim'],
+    rank: 7,
+    tier: 'verified',
+    benchmarks: { humaneval: 45, liveCodeBench: 38 },
+    knownIssues: ['Very small model; limited reasoning capacity'],
+  },
+  {
+    id: 'stable-code-3b',
+    name: 'Stable Code 3B',
+    description: 'Stability AI — best JavaScript/TypeScript win rate (31.64%). Strong at code completion.',
+    hfRepo: 'stabilityai/stable-code-3b',
+    parameterSize: '3B',
+    archParams: { numParams: 2.7e9, hiddenSize: 2560, numLayers: 32, numHeads: 20 },
+    recommendedVRAM: computeRecommendedVRAM(
+      { numParams: 2.7e9, hiddenSize: 2560, numLayers: 32, numHeads: 20 },
+      defaultVramOpts
+    ),
+    defaultQuantization: '4bit',
+    contextWindow: 16384,
+    tags: ['javascript', 'typescript', 'python', 'completion'],
+    rank: 8,
+    tier: 'community',
+    benchmarks: { humaneval: 52, liveCodeBench: 40 },
+    knownIssues: ['Base model fine-tuned; less instruction-following than Instruct variants'],
+  },
+  {
+    id: 'codegemma-1.1b',
+    name: 'CodeGemma 1.1B',
+    description: 'Google — smallest viable code model. Runs on 3GB VRAM with 4-bit. Good for simple tasks.',
+    hfRepo: 'google/codegemma-1.1b-it',
+    parameterSize: '1.1B',
+    archParams: { numParams: 1.1e9, hiddenSize: 1280, numLayers: 24, numHeads: 10 },
+    recommendedVRAM: computeRecommendedVRAM(
+      { numParams: 1.1e9, hiddenSize: 1280, numLayers: 24, numHeads: 10 },
+      defaultVramOpts
+    ),
+    defaultQuantization: '4bit',
+    contextWindow: 8192,
+    tags: ['python', 'javascript', 'general'],
+    rank: 9,
+    tier: 'experimental',
+    benchmarks: { humaneval: 38, liveCodeBench: 30 },
+    knownIssues: ['Minimal capacity; only for basic completion/explanation'],
+  },
 ]
 
 export const QUANTIZATION_OPTIONS = [

@@ -383,23 +383,35 @@ export function extractExecutionPlanFromText(text: string): { plan: Record<strin
 export function buildPlanDisplayMessage(
     taskId: number | null | undefined,
     plan?: Record<string, unknown> | null,
-    alreadyHasPlanLink = false
+    alreadyHasPlanLink = false,
+    isPlanMode = false
 ): string {
     const stepsCount = Array.isArray(plan?.steps) ? plan!.steps.length : 0;
-    const hasDesignContent = !!(
-        (typeof plan?.designDoc === 'string' && plan.designDoc.trim()) ||
-        (Array.isArray(plan?.tradeoffs) && plan.tradeoffs.length > 0) ||
-        (Array.isArray(plan?.consequences) && plan.consequences.length > 0) ||
-        (Array.isArray(plan?.classDependencies) && plan.classDependencies.length > 0)
-    );
 
     let message: string;
-    if (stepsCount > 0) {
-        message = `**Roadmap & Design Specifications** generated in [Design Doc (implementation_plan.md)](file:///implementation_plan.md) successfully. Inspect the detailed plan in the tabs above.`;
-    } else if (hasDesignContent) {
-        message = '**Design specifications** saved to the plan editor. Inspect the Design Doc and Code Planning tabs above.';
+    if (isPlanMode) {
+        const hasDesignContent = !!(
+            (typeof plan?.designDoc === 'string' && plan.designDoc.trim()) ||
+            (Array.isArray(plan?.tradeoffs) && plan.tradeoffs.length > 0) ||
+            (Array.isArray(plan?.consequences) && plan.consequences.length > 0) ||
+            (Array.isArray(plan?.classDependencies) && plan.classDependencies.length > 0)
+        );
+        if (stepsCount > 0) {
+            message = `**Roadmap & Design Specifications** generated in [Design Doc (implementation_plan.md)](file:///implementation_plan.md) successfully. Inspect the detailed plan in the tabs above.`;
+        } else if (hasDesignContent) {
+            message = '**Design specifications** saved to the plan editor. Inspect the Design Doc and Code Planning tabs above.';
+        } else {
+            message = `**Roadmap & Design Specifications** generated in [Design Doc (implementation_plan.md)](file:///implementation_plan.md) successfully. Inspect the detailed plan in the tabs above.`;
+        }
     } else {
-        message = `**Roadmap & Design Specifications** generated in [Design Doc (implementation_plan.md)](file:///implementation_plan.md) successfully. Inspect the detailed plan in the tabs above.`;
+        if (stepsCount > 0) {
+            const steps = plan!.steps as Array<{ action?: string; target?: string }>;
+            const summary = steps.slice(0, 3).map(s => `- ${s.action || 'step'}: ${s.target || ''}`).join('\n');
+            message = `**Plan generated** with ${stepsCount} step${stepsCount > 1 ? 's' : ''}.\n${summary}${stepsCount > 3 ? `\n- +${stepsCount - 3} more` : ''}\n\n[Click to Open Interactive Plan](plan://${taskId})`;
+        } else {
+            message = `**Plan generated**.\n\n[Click to Open Interactive Plan](plan://${taskId})`;
+        }
+        return message;
     }
 
     const planSuffix = taskId && !alreadyHasPlanLink ? `\n\n[Click to Open Interactive Plan](plan://${taskId})` : '';
