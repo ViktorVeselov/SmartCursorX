@@ -24,6 +24,7 @@ export interface IpcHandlerContext {
     native: any;
     ptyProcesses: Map<string, IPty>;
     activeStreamAborted: boolean;
+    activeAbortController?: AbortController | null;
     workspacePath: string;
 }
 

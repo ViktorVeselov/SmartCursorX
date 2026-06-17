@@ -210,10 +210,12 @@ export function parseAssistantResponse(
             planSteps: (parsedPlan.steps as ArchitecturalThinkingStep[]) || activity?.planSteps || []
         };
 
-        const summaryMessage = buildPlanDisplayMessage(taskId, parsedPlan, alreadyHasPlanLink);
+        const summaryMessage = buildPlanDisplayMessage(taskId, parsedPlan, alreadyHasPlanLink, isPlanMode);
         const textBeforeJson = jsonStartIndex >= 0 ? cleanContent.substring(0, jsonStartIndex).trim() : '';
 
-        let draftMsg = `**Roadmap & Design Specifications** are being drafted in [Design Doc (implementation_plan.md)](file:///implementation_plan.md)...`;
+        let draftMsg = isPlanMode
+            ? `**Roadmap & Design Specifications** are being drafted in [Design Doc (implementation_plan.md)](file:///implementation_plan.md)...`
+            : `**Planning...**`;
         const expectedOutcome = typeof parsedPlan.expectedOutcome === 'string' ? parsedPlan.expectedOutcome : '';
         if (expectedOutcome && expectedOutcome !== 'Planning...') {
             draftMsg += `\n\n**Expected Outcome:** ${expectedOutcome}`;
@@ -227,10 +229,12 @@ export function parseAssistantResponse(
     } else if (jsonStartIndex !== -1) {
         const textBeforeJson = cleanContent.substring(0, jsonStartIndex).trim();
         if (isStreaming) {
-            const draftMsg = `**Roadmap & Design Specifications** are being drafted in [Design Doc (implementation_plan.md)](file:///implementation_plan.md)...`;
+            const draftMsg = isPlanMode
+                ? `**Roadmap & Design Specifications** are being drafted in [Design Doc (implementation_plan.md)](file:///implementation_plan.md)...`
+                : `**Planning...**`;
             cleanContent = textBeforeJson.length > 0 ? `${textBeforeJson}\n\n${draftMsg}` : draftMsg;
         } else if (activity?.planSteps && activity.planSteps.length > 0) {
-            const summaryMessage = buildPlanDisplayMessage(taskId, null, alreadyHasPlanLink);
+            const summaryMessage = buildPlanDisplayMessage(taskId, null, alreadyHasPlanLink, isPlanMode);
             cleanContent = textBeforeJson.length > 0 ? `${textBeforeJson}\n\n${summaryMessage}` : summaryMessage;
         } else {
             cleanContent = textBeforeJson;

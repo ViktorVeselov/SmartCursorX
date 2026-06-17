@@ -3,6 +3,8 @@ import { SettingsEnterpriseCredentials } from './SettingsEnterpriseCredentials';
 import { SettingsLiteLLMConfig } from './SettingsLiteLLMConfig';
 import { SettingsModelRegistration } from './SettingsModelRegistration';
 import { SettingsAvailableModels } from './SettingsAvailableModels';
+import { SettingsFineTunedModels } from './SettingsFineTunedModels';
+
 
 interface SettingsModelsTabProps {
     modelProvider: string;
@@ -74,6 +76,8 @@ interface SettingsModelsTabProps {
     setLiteLLMModel: (v: string) => void;
     liteLLMPort: number;
     setLiteLLMPort: (v: number) => void;
+    fineTunedModels: any[];
+    setFineTunedModels: (v: any[]) => void;
 }
 
 export function SettingsModelsTab(props: SettingsModelsTabProps) {
@@ -111,6 +115,7 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
         liteLLMModel, setLiteLLMModel,
         liteLLMPort, setLiteLLMPort,
         isProxyRunning,
+        fineTunedModels, setFineTunedModels,
     } = props;
 
     return (
@@ -138,6 +143,7 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                                 <option value="openrouter">OpenRouter (Free Models)</option>
                                 <option value="litellm">LiteLLM (Local Proxy)</option>
                                 <option value="ollama">Ollama (Local)</option>
+                                <option value="local">Local Models (Experimental)</option>
                                 <option value="zen">OpenCode Zen — Free Models</option>
                                 {customProviders.length > 0 && (
                                     <option disabled style={{ color: 'var(--text-secondary)', fontSize: 10 }}>───────────────────</option>
@@ -179,50 +185,79 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                     </div>
 
                     {/* Unified Dynamic API Key Configuration */}
-                    {modelProvider !== 'ollama' && modelProvider !== 'zen' && (
+                    {modelProvider !== 'ollama' && modelProvider !== 'zen' && modelProvider !== 'local' && (
                         <div style={{ marginBottom: 0 }}>
                             <label style={{ display: 'block', marginBottom: 4, fontSize: 10, fontWeight: 500, color: 'var(--text-secondary)' }}>
                                 API Key
                             </label>
-                            <input
-                                type="password"
-                                value={
-                                    modelProvider === 'openai'
-                                        ? openAIKey
-                                        : modelProvider === 'anthropic'
-                                        ? anthropicKey
-                                        : modelProvider === 'gemini'
-                                        ? geminiKey
-                                        : modelProvider === 'openrouter'
-                                        ? openrouterKey
-                                        : modelProvider === 'litellm'
-                                        ? liteLLMKey
-                                        : customApiKey
-                                }
-                                onChange={e => {
-                                    const val = e.target.value;
-                                    if (modelProvider === 'openai') setOpenAIKey(val);
-                                    else if (modelProvider === 'anthropic') setAnthropicKey(val);
-                                    else if (modelProvider === 'gemini') setGeminiKey(val);
-                                    else if (modelProvider === 'openrouter') setOpenrouterKey(val);
-                                    else if (modelProvider === 'litellm') setLiteLLMKey(val);
-                                    else setCustomApiKey(val);
-                                }}
-                                placeholder={
-                                    modelProvider === 'openai'
-                                        ? 'sk-...'
-                                        : modelProvider === 'anthropic'
-                                        ? 'sk-ant-...'
-                                        : modelProvider === 'gemini'
-                                        ? 'AIzaSy...'
-                                        : modelProvider === 'openrouter'
-                                        ? 'sk-or-v1-...'
-                                        : modelProvider === 'litellm'
-                                        ? 'Enter LiteLLM proxy API key (Optional)'
-                                        : 'Enter API key or token if required'
-                                }
-                                style={{ width: '100%', padding: '6px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', borderRadius: 'var(--radius-md)', outline: 'none', fontSize: 12, boxSizing: 'border-box' }}
-                            />
+                            <div style={{ display: 'flex', gap: 8 }}>
+                                <input
+                                    type="password"
+                                    value={
+                                        modelProvider === 'openai'
+                                            ? openAIKey
+                                            : modelProvider === 'anthropic'
+                                            ? anthropicKey
+                                            : modelProvider === 'gemini'
+                                            ? geminiKey
+                                            : modelProvider === 'openrouter'
+                                            ? openrouterKey
+                                            : modelProvider === 'litellm'
+                                            ? liteLLMKey
+                                            : customApiKey
+                                    }
+                                    onChange={e => {
+                                        const val = e.target.value;
+                                        if (modelProvider === 'openai') setOpenAIKey(val);
+                                        else if (modelProvider === 'anthropic') setAnthropicKey(val);
+                                        else if (modelProvider === 'gemini') setGeminiKey(val);
+                                        else if (modelProvider === 'openrouter') setOpenrouterKey(val);
+                                        else if (modelProvider === 'litellm') setLiteLLMKey(val);
+                                        else setCustomApiKey(val);
+                                    }}
+                                    placeholder={
+                                        modelProvider === 'openai'
+                                            ? 'sk-...'
+                                            : modelProvider === 'anthropic'
+                                            ? 'sk-ant-...'
+                                            : modelProvider === 'gemini'
+                                            ? 'AIzaSy...'
+                                            : modelProvider === 'openrouter'
+                                            ? 'sk-or-v1-...'
+                                            : modelProvider === 'litellm'
+                                            ? 'Enter LiteLLM proxy API key (Optional)'
+                                            : 'Enter API key or token if required'
+                                    }
+                                    style={{ flex: 1, padding: '6px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', borderRadius: 'var(--radius-md)', outline: 'none', fontSize: 12, boxSizing: 'border-box' }}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (modelProvider === 'openai') setOpenAIKey('');
+                                        else if (modelProvider === 'anthropic') setAnthropicKey('');
+                                        else if (modelProvider === 'gemini') setGeminiKey('');
+                                        else if (modelProvider === 'openrouter') setOpenrouterKey('');
+                                        else if (modelProvider === 'litellm') setLiteLLMKey('');
+                                        else setCustomApiKey('');
+                                    }}
+                                    title="Delete / Clear API Key"
+                                    style={{
+                                        padding: '6px 10px',
+                                        background: 'var(--bg-input)',
+                                        border: '1px solid var(--border-subtle)',
+                                        color: 'var(--text-secondary)',
+                                        borderRadius: 'var(--radius-md)',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                    }}
+                                    onMouseEnter={e => e.currentTarget.style.color = '#ef4444'}
+                                    onMouseLeave={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+                                >
+                                    <span className="codicon codicon-trash" style={{ fontSize: 13 }} />
+                                </button>
+                            </div>
                             
                             {customProviders.some((p: Record<string, unknown>) => p.id === modelProvider) && (
                                 <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -341,6 +376,7 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
                         style={{ width: '100%', padding: '8px 12px', background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', borderRadius: 'var(--radius-md)', outline: 'none', boxSizing: 'border-box', fontSize: 12 }}
                     />
                 </div>
+
             </div>
 
             {/* Middle Visual separator line */}
@@ -348,28 +384,48 @@ export function SettingsModelsTab(props: SettingsModelsTabProps) {
 
             {/* Right Column: LiteLLM, Manual Register & Available Models */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 20, minWidth: 0 }}>
-                <SettingsLiteLLMConfig
-                    enableLiteLLMProxy={enableLiteLLMProxy} setEnableLiteLLMProxy={setEnableLiteLLMProxy}
-                    liteLLMConfigPath={liteLLMConfigPath} setLiteLLMConfigPath={setLiteLLMConfigPath}
-                    liteLLMModel={liteLLMModel} setLiteLLMModel={setLiteLLMModel}
-                    liteLLMPort={liteLLMPort} setLiteLLMPort={setLiteLLMPort}
-                    isProxyRunning={isProxyRunning}
-                />
+                {modelProvider === 'local' ? (
+                    <div style={{ background: 'var(--bg-tertiary)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-subtle)', padding: 16 }}>
+                        <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span className="codicon codicon-info" style={{ color: 'var(--accent-primary)' }} />
+                            Local Models Config
+                        </h3>
+                        <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0 }}>
+                            To download, manage, start, or stop local GGUF models, please use the dedicated <strong>Local LLMs</strong> tab in the settings sidebar.
+                        </p>
+                    </div>
+                ) : (
+                    <>
+                        <SettingsLiteLLMConfig
+                            enableLiteLLMProxy={enableLiteLLMProxy} setEnableLiteLLMProxy={setEnableLiteLLMProxy}
+                            liteLLMConfigPath={liteLLMConfigPath} setLiteLLMConfigPath={setLiteLLMConfigPath}
+                            liteLLMModel={liteLLMModel} setLiteLLMModel={setLiteLLMModel}
+                            liteLLMPort={liteLLMPort} setLiteLLMPort={setLiteLLMPort}
+                            isProxyRunning={isProxyRunning}
+                        />
 
-                <SettingsModelRegistration
-                    modelProvider={modelProvider}
-                    setModelProvider={setModelProvider}
-                    setAvailableModels={setAvailableModels}
-                    customModelsList={customModelsList} setCustomModelsList={setCustomModelsList}
-                />
+                        <SettingsModelRegistration
+                            modelProvider={modelProvider}
+                            setModelProvider={setModelProvider}
+                            setAvailableModels={setAvailableModels}
+                            customModelsList={customModelsList} setCustomModelsList={setCustomModelsList}
+                        />
 
-                <SettingsAvailableModels
-                    availableModels={availableModels}
-                    modelSearchQuery={modelSearchQuery} setModelSearchQuery={setModelSearchQuery}
-                    modelProvider={modelProvider}
-                    customModelsList={customModelsList} setCustomModelsList={setCustomModelsList}
-                    setAvailableModels={setAvailableModels}
-                />
+                        <SettingsAvailableModels
+                            availableModels={availableModels}
+                            modelSearchQuery={modelSearchQuery} setModelSearchQuery={setModelSearchQuery}
+                            modelProvider={modelProvider}
+                            customModelsList={customModelsList} setCustomModelsList={setCustomModelsList}
+                            setAvailableModels={setAvailableModels}
+                        />
+
+                        <SettingsFineTunedModels
+                            fineTunedModels={fineTunedModels} setFineTunedModels={setFineTunedModels}
+                            modelProvider={modelProvider} setModelProvider={setModelProvider}
+                            selectedModel={selectedModel} setSelectedModel={setSelectedModel}
+                        />
+                    </>
+                )}
             </div>
         </div>
     );

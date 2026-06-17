@@ -1,12 +1,18 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { finetuningService } from '../services/FinetuningService'
+import { secureStore } from '../secureStore'
 import { DatasetConfig } from '../constants/models'
+import { HardwareSpec } from '../services/backends/BaseFinetuneBackend'
 
 export function registerFinetuningHandlers(_ipcMain: Electron.IpcMain) {
   let progressUnsub: (() => void) | null = null
 
   ipcMain.handle('finetune:detect-hardware', async () => {
     return await finetuningService.detectHardware()
+  })
+
+  ipcMain.handle('finetune:refresh-hardware', async () => {
+    return await finetuningService.detectHardware(true)
   })
 
   ipcMain.handle('finetune:get-models', () => {
@@ -17,8 +23,8 @@ export function registerFinetuningHandlers(_ipcMain: Electron.IpcMain) {
     return finetuningService.getState()
   })
 
-  ipcMain.handle('finetune:get-recommendation', async () => {
-    const hw = await finetuningService.detectHardware()
+  ipcMain.handle('finetune:get-recommendation', async (_event, hardware?: HardwareSpec) => {
+    const hw = hardware || await finetuningService.detectHardware()
     return finetuningService.getRecommendation(hw)
   })
 
@@ -39,6 +45,18 @@ export function registerFinetuningHandlers(_ipcMain: Electron.IpcMain) {
         win.webContents.send('finetune:progress', event)
       }
     })
+
+    // Save Hugging Face token securely if passed
+    if (options.huggingfaceToken !== undefined) {
+      if (options.huggingfaceToken) {
+        // Only save if it looks like a valid hf_ token to prevent format exceptions
+        if (options.huggingfaceToken.startsWith('hf_')) {
+          secureStore.setHuggingFaceToken(options.huggingfaceToken);
+        }
+      } else {
+        secureStore.deleteHuggingFaceToken();
+      }
+    }
 
     await finetuningService.startTraining(options)
     return { success: true }
@@ -61,5 +79,20 @@ export function registerFinetuningHandlers(_ipcMain: Electron.IpcMain) {
 
   ipcMain.handle('finetune:get-builtin-dataset', () => {
     return finetuningService.getBuiltinDatasetInfo()
+  })
+
+  ipcMain.handle('finetune:check-packages', async () => {
+    return await finetuningService.checkPackages()
+  })
+
+  ipcMain.handle('finetune:install-dependencies', async () => {
+    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+    const sendLog = (msg: string) => {
+      if (win) {
+        win.webContents.send('finetune:progress', { type: 'log', message: msg })
+      }
+    }
+    await finetuningService.installDependencies(sendLog)
+    return { success: true }
   })
 }

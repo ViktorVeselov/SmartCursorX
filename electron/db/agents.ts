@@ -143,3 +143,60 @@ export function deleteCustomModel(db: any, providerId: string, modelName: string
     if (!db) throw new Error('DB not initialized');
     db.prepare('DELETE FROM custom_models WHERE provider_id = ? AND model_name = ?').run(providerId, modelName);
 }
+
+export function addFineTunedModel(db: any, model: {
+    id: string;
+    name: string;
+    baseModelId: string;
+    baseModelHfRepo: string;
+    adapterPath: string;
+    backend: 'llamacpp' | 'python';
+    quantization: '4bit' | '8bit' | '16bit';
+    tags: string[];
+}) {
+    checkArgs(typeof model.id === 'string' && model.id.length > 0, 'Model ID is required');
+    checkArgs(typeof model.name === 'string' && model.name.length > 0, 'Model Name is required');
+    checkArgs(typeof model.baseModelId === 'string' && model.baseModelId.length > 0, 'Base Model ID is required');
+    checkArgs(typeof model.baseModelHfRepo === 'string' && model.baseModelHfRepo.length > 0, 'Base Model HF Repo is required');
+    checkArgs(typeof model.adapterPath === 'string' && model.adapterPath.length > 0, 'Adapter Path is required');
+    checkArgs(model.backend === 'llamacpp' || model.backend === 'python', 'Backend must be llamacpp or python');
+    checkArgs(model.quantization === '4bit' || model.quantization === '8bit' || model.quantization === '16bit', 'Quantization must be 4bit, 8bit, or 16bit');
+    if (!db) throw new Error('DB not initialized');
+
+    db.prepare(`
+        INSERT INTO fine_tuned_models (id, name, base_model_id, base_model_hf_repo, adapter_path, backend, quantization, tags)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            base_model_id = excluded.base_model_id,
+            base_model_hf_repo = excluded.base_model_hf_repo,
+            adapter_path = excluded.adapter_path,
+            backend = excluded.backend,
+            quantization = excluded.quantization,
+            tags = excluded.tags
+    `).run(model.id, model.name, model.baseModelId, model.baseModelHfRepo, model.adapterPath, model.backend, model.quantization, JSON.stringify(model.tags));
+}
+
+export function getFineTunedModels(db: any) {
+    if (!db) return [];
+    const rows = db.prepare('SELECT * FROM fine_tuned_models ORDER BY created_at DESC').all();
+    return rows.map((row: any) => ({
+        ...row,
+        tags: row.tags ? JSON.parse(row.tags) : [],
+    }));
+}
+
+export function getFineTunedModel(db: any, id: string) {
+    if (!db) return null;
+    const row = db.prepare('SELECT * FROM fine_tuned_models WHERE id = ?').get(id);
+    if (!row) return null;
+    return {
+        ...row,
+        tags: row.tags ? JSON.parse(row.tags) : [],
+    };
+}
+
+export function deleteFineTunedModel(db: any, id: string) {
+    if (!db) throw new Error('DB not initialized');
+    db.prepare('DELETE FROM fine_tuned_models WHERE id = ?').run(id);
+}

@@ -9,16 +9,17 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'native-health-check', 'read-dir', 'read-file', 'write-file', 'delete-path',
   'rename-path', 'create-directory', 'resolve-path', 'dialog-open-folder',
   'dialog-save-file', 'dialog-open-file', 'get-api-key', 'set-api-key',
-  'get-github-token', 'set-github-token', 'ai:test-connection', 'db-add-memory',
+  'get-github-token', 'set-github-token', 'get-huggingface-token', 'set-huggingface-token', 'ai:test-connection', 'db-add-memory',
   'db-get-memories', 'db-delete-memory', 'db-get-agents', 'db-add-agent',
   'db-delete-agent', 'db-get-flows', 'db-add-flow', 'db-delete-flow',
   'db-update-flow', 'ai:get-custom-providers', 'ai:get-provider-key',
   'ai:add-custom-provider', 'ai:delete-custom-provider', 'ai:get-custom-models',
   'ai:add-custom-model', 'ai:toggle-model-thinking', 'ai:delete-custom-model',
+  'finetuned:get-models', 'finetuned:get-model', 'finetuned:add-model', 'finetuned:delete-model',
   'litellm:get-status', 'litellm:stop', 'litellm:start', 'term-init',
   'term-input', 'term-resize', 'term-close', 'vc-create-snapshot',
   'vc-get-snapshots', 'vc-restore-snapshot', 'git-status', 'git-branch',
-  'git-clone', 'git-diff', 'ai:save-config', 'ai:get-config', 'ai:get-models', 'ai:get-zen-models-info', 'ai:get-model-context-length',
+  'git-clone', 'git-diff', 'ai:save-config', 'ai:save-provider-key', 'ai:get-config', 'ai:get-models', 'ai:get-zen-models-info', 'ai:get-model-context-length',
   'get-general-settings', 'save-general-settings', 'openclaw:check-installed',
   'openclaw:get-status', 'openclaw:start-gateway', 'openclaw:stop-gateway',
   'openclaw:run-doctor', 'openclaw:approve-pairing', 'openclaw:run-agent',
@@ -28,10 +29,13 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'db:get-rules', 'db:add-rule', 'db:update-rule', 'db:delete-rule', 'db:toggle-rule',
   'execution:start', 'execution:get-pending', 'execution:apply-pending', 'execution:reject-pending',
   'execution:apply-single', 'execution:reject-single', 'execution:has-pending', 'execution:dlq-respond',
-  'finetune:detect-hardware', 'finetune:get-models', 'finetune:get-state', 'finetune:get-recommendation',
+  'finetune:detect-hardware', 'finetune:refresh-hardware', 'finetune:get-models', 'finetune:get-state', 'finetune:get-recommendation',
   'finetune:prepare-dataset', 'finetune:export-dataset', 'finetune:start', 'finetune:stop',
   'finetune:reset', 'finetune:get-adapter-path', 'finetune:get-builtin-dataset',
-  'shell:exec'
+  'finetune:install-dependencies', 'finetune:check-packages',
+  'shell:exec',
+  'local:list', 'local:search-hf', 'local:hf-files', 'local:download', 'local:delete',
+  'local:start-server', 'local:stop-server', 'local:redownload-llama', 'local:server-status'
 ]);
 
 const ALLOWED_SEND_CHANNELS = new Set([
@@ -46,7 +50,8 @@ const ALLOWED_ON_CHANNELS = new Set([
   'ai:chat-end', 'ai:plan-chunk', 'ai:plan-end',
   'openclaw:agent-stream', 'openclaw:agent-complete', 'main-process-message',
   'execution:pending-modifications', 'execution:dlq-notify',
-  'finetune:progress'
+  'finetune:progress',
+  'local:download-progress'
 ]);
 
 // Map to track active subscription wrappers to ensure ipcRenderer.off can correctly unregister them

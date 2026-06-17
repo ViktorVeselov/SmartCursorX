@@ -65,7 +65,7 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
             '.woff', '.woff2', '.eot', '.ttf', '.mp4', '.mp3', '.wav', '.ogg'];
         const ext = path.extname(filePath).toLowerCase();
         if (binaryExts.includes(ext)) {
-            throw new Error(`Cannot read "${path.basename(filePath)}" - this model does not support image input`);
+            throw new Error(`Cannot read binary file "${path.basename(filePath)}" — reading images, PDFs, and other binary files is not supported through the file read interface`);
         }
 
         try {

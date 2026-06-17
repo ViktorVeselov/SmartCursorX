@@ -25,6 +25,35 @@
       "filter": [
         "fable5_ft_instruction.jsonl"
       ]
+    },
+    {
+      "from": "scripts",
+      "to": "scripts",
+      "filter": [
+        "finetune_qlora.py",
+        "convert_cot_dataset.py",
+        "requirements-ml.txt"
+      ]
+    },
+    {
+      "from": "resources",
+      "to": ".",
+      "filter": [
+        "llama-local-server.exe",
+        "llama-srv.exe",
+        "llama-server.exe",
+        "llama-server-impl.dll",
+        "llama.dll",
+        "llama-common.dll",
+        "ggml*.dll",
+        "ggml-cpu-*.dll",
+        "libomp140.x86_64.dll",
+        "mtmd.dll",
+        "cudart*.dll",
+        "cublas*.dll",
+        "cublasLt*.dll",
+        "libhip*.dll"
+      ]
     }
   ],
   "productName": "SmartCursorX",

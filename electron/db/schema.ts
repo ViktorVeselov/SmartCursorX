@@ -8,7 +8,7 @@ const Database = require('better-sqlite3');
 const sqliteVec = require('sqlite-vec');
 
 export function createDatabase(dbPath?: string): any {
-    const resolvedPath = dbPath || path.join(app.getPath('userData'), 'cursor-replacer.sqlite');
+    const resolvedPath = dbPath || path.join(app.getPath('userData'), 'smart-cursor-x.sqlite');
     const db = new Database(resolvedPath, {});
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
@@ -134,6 +134,20 @@ export function createTables(db: any) {
             model_name TEXT NOT NULL,
             has_thinking INTEGER DEFAULT 0,
             UNIQUE(provider_id, model_name)
+        )
+    `).run();
+
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS fine_tuned_models (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            base_model_id TEXT NOT NULL,
+            base_model_hf_repo TEXT NOT NULL,
+            adapter_path TEXT NOT NULL,
+            backend TEXT NOT NULL CHECK(backend IN ('llamacpp', 'python')),
+            quantization TEXT NOT NULL CHECK(quantization IN ('4bit', '8bit', '16bit')),
+            tags TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     `).run();
 

@@ -193,7 +193,7 @@ app.whenReady().then(async () => {
     adminApiService.start();
 
     // Initialize IPC Handlers
-    const ipcContext: IpcHandlerContext = { mainWindow: null, native, ptyProcesses: new Map(), activeStreamAborted: false, workspacePath: activeWorkspacePath || '' };
+    const ipcContext: IpcHandlerContext = { mainWindow: null, native, ptyProcesses: new Map(), activeStreamAborted: false, activeAbortController: null, workspacePath: activeWorkspacePath || '' };
     registerAllHandlers(ipcContext);
     console.log(' [Main] Handlers Registered');
 

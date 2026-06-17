@@ -1,8 +1,8 @@
 [package]
-name = "cursor-replacer-native"
+name = "smart-cursor-x-native"
 version = "0.1.0"
 edition = "2021"
-description = "Native performance modules for Cursor Replacer IDE"
+description = "Native performance modules for SmartCursorX IDE"
 license = "MIT"
 
 [lib]
@@ -17,6 +17,7 @@ napi-derive = "2"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"  # .gitignore support
+regex = "1"
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "fs"] }

@@ -1,12 +1,7 @@
 // tests/unit/taxonomy/runTests.ts
-import { fileURLToPath as fileURLToPath2 } from "url";
-import * as path4 from "path";
-import * as fs2 from "fs";
-
-// electron/services/taxonomy/TaxonomyService.ts
-import * as fs from "fs";
-import * as path3 from "path";
 import { fileURLToPath } from "url";
+import * as path3 from "path";
+import * as fs from "fs";
 
 // electron/db/index.ts
 import path2 from "path";
@@ -118,6 +113,22 @@ var secureStore = {
   deleteGitHubToken() {
     store.delete("githubToken_encrypted");
   },
+  setHuggingFaceToken(token) {
+    store.set("huggingfaceToken_encrypted", encryptValue(token));
+  },
+  getHuggingFaceToken() {
+    const encrypted = store.get("huggingfaceToken_encrypted");
+    if (!encrypted) return void 0;
+    try {
+      return decryptValue(encrypted);
+    } catch (e) {
+      console2.error("[SecureStore] Failed to decrypt Hugging Face token", e);
+      return void 0;
+    }
+  },
+  deleteHuggingFaceToken() {
+    store.delete("huggingfaceToken_encrypted");
+  },
   // Non-sensitive settings
   getTheme() {
     return store.get("theme") || "dark";
@@ -176,9 +187,9 @@ var secureStore = {
   getLiteLLMConfigPath() {
     return store.get("liteLLMConfigPath") || "";
   },
-  setLiteLLMConfigPath(path5) {
-    console2.assert(typeof path5 === "string", "Config path must be a string");
-    store.set("liteLLMConfigPath", path5);
+  setLiteLLMConfigPath(path4) {
+    console2.assert(typeof path4 === "string", "Config path must be a string");
+    store.set("liteLLMConfigPath", path4);
   },
   getLiteLLMModel() {
     return store.get("liteLLMModel") || "gpt-4o";
@@ -244,6 +255,16 @@ var secureStore = {
     console2.assert(typeof pathStr === "string", "Workspace path must be a string");
     store.set("activeWorkspacePath", pathStr);
   },
+  getHardwareSpec() {
+    return store.get("hardwareSpec");
+  },
+  setHardwareSpec(spec) {
+    console2.assert(spec && typeof spec.timestamp === "number", "Hardware spec must have timestamp");
+    store.set("hardwareSpec", spec);
+  },
+  deleteHardwareSpec() {
+    store.delete("hardwareSpec");
+  },
   setCustomProviderKey(providerId, key) {
     console2.assert(typeof providerId === "string", "providerId must be a string");
     checkEncryptionGuard();
@@ -283,13 +304,18 @@ secureStore.setGitHubToken = function(token) {
   checkEncryptionGuard();
   originalSetGitHubToken.call(secureStore, token);
 };
+var originalSetHuggingFaceToken = secureStore.setHuggingFaceToken;
+secureStore.setHuggingFaceToken = function(token) {
+  checkEncryptionGuard();
+  originalSetHuggingFaceToken.call(secureStore, token);
+};
 
 // electron/db/schema.ts
 var require2 = createRequire(import.meta.url);
 var Database = require2("better-sqlite3");
 var sqliteVec = require2("sqlite-vec");
 function createDatabase(dbPath) {
-  const resolvedPath = dbPath || path.join(app.getPath("userData"), "cursor-replacer.sqlite");
+  const resolvedPath = dbPath || path.join(app.getPath("userData"), "smart-cursor-x.sqlite");
   const db = new Database(resolvedPath, {});
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
@@ -402,13 +428,28 @@ function createTables(db) {
             UNIQUE(provider_id, model_name)
         )
     `).run();
+  db.prepare(`
+        CREATE TABLE IF NOT EXISTS fine_tuned_models (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            base_model_id TEXT NOT NULL,
+            base_model_hf_repo TEXT NOT NULL,
+            adapter_path TEXT NOT NULL,
+            backend TEXT NOT NULL CHECK(backend IN ('llamacpp', 'python')),
+            quantization TEXT NOT NULL CHECK(quantization IN ('4bit', '8bit', '16bit')),
+            tags TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    `).run();
   try {
     db.prepare("ALTER TABLE custom_models ADD COLUMN has_thinking INTEGER DEFAULT 0").run();
   } catch (e) {
+    if (!e?.message?.includes("duplicate column")) throw e;
   }
   try {
     db.prepare("ALTER TABLE custom_providers ADD COLUMN is_local INTEGER DEFAULT 0").run();
   } catch (e) {
+    if (!e?.message?.includes("duplicate column")) throw e;
   }
   db.prepare(`
         CREATE TABLE IF NOT EXISTS tasks (
@@ -548,10 +589,12 @@ function createTables(db) {
   try {
     db.prepare("ALTER TABLE model_performance ADD COLUMN input_tokens INTEGER DEFAULT 0").run();
   } catch (e) {
+    if (!e?.message?.includes("duplicate column")) throw e;
   }
   try {
     db.prepare("ALTER TABLE model_performance ADD COLUMN output_tokens INTEGER DEFAULT 0").run();
   } catch (e) {
+    if (!e?.message?.includes("duplicate column")) throw e;
   }
   db.prepare(`
         CREATE TABLE IF NOT EXISTS conversations (
@@ -566,14 +609,17 @@ function createTables(db) {
   try {
     db.prepare("ALTER TABLE conversations ADD COLUMN model TEXT NOT NULL DEFAULT 'gpt-4o'").run();
   } catch (e) {
+    if (!e?.message?.includes("duplicate column")) throw e;
   }
   try {
     db.prepare("ALTER TABLE conversations ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai'").run();
   } catch (e) {
+    if (!e?.message?.includes("duplicate column")) throw e;
   }
   try {
     db.prepare("ALTER TABLE conversations ADD COLUMN workspace_path TEXT").run();
   } catch (e) {
+    if (!e?.message?.includes("duplicate column")) throw e;
   }
   db.prepare(`
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -902,6 +948,49 @@ function toggleCustomModelThinking(db, providerId, modelName, hasThinking) {
 function deleteCustomModel(db, providerId, modelName) {
   if (!db) throw new Error("DB not initialized");
   db.prepare("DELETE FROM custom_models WHERE provider_id = ? AND model_name = ?").run(providerId, modelName);
+}
+function addFineTunedModel(db, model) {
+  checkArgs(typeof model.id === "string" && model.id.length > 0, "Model ID is required");
+  checkArgs(typeof model.name === "string" && model.name.length > 0, "Model Name is required");
+  checkArgs(typeof model.baseModelId === "string" && model.baseModelId.length > 0, "Base Model ID is required");
+  checkArgs(typeof model.baseModelHfRepo === "string" && model.baseModelHfRepo.length > 0, "Base Model HF Repo is required");
+  checkArgs(typeof model.adapterPath === "string" && model.adapterPath.length > 0, "Adapter Path is required");
+  checkArgs(model.backend === "llamacpp" || model.backend === "python", "Backend must be llamacpp or python");
+  checkArgs(model.quantization === "4bit" || model.quantization === "8bit" || model.quantization === "16bit", "Quantization must be 4bit, 8bit, or 16bit");
+  if (!db) throw new Error("DB not initialized");
+  db.prepare(`
+        INSERT INTO fine_tuned_models (id, name, base_model_id, base_model_hf_repo, adapter_path, backend, quantization, tags)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            base_model_id = excluded.base_model_id,
+            base_model_hf_repo = excluded.base_model_hf_repo,
+            adapter_path = excluded.adapter_path,
+            backend = excluded.backend,
+            quantization = excluded.quantization,
+            tags = excluded.tags
+    `).run(model.id, model.name, model.baseModelId, model.baseModelHfRepo, model.adapterPath, model.backend, model.quantization, JSON.stringify(model.tags));
+}
+function getFineTunedModels(db) {
+  if (!db) return [];
+  const rows = db.prepare("SELECT * FROM fine_tuned_models ORDER BY created_at DESC").all();
+  return rows.map((row) => ({
+    ...row,
+    tags: row.tags ? JSON.parse(row.tags) : []
+  }));
+}
+function getFineTunedModel(db, id) {
+  if (!db) return null;
+  const row = db.prepare("SELECT * FROM fine_tuned_models WHERE id = ?").get(id);
+  if (!row) return null;
+  return {
+    ...row,
+    tags: row.tags ? JSON.parse(row.tags) : []
+  };
+}
+function deleteFineTunedModel(db, id) {
+  if (!db) throw new Error("DB not initialized");
+  db.prepare("DELETE FROM fine_tuned_models WHERE id = ?").run(id);
 }
 
 // electron/db/settings.ts
@@ -1430,6 +1519,49 @@ function getUsageStats(db) {
     breakdowns
   };
 }
+function getModelPerformanceStats(db, filterProvider, filterModel, filterTaskType) {
+  if (!db) return [];
+  let query = `
+        SELECT
+            model, provider, task_type,
+            COUNT(*) as total_runs,
+            SUM(success) as successful_runs,
+            ROUND(CAST(SUM(success) AS REAL) / MAX(COUNT(*), 1), 4) as success_rate,
+            AVG(latency_ms) as avg_latency_ms,
+            AVG(input_tokens) as avg_input_tokens,
+            AVG(output_tokens) as avg_output_tokens,
+            AVG(token_count) as avg_token_count
+        FROM model_performance
+        WHERE 1=1
+    `;
+  const params = [];
+  if (filterProvider) {
+    query += " AND provider = ?";
+    params.push(filterProvider);
+  }
+  if (filterModel) {
+    query += " AND model = ?";
+    params.push(filterModel);
+  }
+  if (filterTaskType) {
+    query += " AND task_type = ?";
+    params.push(filterTaskType);
+  }
+  query += ` GROUP BY model, provider, task_type ORDER BY total_runs DESC`;
+  const rows = db.prepare(query).all(...params);
+  return rows.map((row) => ({
+    model: row.model,
+    provider: row.provider,
+    taskType: row.task_type,
+    totalRuns: row.total_runs,
+    successfulRuns: row.successful_runs,
+    successRate: row.success_rate,
+    avgLatencyMs: Math.round(row.avg_latency_ms || 0),
+    avgInputTokens: Math.round(row.avg_input_tokens || 0),
+    avgOutputTokens: Math.round(row.avg_output_tokens || 0),
+    avgTokens: Math.round(row.avg_token_count || 0)
+  }));
+}
 function clearUsageStats(db) {
   if (!db) throw new Error("DB not initialized");
   db.prepare("DELETE FROM model_performance").run();
@@ -1442,7 +1574,7 @@ var DatabaseService = class {
   dbPath;
   constructor() {
     console.log("[DatabaseService] Constructor");
-    this.dbPath = path2.join(app.getPath("userData"), "cursor-replacer.sqlite");
+    this.dbPath = path2.join(app.getPath("userData"), "smart-cursor-x.sqlite");
   }
   async init() {
     console.log("[DatabaseService] Init", this.dbPath);
@@ -1568,6 +1700,19 @@ var DatabaseService = class {
   deleteCustomModel(providerId, modelName) {
     return deleteCustomModel(this.db, providerId, modelName);
   }
+  // ── Fine-Tuned Models ──
+  addFineTunedModel(model) {
+    return addFineTunedModel(this.db, model);
+  }
+  getFineTunedModels() {
+    return getFineTunedModels(this.db);
+  }
+  getFineTunedModel(id) {
+    return getFineTunedModel(this.db, id);
+  }
+  deleteFineTunedModel(id) {
+    return deleteFineTunedModel(this.db, id);
+  }
   // ── Memories ──
   addMemory(type, content) {
     return addMemory(this.db, type, content);
@@ -1692,6 +1837,9 @@ var DatabaseService = class {
   }
   getModelPerformanceSummary() {
     return getModelPerformanceSummary(this.db);
+  }
+  getModelPerformanceStats(filterProvider, filterModel, filterTaskType) {
+    return getModelPerformanceStats(this.db, filterProvider, filterModel, filterTaskType);
   }
   getUsageStats() {
     return getUsageStats(this.db);
@@ -2392,6 +2540,14879 @@ If guidance conflicts with what the code actually does, the code takes precedenc
   }
 };
 
+// electron/services/taxonomy/taxonomyTree.json
+var taxonomyTree_default = {
+  domain: {
+    id: "domain",
+    label: "Domain Axis Root",
+    children: [
+      {
+        id: "backend",
+        label: "Backend Development",
+        children: [
+          {
+            id: "backend.database",
+            label: "Database Persistence",
+            children: [
+              {
+                id: "backend.database.relational",
+                label: "Relational Database Engine",
+                children: [
+                  {
+                    id: "backend.database.relational.postgresql",
+                    label: "PostgreSQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "postgresql",
+                          weight: 0.85
+                        },
+                        {
+                          word: "postgres",
+                          weight: 0.85
+                        },
+                        {
+                          word: "pg",
+                          weight: 0.85
+                        },
+                        {
+                          word: "pgpool",
+                          weight: 0.85
+                        },
+                        {
+                          word: "pgbouncer",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "postgresql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "postgresql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'pg'",
+                        "require('pg')",
+                        "from 'pg-pool'",
+                        "require('pg-pool')",
+                        "from 'postgres'",
+                        "require('postgres')"
+                      ],
+                      filePatterns: [
+                        "**/postgresql*",
+                        "**/*postgresql*"
+                      ],
+                      symbolPatterns: [
+                        "pool",
+                        "client",
+                        "pgclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.mysql",
+                    label: "MySQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "mysql",
+                          weight: 0.85
+                        },
+                        {
+                          word: "mariadb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "myisam",
+                          weight: 0.85
+                        },
+                        {
+                          word: "innodb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "mysql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "mysql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'mysql'",
+                        "require('mysql')",
+                        "from 'mysql2'",
+                        "require('mysql2')",
+                        "from 'mysql2/promise'",
+                        "require('mysql2/promise')"
+                      ],
+                      filePatterns: [
+                        "**/mysql*",
+                        "**/*mysql*"
+                      ],
+                      symbolPatterns: [
+                        "connection",
+                        "pool",
+                        "mysqlclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.sqlite",
+                    label: "SQLite",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "sqlite",
+                          weight: 0.85
+                        },
+                        {
+                          word: "sqlite3",
+                          weight: 0.85
+                        },
+                        {
+                          word: "better-sqlite3",
+                          weight: 0.85
+                        },
+                        {
+                          word: "libsql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "sqlite database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "sqlite db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'sqlite3'",
+                        "require('sqlite3')",
+                        "from 'better-sqlite3'",
+                        "require('better-sqlite3')",
+                        "from 'sqlite'",
+                        "require('sqlite')",
+                        "from 'libsql'",
+                        "require('libsql')"
+                      ],
+                      filePatterns: [
+                        "**/sqlite*",
+                        "**/*sqlite*"
+                      ],
+                      symbolPatterns: [
+                        "database",
+                        "statement"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.oracle",
+                    label: "Oracle Database",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "oracle",
+                          weight: 0.85
+                        },
+                        {
+                          word: "oracledb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "plsql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "oracle database database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "oracle database db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'oracledb'",
+                        "require('oracledb')"
+                      ],
+                      filePatterns: [
+                        "**/oracle*",
+                        "**/*oracle*"
+                      ],
+                      symbolPatterns: [
+                        "connection",
+                        "oracleclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.mssql",
+                    label: "Microsoft SQL Server",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "mssql",
+                          weight: 0.85
+                        },
+                        {
+                          word: "sqlserver",
+                          weight: 0.85
+                        },
+                        {
+                          word: "tsql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "microsoft sql server database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "microsoft sql server db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'mssql'",
+                        "require('mssql')",
+                        "from 'tedious'",
+                        "require('tedious')"
+                      ],
+                      filePatterns: [
+                        "**/mssql*",
+                        "**/*mssql*"
+                      ],
+                      symbolPatterns: [
+                        "connectionpool",
+                        "request"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.mariadb",
+                    label: "MariaDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "mariadb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "mariadb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "mariadb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'mariadb'",
+                        "require('mariadb')"
+                      ],
+                      filePatterns: [
+                        "**/mariadb*",
+                        "**/*mariadb*"
+                      ],
+                      symbolPatterns: [
+                        "pool",
+                        "connection"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.cockroachdb",
+                    label: "CockroachDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "cockroach",
+                          weight: 0.85
+                        },
+                        {
+                          word: "cockroachdb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "crdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "cockroachdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "cockroachdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'pg'",
+                        "require('pg')"
+                      ],
+                      filePatterns: [
+                        "**/cockroachdb*",
+                        "**/*cockroachdb*"
+                      ],
+                      symbolPatterns: [
+                        "pool",
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.spanner",
+                    label: "Google Cloud Spanner",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "spanner",
+                          weight: 0.85
+                        },
+                        {
+                          word: "cloudspanner",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "google cloud spanner database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "google cloud spanner db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@google-cloud/spanner'",
+                        "require('@google-cloud/spanner')"
+                      ],
+                      filePatterns: [
+                        "**/spanner*",
+                        "**/*spanner*"
+                      ],
+                      symbolPatterns: [
+                        "spanner",
+                        "database"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.yugabyte",
+                    label: "YugabyteDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "yugabyte",
+                          weight: 0.85
+                        },
+                        {
+                          word: "yugabytedb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "ycql",
+                          weight: 0.85
+                        },
+                        {
+                          word: "ysql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "yugabytedb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "yugabytedb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'pg'",
+                        "require('pg')",
+                        "from 'cassandra-driver'",
+                        "require('cassandra-driver')"
+                      ],
+                      filePatterns: [
+                        "**/yugabyte*",
+                        "**/*yugabyte*"
+                      ],
+                      symbolPatterns: [
+                        "client",
+                        "cluster"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.tidb",
+                    label: "TiDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "tidb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "tidb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "tidb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'mysql2'",
+                        "require('mysql2')"
+                      ],
+                      filePatterns: [
+                        "**/tidb*",
+                        "**/*tidb*"
+                      ],
+                      symbolPatterns: [
+                        "connection",
+                        "pool"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.singlestore",
+                    label: "SingleStore (memsql)",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "singlestore",
+                          weight: 0.85
+                        },
+                        {
+                          word: "memsql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "singlestore (memsql) database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "singlestore (memsql) db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'mysql2'",
+                        "require('mysql2')"
+                      ],
+                      filePatterns: [
+                        "**/singlestore*",
+                        "**/*singlestore*"
+                      ],
+                      symbolPatterns: [
+                        "connection",
+                        "pool"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.db2",
+                    label: "IBM DB2",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "db2",
+                          weight: 0.85
+                        },
+                        {
+                          word: "ibmdb2",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "ibm db2 database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "ibm db2 db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'ibm_db'",
+                        "require('ibm_db')"
+                      ],
+                      filePatterns: [
+                        "**/db2*",
+                        "**/*db2*"
+                      ],
+                      symbolPatterns: [
+                        "database",
+                        "connection"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.firebird",
+                    label: "Firebird",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "firebird",
+                          weight: 0.85
+                        },
+                        {
+                          word: "firebirdsql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "firebird database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "firebird db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'node-firebird'",
+                        "require('node-firebird')"
+                      ],
+                      filePatterns: [
+                        "**/firebird*",
+                        "**/*firebird*"
+                      ],
+                      symbolPatterns: [
+                        "connection",
+                        "database"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.h2",
+                    label: "H2 Database",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "h2",
+                          weight: 0.85
+                        },
+                        {
+                          word: "h2database",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "h2 database database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "h2 database db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/h2*",
+                        "**/*h2*"
+                      ],
+                      symbolPatterns: [
+                        "connection",
+                        "jdbc"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.derby",
+                    label: "Apache Derby",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "derby",
+                          weight: 0.85
+                        },
+                        {
+                          word: "apachederby",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache derby database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache derby db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/derby*",
+                        "**/*derby*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.informix",
+                    label: "Informix",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "informix",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "informix database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "informix db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/informix*",
+                        "**/*informix*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.ingres",
+                    label: "Ingres",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "ingres",
+                          weight: 0.85
+                        },
+                        {
+                          word: "actian",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "ingres database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "ingres db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/ingres*",
+                        "**/*ingres*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.saphana",
+                    label: "SAP HANA",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "saphana",
+                          weight: 0.85
+                        },
+                        {
+                          word: "hana",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "sap hana database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "sap hana db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@sap/hana-client'",
+                        "require('@sap/hana-client')"
+                      ],
+                      filePatterns: [
+                        "**/saphana*",
+                        "**/*saphana*"
+                      ],
+                      symbolPatterns: [
+                        "connection"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.aurora-pg",
+                    label: "AWS Aurora PostgreSQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "aurora",
+                          weight: 0.85
+                        },
+                        {
+                          word: "rds",
+                          weight: 0.85
+                        },
+                        {
+                          word: "aws-sdk",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aws aurora postgresql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aws aurora postgresql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@aws-sdk/client-rds-data'",
+                        "require('@aws-sdk/client-rds-data')"
+                      ],
+                      filePatterns: [
+                        "**/aurora-pg*",
+                        "**/*aurora-pg*"
+                      ],
+                      symbolPatterns: [
+                        "rdsdataservice"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.aurora-mysql",
+                    label: "AWS Aurora MySQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "aurora",
+                          weight: 0.85
+                        },
+                        {
+                          word: "rds",
+                          weight: 0.85
+                        },
+                        {
+                          word: "aws-sdk",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aws aurora mysql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aws aurora mysql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@aws-sdk/client-rds-data'",
+                        "require('@aws-sdk/client-rds-data')"
+                      ],
+                      filePatterns: [
+                        "**/aurora-mysql*",
+                        "**/*aurora-mysql*"
+                      ],
+                      symbolPatterns: [
+                        "rdsdataservice"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.cloudsql-pg",
+                    label: "Google Cloud SQL PostgreSQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "cloudsql",
+                          weight: 0.85
+                        },
+                        {
+                          word: "gcp",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "google cloud sql postgresql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "google cloud sql postgresql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/cloudsql-pg*",
+                        "**/*cloudsql-pg*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.cloudsql-mysql",
+                    label: "Google Cloud SQL MySQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "cloudsql",
+                          weight: 0.85
+                        },
+                        {
+                          word: "gcp",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "google cloud sql mysql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "google cloud sql mysql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/cloudsql-mysql*",
+                        "**/*cloudsql-mysql*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.cloudsql-mssql",
+                    label: "Google Cloud SQL SQL Server",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "cloudsql",
+                          weight: 0.85
+                        },
+                        {
+                          word: "gcp",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "google cloud sql sql server database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "google cloud sql sql server db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/cloudsql-mssql*",
+                        "**/*cloudsql-mssql*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.azuresql",
+                    label: "Azure SQL Database",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "azuresql",
+                          weight: 0.85
+                        },
+                        {
+                          word: "azure",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "azure sql database database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "azure sql database db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/azuresql*",
+                        "**/*azuresql*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.azure-pg",
+                    label: "Azure Database for PostgreSQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "azure",
+                          weight: 0.85
+                        },
+                        {
+                          word: "postgres",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "azure database for postgresql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "azure database for postgresql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/azure-pg*",
+                        "**/*azure-pg*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.azure-mysql",
+                    label: "Azure Database for MySQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "azure",
+                          weight: 0.85
+                        },
+                        {
+                          word: "mysql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "azure database for mysql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "azure database for mysql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/azure-mysql*",
+                        "**/*azure-mysql*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.percona-mysql",
+                    label: "Percona Server for MySQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "percona",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "percona server for mysql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "percona server for mysql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/percona-mysql*",
+                        "**/*percona-mysql*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.percona-mongo",
+                    label: "Percona Server for MongoDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "percona",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "percona server for mongodb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "percona server for mongodb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/percona-mongo*",
+                        "**/*percona-mongo*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.teradata",
+                    label: "Teradata",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "teradata",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "teradata database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "teradata db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/teradata*",
+                        "**/*teradata*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.sybase",
+                    label: "Sybase ASE",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "sybase",
+                          weight: 0.85
+                        },
+                        {
+                          word: "ase",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "sybase ase database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "sybase ase db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/sybase*",
+                        "**/*sybase*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.virtuoso",
+                    label: "Virtuoso",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "virtuoso",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "virtuoso database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "virtuoso db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/virtuoso*",
+                        "**/*virtuoso*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.nuodb",
+                    label: "NuoDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "nuodb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "nuodb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "nuodb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/nuodb*",
+                        "**/*nuodb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.hive",
+                    label: "Apache Hive",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "hive",
+                          weight: 0.85
+                        },
+                        {
+                          word: "hive2",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache hive database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache hive db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'thrift-hive'",
+                        "require('thrift-hive')"
+                      ],
+                      filePatterns: [
+                        "**/hive*",
+                        "**/*hive*"
+                      ],
+                      symbolPatterns: [
+                        "hiveclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.impala",
+                    label: "Cloudera Impala",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "impala",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "cloudera impala database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "cloudera impala db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/impala*",
+                        "**/*impala*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.greenplum",
+                    label: "Greenplum",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "greenplum",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "greenplum database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "greenplum db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/greenplum*",
+                        "**/*greenplum*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.hsqldb",
+                    label: "HSQLDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "hsqldb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "hsqldb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "hsqldb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/hsqldb*",
+                        "**/*hsqldb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.presto",
+                    label: "Presto",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "presto",
+                          weight: 0.85
+                        },
+                        {
+                          word: "prestodb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "presto database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "presto db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'presto-client'",
+                        "require('presto-client')"
+                      ],
+                      filePatterns: [
+                        "**/presto*",
+                        "**/*presto*"
+                      ],
+                      symbolPatterns: [
+                        "prestoclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.trino",
+                    label: "Trino",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "trino",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "trino database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "trino db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'trino-client-node'",
+                        "require('trino-client-node')"
+                      ],
+                      filePatterns: [
+                        "**/trino*",
+                        "**/*trino*"
+                      ],
+                      symbolPatterns: [
+                        "trinoclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.vertica",
+                    label: "Vertica",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "vertica",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "vertica database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "vertica db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'vertica'",
+                        "require('vertica')"
+                      ],
+                      filePatterns: [
+                        "**/vertica*",
+                        "**/*vertica*"
+                      ],
+                      symbolPatterns: [
+                        "verticaclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.sqlite-cloud",
+                    label: "SQLite Cloud",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "sqlitecloud",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "sqlite cloud database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "sqlite cloud db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@sqlitecloud/sdk'",
+                        "require('@sqlitecloud/sdk')"
+                      ],
+                      filePatterns: [
+                        "**/sqlite-cloud*",
+                        "**/*sqlite-cloud*"
+                      ],
+                      symbolPatterns: [
+                        "sqlitecloud"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.libsql",
+                    label: "Libsql (Turso)",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "libsql",
+                          weight: 0.85
+                        },
+                        {
+                          word: "turso",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "libsql (turso) database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "libsql (turso) db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@libsql/client'",
+                        "require('@libsql/client')"
+                      ],
+                      filePatterns: [
+                        "**/libsql*",
+                        "**/*libsql*"
+                      ],
+                      symbolPatterns: [
+                        "libsqlclient",
+                        "createclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.duckdb",
+                    label: "DuckDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "duckdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "duckdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "duckdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'duckdb'",
+                        "require('duckdb')"
+                      ],
+                      filePatterns: [
+                        "**/duckdb*",
+                        "**/*duckdb*"
+                      ],
+                      symbolPatterns: [
+                        "database",
+                        "connection"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.oceanbase",
+                    label: "OceanBase",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "oceanbase",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "oceanbase database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "oceanbase db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/oceanbase*",
+                        "**/*oceanbase*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.relational.voltdb",
+                    label: "VoltDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "voltdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "voltdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "voltdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/voltdb*",
+                        "**/*voltdb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  }
+                ],
+                triggers: {
+                  words: [
+                    {
+                      word: "relational",
+                      weight: 0.6
+                    },
+                    {
+                      word: "sql",
+                      weight: 0.4
+                    },
+                    {
+                      word: "rdbms",
+                      weight: 0.8
+                    },
+                    {
+                      word: "postgresql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "postgres",
+                      weight: 0.3
+                    },
+                    {
+                      word: "pg",
+                      weight: 0.3
+                    },
+                    {
+                      word: "pgpool",
+                      weight: 0.3
+                    },
+                    {
+                      word: "pgbouncer",
+                      weight: 0.3
+                    },
+                    {
+                      word: "mysql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "mariadb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "myisam",
+                      weight: 0.3
+                    },
+                    {
+                      word: "innodb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "sqlite",
+                      weight: 0.3
+                    },
+                    {
+                      word: "sqlite3",
+                      weight: 0.3
+                    },
+                    {
+                      word: "better-sqlite3",
+                      weight: 0.3
+                    },
+                    {
+                      word: "libsql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "oracle",
+                      weight: 0.3
+                    },
+                    {
+                      word: "oracledb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "plsql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "mssql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "sqlserver",
+                      weight: 0.3
+                    },
+                    {
+                      word: "tsql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cockroach",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cockroachdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "crdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "spanner",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cloudspanner",
+                      weight: 0.3
+                    },
+                    {
+                      word: "yugabyte",
+                      weight: 0.3
+                    },
+                    {
+                      word: "yugabytedb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "ycql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "ysql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "tidb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "singlestore",
+                      weight: 0.3
+                    },
+                    {
+                      word: "memsql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "db2",
+                      weight: 0.3
+                    },
+                    {
+                      word: "ibmdb2",
+                      weight: 0.3
+                    },
+                    {
+                      word: "firebird",
+                      weight: 0.3
+                    },
+                    {
+                      word: "firebirdsql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "h2",
+                      weight: 0.3
+                    },
+                    {
+                      word: "h2database",
+                      weight: 0.3
+                    },
+                    {
+                      word: "derby",
+                      weight: 0.3
+                    },
+                    {
+                      word: "apachederby",
+                      weight: 0.3
+                    },
+                    {
+                      word: "informix",
+                      weight: 0.3
+                    },
+                    {
+                      word: "ingres",
+                      weight: 0.3
+                    },
+                    {
+                      word: "actian",
+                      weight: 0.3
+                    },
+                    {
+                      word: "saphana",
+                      weight: 0.3
+                    },
+                    {
+                      word: "hana",
+                      weight: 0.3
+                    },
+                    {
+                      word: "aurora",
+                      weight: 0.3
+                    },
+                    {
+                      word: "rds",
+                      weight: 0.3
+                    },
+                    {
+                      word: "aws-sdk",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cloudsql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "gcp",
+                      weight: 0.3
+                    },
+                    {
+                      word: "azuresql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "azure",
+                      weight: 0.3
+                    },
+                    {
+                      word: "percona",
+                      weight: 0.3
+                    },
+                    {
+                      word: "teradata",
+                      weight: 0.3
+                    },
+                    {
+                      word: "sybase",
+                      weight: 0.3
+                    },
+                    {
+                      word: "ase",
+                      weight: 0.3
+                    },
+                    {
+                      word: "virtuoso",
+                      weight: 0.3
+                    },
+                    {
+                      word: "nuodb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "hive",
+                      weight: 0.3
+                    },
+                    {
+                      word: "hive2",
+                      weight: 0.3
+                    },
+                    {
+                      word: "impala",
+                      weight: 0.3
+                    },
+                    {
+                      word: "greenplum",
+                      weight: 0.3
+                    },
+                    {
+                      word: "hsqldb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "presto",
+                      weight: 0.3
+                    },
+                    {
+                      word: "prestodb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "trino",
+                      weight: 0.3
+                    },
+                    {
+                      word: "vertica",
+                      weight: 0.3
+                    },
+                    {
+                      word: "sqlitecloud",
+                      weight: 0.3
+                    },
+                    {
+                      word: "turso",
+                      weight: 0.3
+                    },
+                    {
+                      word: "duckdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "oceanbase",
+                      weight: 0.3
+                    },
+                    {
+                      word: "voltdb",
+                      weight: 0.3
+                    }
+                  ],
+                  phrases: [],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'pg'",
+                    "require('pg')",
+                    "from 'pg-pool'",
+                    "require('pg-pool')",
+                    "from 'postgres'",
+                    "require('postgres')",
+                    "from 'mysql'",
+                    "require('mysql')",
+                    "from 'mysql2'",
+                    "require('mysql2')",
+                    "from 'mysql2/promise'",
+                    "require('mysql2/promise')",
+                    "from 'sqlite3'",
+                    "require('sqlite3')",
+                    "from 'better-sqlite3'",
+                    "require('better-sqlite3')",
+                    "from 'sqlite'",
+                    "require('sqlite')",
+                    "from 'libsql'",
+                    "require('libsql')",
+                    "from 'oracledb'",
+                    "require('oracledb')",
+                    "from 'mssql'",
+                    "require('mssql')",
+                    "from 'tedious'",
+                    "require('tedious')",
+                    "from 'mariadb'",
+                    "require('mariadb')",
+                    "from '@google-cloud/spanner'",
+                    "require('@google-cloud/spanner')",
+                    "from 'cassandra-driver'",
+                    "require('cassandra-driver')",
+                    "from 'ibm_db'",
+                    "require('ibm_db')",
+                    "from 'node-firebird'",
+                    "require('node-firebird')",
+                    "from '@sap/hana-client'",
+                    "require('@sap/hana-client')",
+                    "from '@aws-sdk/client-rds-data'",
+                    "require('@aws-sdk/client-rds-data')",
+                    "from 'thrift-hive'",
+                    "require('thrift-hive')",
+                    "from 'presto-client'",
+                    "require('presto-client')",
+                    "from 'trino-client-node'",
+                    "require('trino-client-node')",
+                    "from 'vertica'",
+                    "require('vertica')",
+                    "from '@sqlitecloud/sdk'",
+                    "require('@sqlitecloud/sdk')",
+                    "from '@libsql/client'",
+                    "require('@libsql/client')",
+                    "from 'duckdb'",
+                    "require('duckdb')"
+                  ],
+                  filePatterns: [
+                    "**/postgresql*",
+                    "**/*postgresql*",
+                    "**/mysql*",
+                    "**/*mysql*",
+                    "**/sqlite*",
+                    "**/*sqlite*",
+                    "**/oracle*",
+                    "**/*oracle*",
+                    "**/mssql*",
+                    "**/*mssql*",
+                    "**/mariadb*",
+                    "**/*mariadb*",
+                    "**/cockroachdb*",
+                    "**/*cockroachdb*",
+                    "**/spanner*",
+                    "**/*spanner*",
+                    "**/yugabyte*",
+                    "**/*yugabyte*",
+                    "**/tidb*",
+                    "**/*tidb*",
+                    "**/singlestore*",
+                    "**/*singlestore*",
+                    "**/db2*",
+                    "**/*db2*",
+                    "**/firebird*",
+                    "**/*firebird*",
+                    "**/h2*",
+                    "**/*h2*",
+                    "**/derby*",
+                    "**/*derby*",
+                    "**/informix*",
+                    "**/*informix*",
+                    "**/ingres*",
+                    "**/*ingres*",
+                    "**/saphana*",
+                    "**/*saphana*",
+                    "**/aurora-pg*",
+                    "**/*aurora-pg*",
+                    "**/aurora-mysql*",
+                    "**/*aurora-mysql*",
+                    "**/cloudsql-pg*",
+                    "**/*cloudsql-pg*",
+                    "**/cloudsql-mysql*",
+                    "**/*cloudsql-mysql*",
+                    "**/cloudsql-mssql*",
+                    "**/*cloudsql-mssql*",
+                    "**/azuresql*",
+                    "**/*azuresql*",
+                    "**/azure-pg*",
+                    "**/*azure-pg*",
+                    "**/azure-mysql*",
+                    "**/*azure-mysql*",
+                    "**/percona-mysql*",
+                    "**/*percona-mysql*",
+                    "**/percona-mongo*",
+                    "**/*percona-mongo*",
+                    "**/teradata*",
+                    "**/*teradata*",
+                    "**/sybase*",
+                    "**/*sybase*",
+                    "**/virtuoso*",
+                    "**/*virtuoso*",
+                    "**/nuodb*",
+                    "**/*nuodb*",
+                    "**/hive*",
+                    "**/*hive*",
+                    "**/impala*",
+                    "**/*impala*",
+                    "**/greenplum*",
+                    "**/*greenplum*",
+                    "**/hsqldb*",
+                    "**/*hsqldb*",
+                    "**/presto*",
+                    "**/*presto*",
+                    "**/trino*",
+                    "**/*trino*",
+                    "**/vertica*",
+                    "**/*vertica*",
+                    "**/sqlite-cloud*",
+                    "**/*sqlite-cloud*",
+                    "**/libsql*",
+                    "**/*libsql*",
+                    "**/duckdb*",
+                    "**/*duckdb*",
+                    "**/oceanbase*",
+                    "**/*oceanbase*",
+                    "**/voltdb*",
+                    "**/*voltdb*"
+                  ],
+                  symbolPatterns: [
+                    "pool",
+                    "client",
+                    "pgclient",
+                    "connection",
+                    "mysqlclient",
+                    "database",
+                    "statement",
+                    "oracleclient",
+                    "connectionpool",
+                    "request",
+                    "spanner",
+                    "cluster",
+                    "jdbc",
+                    "rdsdataservice",
+                    "hiveclient",
+                    "prestoclient",
+                    "trinoclient",
+                    "verticaclient",
+                    "sqlitecloud",
+                    "libsqlclient",
+                    "createclient"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  execution: [
+                    {
+                      id: "relational-transactions",
+                      summary: "Proper transactional bounds in RDBMS",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "When executing multiple writes in a relational database, wrap them in a TRANSACTION (BEGIN/COMMIT) to preserve atomicity.",
+                      decisionTree: null,
+                      codePatterns: [
+                        {
+                          concern: "Atomic database updates",
+                          wrong: {
+                            code: 'await db.query("INSERT INTO users ...");\nawait db.query("INSERT INTO profiles ...");',
+                            language: "javascript",
+                            explanation: "If the second query fails, the user is left in an inconsistent state."
+                          },
+                          correct: {
+                            code: 'await db.query("BEGIN");\ntry {\n  await db.query("INSERT INTO users ...");\n  await db.query("INSERT INTO profiles ...");\n  await db.query("COMMIT");\n} catch (e) {\n  await db.query("ROLLBACK");\n  throw e;\n}',
+                            language: "javascript",
+                            explanation: "Ensures that either both writes succeed or neither does."
+                          },
+                          detectionHint: "Multiple sequential write queries without BEGIN/COMMIT"
+                        }
+                      ],
+                      commonMistakes: [
+                        {
+                          mistake: "Leaving database transactions uncommitted or un-rolled back in catch branches",
+                          whyItHappens: "Forgetting rollback statement inside the catch block.",
+                          correction: "Always include ROLLBACK in the catch block and ensure connection is released.",
+                          severity: "data-loss"
+                        }
+                      ],
+                      selfVerification: [
+                        {
+                          check: "Every BEGIN block has a corresponding COMMIT and ROLLBACK path",
+                          howToVerify: "Verify query lines and make sure error handler calls ROLLBACK.",
+                          failureIndicator: "BEGIN query found without ROLLBACK inside catch block",
+                          remediation: "Add a ROLLBACK statement to the database catch wrapper."
+                        }
+                      ],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ],
+                  verification: null
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.database.document",
+                label: "Document Datastore",
+                children: [
+                  {
+                    id: "backend.database.document.mongodb",
+                    label: "MongoDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "mongodb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "mongo",
+                          weight: 0.85
+                        },
+                        {
+                          word: "mongoose",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "mongodb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "mongodb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'mongodb'",
+                        "require('mongodb')",
+                        "from 'mongoose'",
+                        "require('mongoose')"
+                      ],
+                      filePatterns: [
+                        "**/mongodb*",
+                        "**/*mongodb*"
+                      ],
+                      symbolPatterns: [
+                        "mongoclient",
+                        "schema",
+                        "model"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.couchdb",
+                    label: "Apache CouchDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "couchdb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "nano",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache couchdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache couchdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'nano'",
+                        "require('nano')"
+                      ],
+                      filePatterns: [
+                        "**/couchdb*",
+                        "**/*couchdb*"
+                      ],
+                      symbolPatterns: [
+                        "nano"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.documentdb",
+                    label: "AWS DocumentDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "documentdb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "mongodb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aws documentdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aws documentdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'mongodb'",
+                        "require('mongodb')"
+                      ],
+                      filePatterns: [
+                        "**/documentdb*",
+                        "**/*documentdb*"
+                      ],
+                      symbolPatterns: [
+                        "mongoclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.cosmosdb",
+                    label: "Azure Cosmos DB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "cosmosdb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "cosmos",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "azure cosmos db database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "azure cosmos db db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@azure/cosmos'",
+                        "require('@azure/cosmos')"
+                      ],
+                      filePatterns: [
+                        "**/cosmosdb*",
+                        "**/*cosmosdb*"
+                      ],
+                      symbolPatterns: [
+                        "cosmosclient",
+                        "container"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.faunadb",
+                    label: "FaunaDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "fauna",
+                          weight: 0.85
+                        },
+                        {
+                          word: "faunadb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "fql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "faunadb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "faunadb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'faunadb'",
+                        "require('faunadb')"
+                      ],
+                      filePatterns: [
+                        "**/faunadb*",
+                        "**/*faunadb*"
+                      ],
+                      symbolPatterns: [
+                        "faunaclient",
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.firestore",
+                    label: "Firebase Firestore",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "firestore",
+                          weight: 0.85
+                        },
+                        {
+                          word: "firebase",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "firebase firestore database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "firebase firestore db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'firebase/firestore'",
+                        "require('firebase/firestore')",
+                        "from '@google-cloud/firestore'",
+                        "require('@google-cloud/firestore')"
+                      ],
+                      filePatterns: [
+                        "**/firestore*",
+                        "**/*firestore*"
+                      ],
+                      symbolPatterns: [
+                        "firestore",
+                        "collectionreference"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.rethinkdb",
+                    label: "RethinkDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "rethinkdb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "rethink",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "rethinkdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "rethinkdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'rethinkdb'",
+                        "require('rethinkdb')",
+                        "from 'rethinkdbdash'",
+                        "require('rethinkdbdash')"
+                      ],
+                      filePatterns: [
+                        "**/rethinkdb*",
+                        "**/*rethinkdb*"
+                      ],
+                      symbolPatterns: [
+                        "rethinkconnection"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.arangodb",
+                    label: "ArangoDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "arangodb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "arangojs",
+                          weight: 0.85
+                        },
+                        {
+                          word: "aql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "arangodb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "arangodb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'arangojs'",
+                        "require('arangojs')"
+                      ],
+                      filePatterns: [
+                        "**/arangodb*",
+                        "**/*arangodb*"
+                      ],
+                      symbolPatterns: [
+                        "database",
+                        "arangojs"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.orientdb",
+                    label: "OrientDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "orientdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "orientdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "orientdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'orientjs'",
+                        "require('orientjs')"
+                      ],
+                      filePatterns: [
+                        "**/orientdb*",
+                        "**/*orientdb*"
+                      ],
+                      symbolPatterns: [
+                        "orientdb"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.ravendb",
+                    label: "RavenDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "ravendb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "ravendb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "ravendb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'ravendb'",
+                        "require('ravendb')"
+                      ],
+                      filePatterns: [
+                        "**/ravendb*",
+                        "**/*ravendb*"
+                      ],
+                      symbolPatterns: [
+                        "documentstore"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.couchbase",
+                    label: "Couchbase",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "couchbase",
+                          weight: 0.85
+                        },
+                        {
+                          word: "n1ql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "couchbase database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "couchbase db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'couchbase'",
+                        "require('couchbase')"
+                      ],
+                      filePatterns: [
+                        "**/couchbase*",
+                        "**/*couchbase*"
+                      ],
+                      symbolPatterns: [
+                        "cluster",
+                        "bucket"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.pouchdb",
+                    label: "PouchDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "pouchdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "pouchdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "pouchdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'pouchdb'",
+                        "require('pouchdb')",
+                        "from 'pouchdb-node'",
+                        "require('pouchdb-node')"
+                      ],
+                      filePatterns: [
+                        "**/pouchdb*",
+                        "**/*pouchdb*"
+                      ],
+                      symbolPatterns: [
+                        "pouchdb"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.marklogic",
+                    label: "MarkLogic",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "marklogic",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "marklogic database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "marklogic db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'marklogic'",
+                        "require('marklogic')"
+                      ],
+                      filePatterns: [
+                        "**/marklogic*",
+                        "**/*marklogic*"
+                      ],
+                      symbolPatterns: [
+                        "databaseclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.basex",
+                    label: "BaseX",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "basex",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "basex database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "basex db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/basex*",
+                        "**/*basex*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.existdb",
+                    label: "eXist-db",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "existdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "exist-db database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "exist-db db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/existdb*",
+                        "**/*existdb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.jackrabbit",
+                    label: "Apache Jackrabbit",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "jackrabbit",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache jackrabbit database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache jackrabbit db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/jackrabbit*",
+                        "**/*jackrabbit*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.cloudant",
+                    label: "IBM Cloudant",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "cloudant",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "ibm cloudant database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "ibm cloudant db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@ibm-cloud/cloudant'",
+                        "require('@ibm-cloud/cloudant')"
+                      ],
+                      filePatterns: [
+                        "**/cloudant*",
+                        "**/*cloudant*"
+                      ],
+                      symbolPatterns: [
+                        "cloudant"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.supabase-jsonb",
+                    label: "Supabase JSONB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "supabase",
+                          weight: 0.85
+                        },
+                        {
+                          word: "postgrest",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "supabase jsonb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "supabase jsonb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/supabase-jsonb*",
+                        "**/*supabase-jsonb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.nedb",
+                    label: "NeDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "nedb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "nedb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "nedb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'nedb'",
+                        "require('nedb')"
+                      ],
+                      filePatterns: [
+                        "**/nedb*",
+                        "**/*nedb*"
+                      ],
+                      symbolPatterns: [
+                        "datastore"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.gundb",
+                    label: "GunDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "gundb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "gun",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "gundb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "gundb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'gun'",
+                        "require('gun')"
+                      ],
+                      filePatterns: [
+                        "**/gundb*",
+                        "**/*gundb*"
+                      ],
+                      symbolPatterns: [
+                        "gun"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.rxdb",
+                    label: "RxDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "rxdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "rxdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "rxdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'rxdb'",
+                        "require('rxdb')"
+                      ],
+                      filePatterns: [
+                        "**/rxdb*",
+                        "**/*rxdb*"
+                      ],
+                      symbolPatterns: [
+                        "rxdatabase"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.lovefield",
+                    label: "Lovefield",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "lovefield",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "lovefield database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "lovefield db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/lovefield*",
+                        "**/*lovefield*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.ejdb",
+                    label: "EJDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "ejdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "ejdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "ejdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/ejdb*",
+                        "**/*ejdb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.lowdb",
+                    label: "Lowdb",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "lowdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "lowdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "lowdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'lowdb'",
+                        "require('lowdb')"
+                      ],
+                      filePatterns: [
+                        "**/lowdb*",
+                        "**/*lowdb*"
+                      ],
+                      symbolPatterns: [
+                        "low"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.document.minimongo",
+                    label: "Minimongo",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "minimongo",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "minimongo database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "minimongo db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/minimongo*",
+                        "**/*minimongo*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  }
+                ],
+                triggers: {
+                  words: [
+                    {
+                      word: "document",
+                      weight: 0.5
+                    },
+                    {
+                      word: "nosql",
+                      weight: 0.6
+                    },
+                    {
+                      word: "json",
+                      weight: 0.3
+                    },
+                    {
+                      word: "mongodb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "mongo",
+                      weight: 0.3
+                    },
+                    {
+                      word: "mongoose",
+                      weight: 0.3
+                    },
+                    {
+                      word: "couchdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "nano",
+                      weight: 0.3
+                    },
+                    {
+                      word: "documentdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cosmosdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cosmos",
+                      weight: 0.3
+                    },
+                    {
+                      word: "fauna",
+                      weight: 0.3
+                    },
+                    {
+                      word: "faunadb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "fql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "firestore",
+                      weight: 0.3
+                    },
+                    {
+                      word: "firebase",
+                      weight: 0.3
+                    },
+                    {
+                      word: "rethinkdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "rethink",
+                      weight: 0.3
+                    },
+                    {
+                      word: "arangodb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "arangojs",
+                      weight: 0.3
+                    },
+                    {
+                      word: "aql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "orientdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "ravendb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "couchbase",
+                      weight: 0.3
+                    },
+                    {
+                      word: "n1ql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "pouchdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "marklogic",
+                      weight: 0.3
+                    },
+                    {
+                      word: "basex",
+                      weight: 0.3
+                    },
+                    {
+                      word: "existdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "jackrabbit",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cloudant",
+                      weight: 0.3
+                    },
+                    {
+                      word: "supabase",
+                      weight: 0.3
+                    },
+                    {
+                      word: "postgrest",
+                      weight: 0.3
+                    },
+                    {
+                      word: "nedb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "gundb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "gun",
+                      weight: 0.3
+                    },
+                    {
+                      word: "rxdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "lovefield",
+                      weight: 0.3
+                    },
+                    {
+                      word: "ejdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "lowdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "minimongo",
+                      weight: 0.3
+                    }
+                  ],
+                  phrases: [],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'mongodb'",
+                    "require('mongodb')",
+                    "from 'mongoose'",
+                    "require('mongoose')",
+                    "from 'nano'",
+                    "require('nano')",
+                    "from '@azure/cosmos'",
+                    "require('@azure/cosmos')",
+                    "from 'faunadb'",
+                    "require('faunadb')",
+                    "from 'firebase/firestore'",
+                    "require('firebase/firestore')",
+                    "from '@google-cloud/firestore'",
+                    "require('@google-cloud/firestore')",
+                    "from 'rethinkdb'",
+                    "require('rethinkdb')",
+                    "from 'rethinkdbdash'",
+                    "require('rethinkdbdash')",
+                    "from 'arangojs'",
+                    "require('arangojs')",
+                    "from 'orientjs'",
+                    "require('orientjs')",
+                    "from 'ravendb'",
+                    "require('ravendb')",
+                    "from 'couchbase'",
+                    "require('couchbase')",
+                    "from 'pouchdb'",
+                    "require('pouchdb')",
+                    "from 'pouchdb-node'",
+                    "require('pouchdb-node')",
+                    "from 'marklogic'",
+                    "require('marklogic')",
+                    "from '@ibm-cloud/cloudant'",
+                    "require('@ibm-cloud/cloudant')",
+                    "from 'nedb'",
+                    "require('nedb')",
+                    "from 'gun'",
+                    "require('gun')",
+                    "from 'rxdb'",
+                    "require('rxdb')",
+                    "from 'lowdb'",
+                    "require('lowdb')"
+                  ],
+                  filePatterns: [
+                    "**/mongodb*",
+                    "**/*mongodb*",
+                    "**/couchdb*",
+                    "**/*couchdb*",
+                    "**/documentdb*",
+                    "**/*documentdb*",
+                    "**/cosmosdb*",
+                    "**/*cosmosdb*",
+                    "**/faunadb*",
+                    "**/*faunadb*",
+                    "**/firestore*",
+                    "**/*firestore*",
+                    "**/rethinkdb*",
+                    "**/*rethinkdb*",
+                    "**/arangodb*",
+                    "**/*arangodb*",
+                    "**/orientdb*",
+                    "**/*orientdb*",
+                    "**/ravendb*",
+                    "**/*ravendb*",
+                    "**/couchbase*",
+                    "**/*couchbase*",
+                    "**/pouchdb*",
+                    "**/*pouchdb*",
+                    "**/marklogic*",
+                    "**/*marklogic*",
+                    "**/basex*",
+                    "**/*basex*",
+                    "**/existdb*",
+                    "**/*existdb*",
+                    "**/jackrabbit*",
+                    "**/*jackrabbit*",
+                    "**/cloudant*",
+                    "**/*cloudant*",
+                    "**/supabase-jsonb*",
+                    "**/*supabase-jsonb*",
+                    "**/nedb*",
+                    "**/*nedb*",
+                    "**/gundb*",
+                    "**/*gundb*",
+                    "**/rxdb*",
+                    "**/*rxdb*",
+                    "**/lovefield*",
+                    "**/*lovefield*",
+                    "**/ejdb*",
+                    "**/*ejdb*",
+                    "**/lowdb*",
+                    "**/*lowdb*",
+                    "**/minimongo*",
+                    "**/*minimongo*"
+                  ],
+                  symbolPatterns: [
+                    "mongoclient",
+                    "schema",
+                    "model",
+                    "nano",
+                    "cosmosclient",
+                    "container",
+                    "faunaclient",
+                    "client",
+                    "firestore",
+                    "collectionreference",
+                    "rethinkconnection",
+                    "database",
+                    "arangojs",
+                    "orientdb",
+                    "documentstore",
+                    "cluster",
+                    "bucket",
+                    "pouchdb",
+                    "databaseclient",
+                    "cloudant",
+                    "datastore",
+                    "gun",
+                    "rxdatabase",
+                    "low"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  execution: [
+                    {
+                      id: "document-connection-cache",
+                      summary: "Reuse MongoClient / Database connection handles",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "In document stores, always cache and reuse database client instances. Avoid calling connect() on every request handler.",
+                      decisionTree: null,
+                      codePatterns: [
+                        {
+                          concern: "MongoClient connection caching",
+                          wrong: {
+                            code: 'app.get("/data", async (req, res) => {\n  const client = await MongoClient.connect(url);\n  res.json(await client.db().collection("data").find().toArray());\n});',
+                            language: "javascript",
+                            explanation: "Re-connects on every request, exhausting connection limits instantly."
+                          },
+                          correct: {
+                            code: 'let cachedClient = null;\nasync function getClient() {\n  if (!cachedClient) cachedClient = await MongoClient.connect(url);\n  return cachedClient;\n}\napp.get("/data", async (req, res) => {\n  const client = await getClient();\n  res.json(await client.db().collection("data").find().toArray());\n});',
+                            language: "javascript",
+                            explanation: "Caches the client instance globally and reuses it across requests."
+                          },
+                          detectionHint: "MongoClient.connect inside requests or route handlers"
+                        }
+                      ],
+                      commonMistakes: [],
+                      selfVerification: [],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ],
+                  verification: null
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.database.keyvalue",
+                label: "Key-Value & Cache Store",
+                children: [
+                  {
+                    id: "backend.database.keyvalue.redis",
+                    label: "Redis",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "redis",
+                          weight: 0.85
+                        },
+                        {
+                          word: "ioredis",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "redis database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "redis db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'redis'",
+                        "require('redis')",
+                        "from 'ioredis'",
+                        "require('ioredis')"
+                      ],
+                      filePatterns: [
+                        "**/redis*",
+                        "**/*redis*"
+                      ],
+                      symbolPatterns: [
+                        "redis",
+                        "redisclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.memcached",
+                    label: "Memcached",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "memcached",
+                          weight: 0.85
+                        },
+                        {
+                          word: "memcache",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "memcached database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "memcached db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'memcached'",
+                        "require('memcached')",
+                        "from 'memcache'",
+                        "require('memcache')"
+                      ],
+                      filePatterns: [
+                        "**/memcached*",
+                        "**/*memcached*"
+                      ],
+                      symbolPatterns: [
+                        "memcached"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.dynamodb",
+                    label: "AWS DynamoDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "dynamodb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "dynamo",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aws dynamodb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aws dynamodb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@aws-sdk/client-dynamodb'",
+                        "require('@aws-sdk/client-dynamodb')",
+                        "from 'aws-sdk'",
+                        "require('aws-sdk')"
+                      ],
+                      filePatterns: [
+                        "**/dynamodb*",
+                        "**/*dynamodb*"
+                      ],
+                      symbolPatterns: [
+                        "dynamodb",
+                        "dynamodbclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.keydb",
+                    label: "KeyDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "keydb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "keydb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "keydb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'ioredis'",
+                        "require('ioredis')",
+                        "from 'redis'",
+                        "require('redis')"
+                      ],
+                      filePatterns: [
+                        "**/keydb*",
+                        "**/*keydb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.dragonfly",
+                    label: "Dragonfly",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "dragonfly",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "dragonfly database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "dragonfly db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'ioredis'",
+                        "require('ioredis')",
+                        "from 'redis'",
+                        "require('redis')"
+                      ],
+                      filePatterns: [
+                        "**/dragonfly*",
+                        "**/*dragonfly*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.aerospike",
+                    label: "Aerospike",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "aerospike",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aerospike database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aerospike db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'aerospike'",
+                        "require('aerospike')"
+                      ],
+                      filePatterns: [
+                        "**/aerospike*",
+                        "**/*aerospike*"
+                      ],
+                      symbolPatterns: [
+                        "aerospikeclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.riak",
+                    label: "Riak KV",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "riak",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "riak kv database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "riak kv db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'basho-riak-client'",
+                        "require('basho-riak-client')"
+                      ],
+                      filePatterns: [
+                        "**/riak*",
+                        "**/*riak*"
+                      ],
+                      symbolPatterns: [
+                        "riakclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.rocksdb",
+                    label: "RocksDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "rocksdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "rocksdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "rocksdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'rocksdb'",
+                        "require('rocksdb')",
+                        "from 'leveldown'",
+                        "require('leveldown')"
+                      ],
+                      filePatterns: [
+                        "**/rocksdb*",
+                        "**/*rocksdb*"
+                      ],
+                      symbolPatterns: [
+                        "rocksdb"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.leveldb",
+                    label: "LevelDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "leveldb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "levelup",
+                          weight: 0.85
+                        },
+                        {
+                          word: "leveldown",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "leveldb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "leveldb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'levelup'",
+                        "require('levelup')",
+                        "from 'leveldown'",
+                        "require('leveldown')",
+                        "from 'level'",
+                        "require('level')"
+                      ],
+                      filePatterns: [
+                        "**/leveldb*",
+                        "**/*leveldb*"
+                      ],
+                      symbolPatterns: [
+                        "levelup"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.boltdb",
+                    label: "BoltDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "boltdb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "bolt",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "boltdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "boltdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/boltdb*",
+                        "**/*boltdb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.badgerdb",
+                    label: "BadgerDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "badger",
+                          weight: 0.85
+                        },
+                        {
+                          word: "badgerdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "badgerdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "badgerdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/badgerdb*",
+                        "**/*badgerdb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.lmdb",
+                    label: "LMDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "lmdb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "lightningdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "lmdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "lmdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'lmdb'",
+                        "require('lmdb')",
+                        "from 'node-lmdb'",
+                        "require('node-lmdb')"
+                      ],
+                      filePatterns: [
+                        "**/lmdb*",
+                        "**/*lmdb*"
+                      ],
+                      symbolPatterns: [
+                        "env",
+                        "database"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.hazelcast",
+                    label: "Hazelcast",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "hazelcast",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "hazelcast database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "hazelcast db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'hazelcast-client'",
+                        "require('hazelcast-client')"
+                      ],
+                      filePatterns: [
+                        "**/hazelcast*",
+                        "**/*hazelcast*"
+                      ],
+                      symbolPatterns: [
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.geode",
+                    label: "Apache Geode",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "geode",
+                          weight: 0.85
+                        },
+                        {
+                          word: "gemfire",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache geode database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache geode db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/geode*",
+                        "**/*geode*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.coherence",
+                    label: "Oracle Coherence",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "coherence",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "oracle coherence database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "oracle coherence db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/coherence*",
+                        "**/*coherence*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.ehcache",
+                    label: "Ehcache",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "ehcache",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "ehcache database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "ehcache db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/ehcache*",
+                        "**/*ehcache*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.infinispan",
+                    label: "Infinispan",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "infinispan",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "infinispan database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "infinispan db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/infinispan*",
+                        "**/*infinispan*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.couchbase-memcached",
+                    label: "Couchbase Memcached",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "couchbase",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "couchbase memcached database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "couchbase memcached db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/couchbase-memcached*",
+                        "**/*couchbase-memcached*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.tile38",
+                    label: "Tile38",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "tile38",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "tile38 database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "tile38 db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'tile38'",
+                        "require('tile38')"
+                      ],
+                      filePatterns: [
+                        "**/tile38*",
+                        "**/*tile38*"
+                      ],
+                      symbolPatterns: [
+                        "tile38"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.tarantool",
+                    label: "Tarantool",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "tarantool",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "tarantool database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "tarantool db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'tarantool-driver'",
+                        "require('tarantool-driver')"
+                      ],
+                      filePatterns: [
+                        "**/tarantool*",
+                        "**/*tarantool*"
+                      ],
+                      symbolPatterns: [
+                        "tarantool"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.tikv",
+                    label: "TiKV",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "tikv",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "tikv database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "tikv db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/tikv*",
+                        "**/*tikv*"
+                      ],
+                      symbolPatterns: [
+                        "tikvclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.etcd",
+                    label: "Etcd",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "etcd",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "etcd database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "etcd db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'etcd3'",
+                        "require('etcd3')"
+                      ],
+                      filePatterns: [
+                        "**/etcd*",
+                        "**/*etcd*"
+                      ],
+                      symbolPatterns: [
+                        "etcd3",
+                        "etcd"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.consul-kv",
+                    label: "Consul KV",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "consul",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "consul kv database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "consul kv db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'consul'",
+                        "require('consul')"
+                      ],
+                      filePatterns: [
+                        "**/consul-kv*",
+                        "**/*consul-kv*"
+                      ],
+                      symbolPatterns: [
+                        "consul"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.voldemort",
+                    label: "Voldemort",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "voldemort",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "voldemort database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "voldemort db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/voldemort*",
+                        "**/*voldemort*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.keyvalue.berkeleydb",
+                    label: "BerkeleyDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "berkeleydb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "bdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "berkeleydb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "berkeleydb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/berkeleydb*",
+                        "**/*berkeleydb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  }
+                ],
+                triggers: {
+                  words: [
+                    {
+                      word: "cache",
+                      weight: 0.4
+                    },
+                    {
+                      word: "keyvalue",
+                      weight: 0.6
+                    },
+                    {
+                      word: "redis",
+                      weight: 0.4
+                    },
+                    {
+                      word: "ioredis",
+                      weight: 0.3
+                    },
+                    {
+                      word: "memcached",
+                      weight: 0.3
+                    },
+                    {
+                      word: "memcache",
+                      weight: 0.3
+                    },
+                    {
+                      word: "dynamodb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "dynamo",
+                      weight: 0.3
+                    },
+                    {
+                      word: "keydb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "dragonfly",
+                      weight: 0.3
+                    },
+                    {
+                      word: "aerospike",
+                      weight: 0.3
+                    },
+                    {
+                      word: "riak",
+                      weight: 0.3
+                    },
+                    {
+                      word: "rocksdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "leveldb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "levelup",
+                      weight: 0.3
+                    },
+                    {
+                      word: "leveldown",
+                      weight: 0.3
+                    },
+                    {
+                      word: "boltdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "bolt",
+                      weight: 0.3
+                    },
+                    {
+                      word: "badger",
+                      weight: 0.3
+                    },
+                    {
+                      word: "badgerdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "lmdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "lightningdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "hazelcast",
+                      weight: 0.3
+                    },
+                    {
+                      word: "geode",
+                      weight: 0.3
+                    },
+                    {
+                      word: "gemfire",
+                      weight: 0.3
+                    },
+                    {
+                      word: "coherence",
+                      weight: 0.3
+                    },
+                    {
+                      word: "ehcache",
+                      weight: 0.3
+                    },
+                    {
+                      word: "infinispan",
+                      weight: 0.3
+                    },
+                    {
+                      word: "couchbase",
+                      weight: 0.3
+                    },
+                    {
+                      word: "tile38",
+                      weight: 0.3
+                    },
+                    {
+                      word: "tarantool",
+                      weight: 0.3
+                    },
+                    {
+                      word: "tikv",
+                      weight: 0.3
+                    },
+                    {
+                      word: "etcd",
+                      weight: 0.3
+                    },
+                    {
+                      word: "consul",
+                      weight: 0.3
+                    },
+                    {
+                      word: "voldemort",
+                      weight: 0.3
+                    },
+                    {
+                      word: "berkeleydb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "bdb",
+                      weight: 0.3
+                    }
+                  ],
+                  phrases: [],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'redis'",
+                    "require('redis')",
+                    "from 'ioredis'",
+                    "require('ioredis')",
+                    "from 'memcached'",
+                    "require('memcached')",
+                    "from 'memcache'",
+                    "require('memcache')",
+                    "from '@aws-sdk/client-dynamodb'",
+                    "require('@aws-sdk/client-dynamodb')",
+                    "from 'aws-sdk'",
+                    "require('aws-sdk')",
+                    "from 'aerospike'",
+                    "require('aerospike')",
+                    "from 'basho-riak-client'",
+                    "require('basho-riak-client')",
+                    "from 'rocksdb'",
+                    "require('rocksdb')",
+                    "from 'leveldown'",
+                    "require('leveldown')",
+                    "from 'levelup'",
+                    "require('levelup')",
+                    "from 'level'",
+                    "require('level')",
+                    "from 'lmdb'",
+                    "require('lmdb')",
+                    "from 'node-lmdb'",
+                    "require('node-lmdb')",
+                    "from 'hazelcast-client'",
+                    "require('hazelcast-client')",
+                    "from 'tile38'",
+                    "require('tile38')",
+                    "from 'tarantool-driver'",
+                    "require('tarantool-driver')",
+                    "from 'etcd3'",
+                    "require('etcd3')",
+                    "from 'consul'",
+                    "require('consul')"
+                  ],
+                  filePatterns: [
+                    "**/redis*",
+                    "**/*redis*",
+                    "**/memcached*",
+                    "**/*memcached*",
+                    "**/dynamodb*",
+                    "**/*dynamodb*",
+                    "**/keydb*",
+                    "**/*keydb*",
+                    "**/dragonfly*",
+                    "**/*dragonfly*",
+                    "**/aerospike*",
+                    "**/*aerospike*",
+                    "**/riak*",
+                    "**/*riak*",
+                    "**/rocksdb*",
+                    "**/*rocksdb*",
+                    "**/leveldb*",
+                    "**/*leveldb*",
+                    "**/boltdb*",
+                    "**/*boltdb*",
+                    "**/badgerdb*",
+                    "**/*badgerdb*",
+                    "**/lmdb*",
+                    "**/*lmdb*",
+                    "**/hazelcast*",
+                    "**/*hazelcast*",
+                    "**/geode*",
+                    "**/*geode*",
+                    "**/coherence*",
+                    "**/*coherence*",
+                    "**/ehcache*",
+                    "**/*ehcache*",
+                    "**/infinispan*",
+                    "**/*infinispan*",
+                    "**/couchbase-memcached*",
+                    "**/*couchbase-memcached*",
+                    "**/tile38*",
+                    "**/*tile38*",
+                    "**/tarantool*",
+                    "**/*tarantool*",
+                    "**/tikv*",
+                    "**/*tikv*",
+                    "**/etcd*",
+                    "**/*etcd*",
+                    "**/consul-kv*",
+                    "**/*consul-kv*",
+                    "**/voldemort*",
+                    "**/*voldemort*",
+                    "**/berkeleydb*",
+                    "**/*berkeleydb*"
+                  ],
+                  symbolPatterns: [
+                    "redis",
+                    "redisclient",
+                    "memcached",
+                    "dynamodb",
+                    "dynamodbclient",
+                    "aerospikeclient",
+                    "riakclient",
+                    "rocksdb",
+                    "levelup",
+                    "env",
+                    "database",
+                    "client",
+                    "tile38",
+                    "tarantool",
+                    "tikvclient",
+                    "etcd3",
+                    "etcd",
+                    "consul"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  execution: [
+                    {
+                      id: "cache-ttl-stampede",
+                      summary: "Provide cache key TTL and stampede protection",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "When caching keys, always define a TTL (Time To Live). Consider cache stampede mitigation for hot keys.",
+                      decisionTree: null,
+                      codePatterns: [],
+                      commonMistakes: [
+                        {
+                          mistake: "Caching sensitive or dynamic user data indefinitely without TTL",
+                          whyItHappens: "Forgetting to set expire parameters in cache client calls.",
+                          correction: "Ensure all SET commands include an EX option.",
+                          severity: "functional"
+                        }
+                      ],
+                      selfVerification: [],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ],
+                  verification: null
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.database.widecolumn",
+                label: "Wide-Column Family Database",
+                children: [
+                  {
+                    id: "backend.database.widecolumn.cassandra",
+                    label: "Apache Cassandra",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "cassandra",
+                          weight: 0.85
+                        },
+                        {
+                          word: "cql",
+                          weight: 0.85
+                        },
+                        {
+                          word: "cqlsh",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache cassandra database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache cassandra db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'cassandra-driver'",
+                        "require('cassandra-driver')"
+                      ],
+                      filePatterns: [
+                        "**/cassandra*",
+                        "**/*cassandra*"
+                      ],
+                      symbolPatterns: [
+                        "client",
+                        "dseclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.scylladb",
+                    label: "ScyllaDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "scylladb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "scylla",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "scylladb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "scylladb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'cassandra-driver'",
+                        "require('cassandra-driver')"
+                      ],
+                      filePatterns: [
+                        "**/scylladb*",
+                        "**/*scylladb*"
+                      ],
+                      symbolPatterns: [
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.hbase",
+                    label: "Apache HBase",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "hbase",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache hbase database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache hbase db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'hbase'",
+                        "require('hbase')"
+                      ],
+                      filePatterns: [
+                        "**/hbase*",
+                        "**/*hbase*"
+                      ],
+                      symbolPatterns: [
+                        "hbaseclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.accumulo",
+                    label: "Apache Accumulo",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "accumulo",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache accumulo database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache accumulo db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/accumulo*",
+                        "**/*accumulo*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.bigtable",
+                    label: "Google Cloud Bigtable",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "bigtable",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "google cloud bigtable database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "google cloud bigtable db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@google-cloud/bigtable'",
+                        "require('@google-cloud/bigtable')"
+                      ],
+                      filePatterns: [
+                        "**/bigtable*",
+                        "**/*bigtable*"
+                      ],
+                      symbolPatterns: [
+                        "bigtable"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.keyspaces",
+                    label: "AWS Keyspaces",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "keyspaces",
+                          weight: 0.85
+                        },
+                        {
+                          word: "cassandra",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aws keyspaces database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aws keyspaces db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'cassandra-driver'",
+                        "require('cassandra-driver')"
+                      ],
+                      filePatterns: [
+                        "**/keyspaces*",
+                        "**/*keyspaces*"
+                      ],
+                      symbolPatterns: [
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.cosmos-cassandra",
+                    label: "Azure Cosmos DB Cassandra",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "cosmos",
+                          weight: 0.85
+                        },
+                        {
+                          word: "cassandra",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "azure cosmos db cassandra database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "azure cosmos db cassandra db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'cassandra-driver'",
+                        "require('cassandra-driver')"
+                      ],
+                      filePatterns: [
+                        "**/cosmos-cassandra*",
+                        "**/*cosmos-cassandra*"
+                      ],
+                      symbolPatterns: [
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.hypertable",
+                    label: "Hypertable",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "hypertable",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "hypertable database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "hypertable db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/hypertable*",
+                        "**/*hypertable*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.maprdb",
+                    label: "MapR-DB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "maprdb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "mapr",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "mapr-db database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "mapr-db db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/maprdb*",
+                        "**/*maprdb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.scylladb-cloud",
+                    label: "ScyllaDB Cloud",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "scylla",
+                          weight: 0.85
+                        },
+                        {
+                          word: "scylladb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "scylladb cloud database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "scylladb cloud db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/scylladb-cloud*",
+                        "**/*scylladb-cloud*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.cassandra-enterprise",
+                    label: "Cassandra Enterprise (DSE)",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "dse",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "cassandra enterprise (dse) database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "cassandra enterprise (dse) db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'cassandra-driver'",
+                        "require('cassandra-driver')"
+                      ],
+                      filePatterns: [
+                        "**/cassandra-enterprise*",
+                        "**/*cassandra-enterprise*"
+                      ],
+                      symbolPatterns: [
+                        "dseclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.elassandra",
+                    label: "Elassandra",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "elassandra",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "elassandra database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "elassandra db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/elassandra*",
+                        "**/*elassandra*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.yugabyte-ycql",
+                    label: "YugabyteDB YCQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "yugabyte",
+                          weight: 0.85
+                        },
+                        {
+                          word: "ycql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "yugabytedb ycql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "yugabytedb ycql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'cassandra-driver'",
+                        "require('cassandra-driver')"
+                      ],
+                      filePatterns: [
+                        "**/yugabyte-ycql*",
+                        "**/*yugabyte-ycql*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.cockroach-widecolumn",
+                    label: "CockroachDB Wide-column",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "cockroach",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "cockroachdb wide-column database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "cockroachdb wide-column db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/cockroach-widecolumn*",
+                        "**/*cockroach-widecolumn*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.widecolumn.splicemachine",
+                    label: "Splice Machine",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "splicemachine",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "splice machine database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "splice machine db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/splicemachine*",
+                        "**/*splicemachine*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  }
+                ],
+                triggers: {
+                  words: [
+                    {
+                      word: "widecolumn",
+                      weight: 0.7
+                    },
+                    {
+                      word: "cassandra",
+                      weight: 0.4
+                    },
+                    {
+                      word: "hbase",
+                      weight: 0.4
+                    },
+                    {
+                      word: "cql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cqlsh",
+                      weight: 0.3
+                    },
+                    {
+                      word: "scylladb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "scylla",
+                      weight: 0.3
+                    },
+                    {
+                      word: "accumulo",
+                      weight: 0.3
+                    },
+                    {
+                      word: "bigtable",
+                      weight: 0.3
+                    },
+                    {
+                      word: "keyspaces",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cosmos",
+                      weight: 0.3
+                    },
+                    {
+                      word: "hypertable",
+                      weight: 0.3
+                    },
+                    {
+                      word: "maprdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "mapr",
+                      weight: 0.3
+                    },
+                    {
+                      word: "dse",
+                      weight: 0.3
+                    },
+                    {
+                      word: "elassandra",
+                      weight: 0.3
+                    },
+                    {
+                      word: "yugabyte",
+                      weight: 0.3
+                    },
+                    {
+                      word: "ycql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cockroach",
+                      weight: 0.3
+                    },
+                    {
+                      word: "splicemachine",
+                      weight: 0.3
+                    }
+                  ],
+                  phrases: [],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'cassandra-driver'",
+                    "require('cassandra-driver')",
+                    "from 'hbase'",
+                    "require('hbase')",
+                    "from '@google-cloud/bigtable'",
+                    "require('@google-cloud/bigtable')"
+                  ],
+                  filePatterns: [
+                    "**/cassandra*",
+                    "**/*cassandra*",
+                    "**/scylladb*",
+                    "**/*scylladb*",
+                    "**/hbase*",
+                    "**/*hbase*",
+                    "**/accumulo*",
+                    "**/*accumulo*",
+                    "**/bigtable*",
+                    "**/*bigtable*",
+                    "**/keyspaces*",
+                    "**/*keyspaces*",
+                    "**/cosmos-cassandra*",
+                    "**/*cosmos-cassandra*",
+                    "**/hypertable*",
+                    "**/*hypertable*",
+                    "**/maprdb*",
+                    "**/*maprdb*",
+                    "**/scylladb-cloud*",
+                    "**/*scylladb-cloud*",
+                    "**/cassandra-enterprise*",
+                    "**/*cassandra-enterprise*",
+                    "**/elassandra*",
+                    "**/*elassandra*",
+                    "**/yugabyte-ycql*",
+                    "**/*yugabyte-ycql*",
+                    "**/cockroach-widecolumn*",
+                    "**/*cockroach-widecolumn*",
+                    "**/splicemachine*",
+                    "**/*splicemachine*"
+                  ],
+                  symbolPatterns: [
+                    "client",
+                    "dseclient",
+                    "hbaseclient",
+                    "bigtable"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  execution: [
+                    {
+                      id: "widecolumn-queries",
+                      summary: "Query-driven design in Cassandra/ScyllaDB",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "In wide-column stores, design tables strictly around queries. Avoid joins and perform denormalization to match target read shapes.",
+                      decisionTree: null,
+                      codePatterns: [],
+                      commonMistakes: [],
+                      selfVerification: [],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ],
+                  verification: null
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.database.columnar",
+                label: "Columnar Warehouse & OLAP Engine",
+                children: [
+                  {
+                    id: "backend.database.columnar.clickhouse",
+                    label: "ClickHouse",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "clickhouse",
+                          weight: 0.85
+                        },
+                        {
+                          word: "ch",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "clickhouse database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "clickhouse db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@clickhouse/client'",
+                        "require('@clickhouse/client')"
+                      ],
+                      filePatterns: [
+                        "**/clickhouse*",
+                        "**/*clickhouse*"
+                      ],
+                      symbolPatterns: [
+                        "clickhouseclient",
+                        "createclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.snowflake",
+                    label: "Snowflake",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "snowflake",
+                          weight: 0.85
+                        },
+                        {
+                          word: "snowsql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "snowflake database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "snowflake db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'snowflake-sdk'",
+                        "require('snowflake-sdk')"
+                      ],
+                      filePatterns: [
+                        "**/snowflake*",
+                        "**/*snowflake*"
+                      ],
+                      symbolPatterns: [
+                        "connection"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.bigquery",
+                    label: "Google BigQuery",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "bigquery",
+                          weight: 0.85
+                        },
+                        {
+                          word: "bq",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "google bigquery database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "google bigquery db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@google-cloud/bigquery'",
+                        "require('@google-cloud/bigquery')"
+                      ],
+                      filePatterns: [
+                        "**/bigquery*",
+                        "**/*bigquery*"
+                      ],
+                      symbolPatterns: [
+                        "bigquery"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.redshift",
+                    label: "AWS Redshift",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "redshift",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aws redshift database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aws redshift db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'pg'",
+                        "require('pg')"
+                      ],
+                      filePatterns: [
+                        "**/redshift*",
+                        "**/*redshift*"
+                      ],
+                      symbolPatterns: [
+                        "redshift"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.athena",
+                    label: "AWS Athena",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "athena",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aws athena database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aws athena db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'athena-express'",
+                        "require('athena-express')",
+                        "from '@aws-sdk/client-athena'",
+                        "require('@aws-sdk/client-athena')"
+                      ],
+                      filePatterns: [
+                        "**/athena*",
+                        "**/*athena*"
+                      ],
+                      symbolPatterns: [
+                        "athenaexpress",
+                        "athenaclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.druid",
+                    label: "Apache Druid",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "druid",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache druid database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache druid db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'druid-client'",
+                        "require('druid-client')"
+                      ],
+                      filePatterns: [
+                        "**/druid*",
+                        "**/*druid*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.pinot",
+                    label: "Apache Pinot",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "pinot",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache pinot database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache pinot db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'pinot-client'",
+                        "require('pinot-client')"
+                      ],
+                      filePatterns: [
+                        "**/pinot*",
+                        "**/*pinot*"
+                      ],
+                      symbolPatterns: [
+                        "pinotclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.duckdb-olap",
+                    label: "DuckDB OLAP",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "duckdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "duckdb olap database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "duckdb olap db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'duckdb'",
+                        "require('duckdb')"
+                      ],
+                      filePatterns: [
+                        "**/duckdb-olap*",
+                        "**/*duckdb-olap*"
+                      ],
+                      symbolPatterns: [
+                        "database"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.monetdb",
+                    label: "MonetDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "monetdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "monetdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "monetdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/monetdb*",
+                        "**/*monetdb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.vertica-olap",
+                    label: "Vertica OLAP",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "vertica",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "vertica olap database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "vertica olap db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/vertica-olap*",
+                        "**/*vertica-olap*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.teradata-vantage",
+                    label: "Teradata Vantage",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "teradata",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "teradata vantage database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "teradata vantage db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/teradata-vantage*",
+                        "**/*teradata-vantage*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.greenplum-olap",
+                    label: "Greenplum Database",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "greenplum",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "greenplum database database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "greenplum database db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/greenplum-olap*",
+                        "**/*greenplum-olap*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.clickhouse-cloud",
+                    label: "ClickHouse Cloud",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "clickhouse",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "clickhouse cloud database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "clickhouse cloud db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/clickhouse-cloud*",
+                        "**/*clickhouse-cloud*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.databricks-sql",
+                    label: "Databricks SQL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "databricks",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "databricks sql database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "databricks sql db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@databricks/databricks-sdk'",
+                        "require('@databricks/databricks-sdk')"
+                      ],
+                      filePatterns: [
+                        "**/databricks-sql*",
+                        "**/*databricks-sql*"
+                      ],
+                      symbolPatterns: [
+                        "databricksconnection"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.synapse",
+                    label: "Azure Synapse Analytics",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "synapse",
+                          weight: 0.85
+                        },
+                        {
+                          word: "azure",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "azure synapse analytics database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "azure synapse analytics db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/synapse*",
+                        "**/*synapse*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.starrocks",
+                    label: "StarRocks",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "starrocks",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "starrocks database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "starrocks db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/starrocks*",
+                        "**/*starrocks*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.doris",
+                    label: "Apache Doris",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "doris",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache doris database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache doris db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/doris*",
+                        "**/*doris*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.matrixone",
+                    label: "MatrixOne",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "matrixone",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "matrixone database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "matrixone db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/matrixone*",
+                        "**/*matrixone*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.clickhouse-keeper",
+                    label: "ClickHouse Keeper",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "clickhouse",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "clickhouse keeper database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "clickhouse keeper db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/clickhouse-keeper*",
+                        "**/*clickhouse-keeper*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.columnar.vectorwise",
+                    label: "Vectorwise",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "vectorwise",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "vectorwise database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "vectorwise db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/vectorwise*",
+                        "**/*vectorwise*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  }
+                ],
+                triggers: {
+                  words: [
+                    {
+                      word: "columnar",
+                      weight: 0.7
+                    },
+                    {
+                      word: "olap",
+                      weight: 0.7
+                    },
+                    {
+                      word: "warehouse",
+                      weight: 0.6
+                    },
+                    {
+                      word: "clickhouse",
+                      weight: 0.3
+                    },
+                    {
+                      word: "ch",
+                      weight: 0.3
+                    },
+                    {
+                      word: "snowflake",
+                      weight: 0.3
+                    },
+                    {
+                      word: "snowsql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "bigquery",
+                      weight: 0.3
+                    },
+                    {
+                      word: "bq",
+                      weight: 0.3
+                    },
+                    {
+                      word: "redshift",
+                      weight: 0.3
+                    },
+                    {
+                      word: "athena",
+                      weight: 0.3
+                    },
+                    {
+                      word: "druid",
+                      weight: 0.3
+                    },
+                    {
+                      word: "pinot",
+                      weight: 0.3
+                    },
+                    {
+                      word: "duckdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "monetdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "vertica",
+                      weight: 0.3
+                    },
+                    {
+                      word: "teradata",
+                      weight: 0.3
+                    },
+                    {
+                      word: "greenplum",
+                      weight: 0.3
+                    },
+                    {
+                      word: "databricks",
+                      weight: 0.3
+                    },
+                    {
+                      word: "synapse",
+                      weight: 0.3
+                    },
+                    {
+                      word: "azure",
+                      weight: 0.3
+                    },
+                    {
+                      word: "starrocks",
+                      weight: 0.3
+                    },
+                    {
+                      word: "doris",
+                      weight: 0.3
+                    },
+                    {
+                      word: "matrixone",
+                      weight: 0.3
+                    },
+                    {
+                      word: "vectorwise",
+                      weight: 0.3
+                    }
+                  ],
+                  phrases: [],
+                  antiWords: [],
+                  importPatterns: [
+                    "from '@clickhouse/client'",
+                    "require('@clickhouse/client')",
+                    "from 'snowflake-sdk'",
+                    "require('snowflake-sdk')",
+                    "from '@google-cloud/bigquery'",
+                    "require('@google-cloud/bigquery')",
+                    "from 'pg'",
+                    "require('pg')",
+                    "from 'athena-express'",
+                    "require('athena-express')",
+                    "from '@aws-sdk/client-athena'",
+                    "require('@aws-sdk/client-athena')",
+                    "from 'druid-client'",
+                    "require('druid-client')",
+                    "from 'pinot-client'",
+                    "require('pinot-client')",
+                    "from 'duckdb'",
+                    "require('duckdb')",
+                    "from '@databricks/databricks-sdk'",
+                    "require('@databricks/databricks-sdk')"
+                  ],
+                  filePatterns: [
+                    "**/clickhouse*",
+                    "**/*clickhouse*",
+                    "**/snowflake*",
+                    "**/*snowflake*",
+                    "**/bigquery*",
+                    "**/*bigquery*",
+                    "**/redshift*",
+                    "**/*redshift*",
+                    "**/athena*",
+                    "**/*athena*",
+                    "**/druid*",
+                    "**/*druid*",
+                    "**/pinot*",
+                    "**/*pinot*",
+                    "**/duckdb-olap*",
+                    "**/*duckdb-olap*",
+                    "**/monetdb*",
+                    "**/*monetdb*",
+                    "**/vertica-olap*",
+                    "**/*vertica-olap*",
+                    "**/teradata-vantage*",
+                    "**/*teradata-vantage*",
+                    "**/greenplum-olap*",
+                    "**/*greenplum-olap*",
+                    "**/clickhouse-cloud*",
+                    "**/*clickhouse-cloud*",
+                    "**/databricks-sql*",
+                    "**/*databricks-sql*",
+                    "**/synapse*",
+                    "**/*synapse*",
+                    "**/starrocks*",
+                    "**/*starrocks*",
+                    "**/doris*",
+                    "**/*doris*",
+                    "**/matrixone*",
+                    "**/*matrixone*",
+                    "**/clickhouse-keeper*",
+                    "**/*clickhouse-keeper*",
+                    "**/vectorwise*",
+                    "**/*vectorwise*"
+                  ],
+                  symbolPatterns: [
+                    "clickhouseclient",
+                    "createclient",
+                    "connection",
+                    "bigquery",
+                    "redshift",
+                    "athenaexpress",
+                    "athenaclient",
+                    "pinotclient",
+                    "database",
+                    "databricksconnection"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  execution: [
+                    {
+                      id: "columnar-batch-writes",
+                      summary: "Batch writes in columnar engines",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Columnar engines (e.g. ClickHouse, Snowflake) are built for large batches. NEVER write single rows concurrently; instead, buffer inserts.",
+                      decisionTree: null,
+                      codePatterns: [],
+                      commonMistakes: [
+                        {
+                          mistake: "Direct single-row inserts from real-time events",
+                          whyItHappens: "Treating ClickHouse like OLTP PostgreSQL database.",
+                          correction: "Buffer writes in memory or use a queue (Kafka/Redis) to write 1000+ rows in batch.",
+                          severity: "functional"
+                        }
+                      ],
+                      selfVerification: [],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ],
+                  verification: null
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.database.timeseries",
+                label: "Time-Series Engine",
+                children: [
+                  {
+                    id: "backend.database.timeseries.timescaledb",
+                    label: "TimescaleDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "timescaledb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "timescale",
+                          weight: 0.85
+                        },
+                        {
+                          word: "hypertable",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "timescaledb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "timescaledb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'pg'",
+                        "require('pg')"
+                      ],
+                      filePatterns: [
+                        "**/timescaledb*",
+                        "**/*timescaledb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.influxdb",
+                    label: "InfluxDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "influxdb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "influx",
+                          weight: 0.85
+                        },
+                        {
+                          word: "flux",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "influxdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "influxdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@influxdata/influxdb-client'",
+                        "require('@influxdata/influxdb-client')"
+                      ],
+                      filePatterns: [
+                        "**/influxdb*",
+                        "**/*influxdb*"
+                      ],
+                      symbolPatterns: [
+                        "influxdb",
+                        "point"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.questdb",
+                    label: "QuestDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "questdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "questdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "questdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@questdb/nodejs-client'",
+                        "require('@questdb/nodejs-client')"
+                      ],
+                      filePatterns: [
+                        "**/questdb*",
+                        "**/*questdb*"
+                      ],
+                      symbolPatterns: [
+                        "sender"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.victoriametrics",
+                    label: "VictoriaMetrics",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "victoriametrics",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "victoriametrics database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "victoriametrics db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/victoriametrics*",
+                        "**/*victoriametrics*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.prometheus",
+                    label: "Prometheus",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "prometheus",
+                          weight: 0.85
+                        },
+                        {
+                          word: "promql",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "prometheus database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "prometheus db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'prom-client'",
+                        "require('prom-client')"
+                      ],
+                      filePatterns: [
+                        "**/prometheus*",
+                        "**/*prometheus*"
+                      ],
+                      symbolPatterns: [
+                        "registry",
+                        "counter",
+                        "gauge"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.graphite",
+                    label: "Graphite",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "graphite",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "graphite database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "graphite db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/graphite*",
+                        "**/*graphite*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.opentsdb",
+                    label: "OpenTSDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "opentsdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "opentsdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "opentsdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/opentsdb*",
+                        "**/*opentsdb*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.kdbplus",
+                    label: "KDB+",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "kdb",
+                          weight: 0.85
+                        },
+                        {
+                          word: "q-language",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "kdb+ database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "kdb+ db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/kdbplus*",
+                        "**/*kdbplus*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.tdengine",
+                    label: "TDengine",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "tdengine",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "tdengine database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "tdengine db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@tdengine/client'",
+                        "require('@tdengine/client')"
+                      ],
+                      filePatterns: [
+                        "**/tdengine*",
+                        "**/*tdengine*"
+                      ],
+                      symbolPatterns: [
+                        "connection"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.iotdb",
+                    label: "Apache IoTDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "iotdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache iotdb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache iotdb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/iotdb*",
+                        "**/*iotdb*"
+                      ],
+                      symbolPatterns: [
+                        "session"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.timestream",
+                    label: "AWS Timestream",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "timestream",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aws timestream database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aws timestream db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@aws-sdk/client-timestream-write'",
+                        "require('@aws-sdk/client-timestream-write')"
+                      ],
+                      filePatterns: [
+                        "**/timestream*",
+                        "**/*timestream*"
+                      ],
+                      symbolPatterns: [
+                        "timestreamwriteclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.timeseries-insights",
+                    label: "Azure Time Series Insights",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "timeseries",
+                          weight: 0.85
+                        },
+                        {
+                          word: "azure",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "azure time series insights database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "azure time series insights db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/timeseries-insights*",
+                        "**/*timeseries-insights*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.influxdb-iox",
+                    label: "InfluxDB IOx",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "iox",
+                          weight: 0.85
+                        },
+                        {
+                          word: "influxdb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "influxdb iox database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "influxdb iox db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/influxdb-iox*",
+                        "**/*influxdb-iox*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.druid-ts",
+                    label: "Druid Time-Series",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "druid",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "druid time-series database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "druid time-series db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/druid-ts*",
+                        "**/*druid-ts*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.timeseries.timescale-cloud",
+                    label: "Timescale Cloud",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "timescale",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "timescale cloud database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "timescale cloud db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/timescale-cloud*",
+                        "**/*timescale-cloud*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  }
+                ],
+                triggers: {
+                  words: [
+                    {
+                      word: "timeseries",
+                      weight: 0.7
+                    },
+                    {
+                      word: "influx",
+                      weight: 0.4
+                    },
+                    {
+                      word: "questdb",
+                      weight: 0.4
+                    },
+                    {
+                      word: "timescaledb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "timescale",
+                      weight: 0.3
+                    },
+                    {
+                      word: "hypertable",
+                      weight: 0.3
+                    },
+                    {
+                      word: "influxdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "flux",
+                      weight: 0.3
+                    },
+                    {
+                      word: "victoriametrics",
+                      weight: 0.3
+                    },
+                    {
+                      word: "prometheus",
+                      weight: 0.3
+                    },
+                    {
+                      word: "promql",
+                      weight: 0.3
+                    },
+                    {
+                      word: "graphite",
+                      weight: 0.3
+                    },
+                    {
+                      word: "opentsdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "kdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "q-language",
+                      weight: 0.3
+                    },
+                    {
+                      word: "tdengine",
+                      weight: 0.3
+                    },
+                    {
+                      word: "iotdb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "timestream",
+                      weight: 0.3
+                    },
+                    {
+                      word: "azure",
+                      weight: 0.3
+                    },
+                    {
+                      word: "iox",
+                      weight: 0.3
+                    },
+                    {
+                      word: "druid",
+                      weight: 0.3
+                    }
+                  ],
+                  phrases: [],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'pg'",
+                    "require('pg')",
+                    "from '@influxdata/influxdb-client'",
+                    "require('@influxdata/influxdb-client')",
+                    "from '@questdb/nodejs-client'",
+                    "require('@questdb/nodejs-client')",
+                    "from 'prom-client'",
+                    "require('prom-client')",
+                    "from '@tdengine/client'",
+                    "require('@tdengine/client')",
+                    "from '@aws-sdk/client-timestream-write'",
+                    "require('@aws-sdk/client-timestream-write')"
+                  ],
+                  filePatterns: [
+                    "**/timescaledb*",
+                    "**/*timescaledb*",
+                    "**/influxdb*",
+                    "**/*influxdb*",
+                    "**/questdb*",
+                    "**/*questdb*",
+                    "**/victoriametrics*",
+                    "**/*victoriametrics*",
+                    "**/prometheus*",
+                    "**/*prometheus*",
+                    "**/graphite*",
+                    "**/*graphite*",
+                    "**/opentsdb*",
+                    "**/*opentsdb*",
+                    "**/kdbplus*",
+                    "**/*kdbplus*",
+                    "**/tdengine*",
+                    "**/*tdengine*",
+                    "**/iotdb*",
+                    "**/*iotdb*",
+                    "**/timestream*",
+                    "**/*timestream*",
+                    "**/timeseries-insights*",
+                    "**/*timeseries-insights*",
+                    "**/influxdb-iox*",
+                    "**/*influxdb-iox*",
+                    "**/druid-ts*",
+                    "**/*druid-ts*",
+                    "**/timescale-cloud*",
+                    "**/*timescale-cloud*"
+                  ],
+                  symbolPatterns: [
+                    "influxdb",
+                    "point",
+                    "sender",
+                    "registry",
+                    "counter",
+                    "gauge",
+                    "connection",
+                    "session",
+                    "timestreamwriteclient"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  execution: [
+                    {
+                      id: "timeseries-indexing",
+                      summary: "Time index sorting requirements",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Always ensure timeseries inserts are strictly timestamped and queried using time boundaries to utilize indexing partitions.",
+                      decisionTree: null,
+                      codePatterns: [],
+                      commonMistakes: [],
+                      selfVerification: [],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ],
+                  verification: null
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.database.search",
+                label: "Search Engine Store",
+                children: [
+                  {
+                    id: "backend.database.search.opensearch",
+                    label: "OpenSearch",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "opensearch",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "opensearch database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "opensearch db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@opensearch-project/opensearch'",
+                        "require('@opensearch-project/opensearch')"
+                      ],
+                      filePatterns: [
+                        "**/opensearch*",
+                        "**/*opensearch*"
+                      ],
+                      symbolPatterns: [
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.elasticsearch",
+                    label: "Elasticsearch",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "elasticsearch",
+                          weight: 0.85
+                        },
+                        {
+                          word: "es",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "elasticsearch database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "elasticsearch db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@elastic/elasticsearch'",
+                        "require('@elastic/elasticsearch')"
+                      ],
+                      filePatterns: [
+                        "**/elasticsearch*",
+                        "**/*elasticsearch*"
+                      ],
+                      symbolPatterns: [
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.solr",
+                    label: "Apache Solr",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "solr",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "apache solr database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "apache solr db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'solr-client'",
+                        "require('solr-client')"
+                      ],
+                      filePatterns: [
+                        "**/solr*",
+                        "**/*solr*"
+                      ],
+                      symbolPatterns: [
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.algolia",
+                    label: "Algolia",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "algolia",
+                          weight: 0.85
+                        },
+                        {
+                          word: "algoliasearch",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "algolia database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "algolia db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'algoliasearch'",
+                        "require('algoliasearch')"
+                      ],
+                      filePatterns: [
+                        "**/algolia*",
+                        "**/*algolia*"
+                      ],
+                      symbolPatterns: [
+                        "searchclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.meilisearch",
+                    label: "Meilisearch",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "meilisearch",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "meilisearch database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "meilisearch db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'meilisearch'",
+                        "require('meilisearch')"
+                      ],
+                      filePatterns: [
+                        "**/meilisearch*",
+                        "**/*meilisearch*"
+                      ],
+                      symbolPatterns: [
+                        "meilisearch",
+                        "meilisearchclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.typesense",
+                    label: "Typesense",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "typesense",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "typesense database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "typesense db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'typesense'",
+                        "require('typesense')"
+                      ],
+                      filePatterns: [
+                        "**/typesense*",
+                        "**/*typesense*"
+                      ],
+                      symbolPatterns: [
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.vespa",
+                    label: "Vespa",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "vespa",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "vespa database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "vespa db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/vespa*",
+                        "**/*vespa*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.sphinx",
+                    label: "Sphinx Search",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "sphinx",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "sphinx search database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "sphinx search db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'limestone'",
+                        "require('limestone')"
+                      ],
+                      filePatterns: [
+                        "**/sphinx*",
+                        "**/*sphinx*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.bleve",
+                    label: "Bleve",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "bleve",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "bleve database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "bleve db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/bleve*",
+                        "**/*bleve*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.manticore",
+                    label: "Manticore Search",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "manticore",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "manticore search database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "manticore search db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'manticoresearch'",
+                        "require('manticoresearch')"
+                      ],
+                      filePatterns: [
+                        "**/manticore*",
+                        "**/*manticore*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.cloudsearch",
+                    label: "AWS CloudSearch",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "cloudsearch",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aws cloudsearch database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aws cloudsearch db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@aws-sdk/client-cloudsearch-domain'",
+                        "require('@aws-sdk/client-cloudsearch-domain')"
+                      ],
+                      filePatterns: [
+                        "**/cloudsearch*",
+                        "**/*cloudsearch*"
+                      ],
+                      symbolPatterns: [
+                        "cloudsearchdomainclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.azure-search",
+                    label: "Azure Cognitive Search",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "azure",
+                          weight: 0.85
+                        },
+                        {
+                          word: "search",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "azure cognitive search database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "azure cognitive search db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@azure/search-documents'",
+                        "require('@azure/search-documents')"
+                      ],
+                      filePatterns: [
+                        "**/azure-search*",
+                        "**/*azure-search*"
+                      ],
+                      symbolPatterns: [
+                        "searchclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.sonic",
+                    label: "Sonic",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "sonic",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "sonic database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "sonic db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'sonic-channel'",
+                        "require('sonic-channel')"
+                      ],
+                      filePatterns: [
+                        "**/sonic*",
+                        "**/*sonic*"
+                      ],
+                      symbolPatterns: [
+                        "sonicchannel"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.whoosh",
+                    label: "Whoosh",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "whoosh",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "whoosh database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "whoosh db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/whoosh*",
+                        "**/*whoosh*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.search.quickwit",
+                    label: "Quickwit",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "quickwit",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "quickwit database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "quickwit db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/quickwit*",
+                        "**/*quickwit*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  }
+                ],
+                triggers: {
+                  words: [
+                    {
+                      word: "opensearch",
+                      weight: 0.4
+                    },
+                    {
+                      word: "elasticsearch",
+                      weight: 0.4
+                    },
+                    {
+                      word: "meilisearch",
+                      weight: 0.4
+                    },
+                    {
+                      word: "es",
+                      weight: 0.3
+                    },
+                    {
+                      word: "solr",
+                      weight: 0.3
+                    },
+                    {
+                      word: "algolia",
+                      weight: 0.3
+                    },
+                    {
+                      word: "algoliasearch",
+                      weight: 0.3
+                    },
+                    {
+                      word: "typesense",
+                      weight: 0.3
+                    },
+                    {
+                      word: "vespa",
+                      weight: 0.3
+                    },
+                    {
+                      word: "sphinx",
+                      weight: 0.3
+                    },
+                    {
+                      word: "bleve",
+                      weight: 0.3
+                    },
+                    {
+                      word: "manticore",
+                      weight: 0.3
+                    },
+                    {
+                      word: "cloudsearch",
+                      weight: 0.3
+                    },
+                    {
+                      word: "azure",
+                      weight: 0.3
+                    },
+                    {
+                      word: "search",
+                      weight: 0.3
+                    },
+                    {
+                      word: "sonic",
+                      weight: 0.3
+                    },
+                    {
+                      word: "whoosh",
+                      weight: 0.3
+                    },
+                    {
+                      word: "quickwit",
+                      weight: 0.3
+                    }
+                  ],
+                  phrases: [],
+                  antiWords: [],
+                  importPatterns: [
+                    "from '@opensearch-project/opensearch'",
+                    "require('@opensearch-project/opensearch')",
+                    "from '@elastic/elasticsearch'",
+                    "require('@elastic/elasticsearch')",
+                    "from 'solr-client'",
+                    "require('solr-client')",
+                    "from 'algoliasearch'",
+                    "require('algoliasearch')",
+                    "from 'meilisearch'",
+                    "require('meilisearch')",
+                    "from 'typesense'",
+                    "require('typesense')",
+                    "from 'limestone'",
+                    "require('limestone')",
+                    "from 'manticoresearch'",
+                    "require('manticoresearch')",
+                    "from '@aws-sdk/client-cloudsearch-domain'",
+                    "require('@aws-sdk/client-cloudsearch-domain')",
+                    "from '@azure/search-documents'",
+                    "require('@azure/search-documents')",
+                    "from 'sonic-channel'",
+                    "require('sonic-channel')"
+                  ],
+                  filePatterns: [
+                    "**/opensearch*",
+                    "**/*opensearch*",
+                    "**/elasticsearch*",
+                    "**/*elasticsearch*",
+                    "**/solr*",
+                    "**/*solr*",
+                    "**/algolia*",
+                    "**/*algolia*",
+                    "**/meilisearch*",
+                    "**/*meilisearch*",
+                    "**/typesense*",
+                    "**/*typesense*",
+                    "**/vespa*",
+                    "**/*vespa*",
+                    "**/sphinx*",
+                    "**/*sphinx*",
+                    "**/bleve*",
+                    "**/*bleve*",
+                    "**/manticore*",
+                    "**/*manticore*",
+                    "**/cloudsearch*",
+                    "**/*cloudsearch*",
+                    "**/azure-search*",
+                    "**/*azure-search*",
+                    "**/sonic*",
+                    "**/*sonic*",
+                    "**/whoosh*",
+                    "**/*whoosh*",
+                    "**/quickwit*",
+                    "**/*quickwit*"
+                  ],
+                  symbolPatterns: [
+                    "client",
+                    "searchclient",
+                    "meilisearch",
+                    "meilisearchclient",
+                    "cloudsearchdomainclient",
+                    "sonicchannel"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  execution: [
+                    {
+                      id: "search-bulk-indexing",
+                      summary: "Bulk operations for indexing documents",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "When indexing multiple search documents in OpenSearch/Elasticsearch, use bulk APIs (_bulk) rather than single index updates.",
+                      decisionTree: null,
+                      codePatterns: [],
+                      commonMistakes: [],
+                      selfVerification: [],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ],
+                  verification: null
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.database.vector",
+                label: "Vector Database",
+                children: [
+                  {
+                    id: "backend.database.vector.pinecone",
+                    label: "Pinecone",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "pinecone",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "pinecone database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "pinecone db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@pinecone-database/pinecone'",
+                        "require('@pinecone-database/pinecone')"
+                      ],
+                      filePatterns: [
+                        "**/pinecone*",
+                        "**/*pinecone*"
+                      ],
+                      symbolPatterns: [
+                        "pinecone",
+                        "pineconeclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.milvus",
+                    label: "Milvus",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "milvus",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "milvus database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "milvus db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@zilliz/milvus2-sdk-node'",
+                        "require('@zilliz/milvus2-sdk-node')"
+                      ],
+                      filePatterns: [
+                        "**/milvus*",
+                        "**/*milvus*"
+                      ],
+                      symbolPatterns: [
+                        "milvusclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.qdrant",
+                    label: "Qdrant",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "qdrant",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "qdrant database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "qdrant db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from '@qdrant/js-client-rest'",
+                        "require('@qdrant/js-client-rest')"
+                      ],
+                      filePatterns: [
+                        "**/qdrant*",
+                        "**/*qdrant*"
+                      ],
+                      symbolPatterns: [
+                        "qdrantclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.weaviate",
+                    label: "Weaviate",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "weaviate",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "weaviate database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "weaviate db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'weaviate-ts-client'",
+                        "require('weaviate-ts-client')",
+                        "from 'weaviate-client'",
+                        "require('weaviate-client')"
+                      ],
+                      filePatterns: [
+                        "**/weaviate*",
+                        "**/*weaviate*"
+                      ],
+                      symbolPatterns: [
+                        "weaviateclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.chroma",
+                    label: "Chroma",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "chroma",
+                          weight: 0.85
+                        },
+                        {
+                          word: "chromadb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "chroma database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "chroma db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'chromadb'",
+                        "require('chromadb')"
+                      ],
+                      filePatterns: [
+                        "**/chroma*",
+                        "**/*chroma*"
+                      ],
+                      symbolPatterns: [
+                        "chromaclient"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.pgvector",
+                    label: "pgvector",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "pgvector",
+                          weight: 0.85
+                        },
+                        {
+                          word: "vector",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "pgvector database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "pgvector db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'pgvector'",
+                        "require('pgvector')"
+                      ],
+                      filePatterns: [
+                        "**/pgvector*",
+                        "**/*pgvector*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.faiss",
+                    label: "FAISS",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "faiss",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "faiss database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "faiss db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/faiss*",
+                        "**/*faiss*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.vald",
+                    label: "Vald",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "vald",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "vald database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "vald db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/vald*",
+                        "**/*vald*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.lancedb",
+                    label: "LanceDB",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "lancedb",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "lancedb database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "lancedb db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'vectordb'",
+                        "require('vectordb')"
+                      ],
+                      filePatterns: [
+                        "**/lancedb*",
+                        "**/*lancedb*"
+                      ],
+                      symbolPatterns: [
+                        "connect"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.milvus-lite",
+                    label: "Milvus Lite",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "milvus",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "milvus lite database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "milvus lite db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/milvus-lite*",
+                        "**/*milvus-lite*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.marqo",
+                    label: "Marqo",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "marqo",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "marqo database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "marqo db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [
+                        "from 'marqo'",
+                        "require('marqo')"
+                      ],
+                      filePatterns: [
+                        "**/marqo*",
+                        "**/*marqo*"
+                      ],
+                      symbolPatterns: [
+                        "client"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.vespa-vector",
+                    label: "Vespa Vector",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "vespa",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "vespa vector database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "vespa vector db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/vespa-vector*",
+                        "**/*vespa-vector*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.opensearch-vector",
+                    label: "AWS OpenSearch Vector",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "opensearch",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "aws opensearch vector database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "aws opensearch vector db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/opensearch-vector*",
+                        "**/*opensearch-vector*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.elasticsearch-vector",
+                    label: "Elasticsearch Vector",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "elasticsearch",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "elasticsearch vector database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "elasticsearch vector db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/elasticsearch-vector*",
+                        "**/*elasticsearch-vector*"
+                      ],
+                      symbolPatterns: []
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  },
+                  {
+                    id: "backend.database.vector.redisvl",
+                    label: "RedisVL",
+                    children: [],
+                    triggers: {
+                      words: [
+                        {
+                          word: "redisvl",
+                          weight: 0.85
+                        }
+                      ],
+                      phrases: [
+                        {
+                          phrase: "redisvl database",
+                          weight: 0.95
+                        },
+                        {
+                          phrase: "redisvl db",
+                          weight: 0.95
+                        }
+                      ],
+                      antiWords: [],
+                      importPatterns: [],
+                      filePatterns: [
+                        "**/redisvl*",
+                        "**/*redisvl*"
+                      ],
+                      symbolPatterns: [
+                        "searchindex"
+                      ]
+                    },
+                    fragments: {
+                      chat: null,
+                      planning: null,
+                      taskCreation: null,
+                      investigation: null,
+                      execution: null,
+                      verification: null
+                    },
+                    toolOverrides: []
+                  }
+                ],
+                triggers: {
+                  words: [
+                    {
+                      word: "vector",
+                      weight: 0.5
+                    },
+                    {
+                      word: "pinecone",
+                      weight: 0.4
+                    },
+                    {
+                      word: "weaviate",
+                      weight: 0.4
+                    },
+                    {
+                      word: "milvus",
+                      weight: 0.3
+                    },
+                    {
+                      word: "qdrant",
+                      weight: 0.3
+                    },
+                    {
+                      word: "chroma",
+                      weight: 0.3
+                    },
+                    {
+                      word: "chromadb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "pgvector",
+                      weight: 0.3
+                    },
+                    {
+                      word: "faiss",
+                      weight: 0.3
+                    },
+                    {
+                      word: "vald",
+                      weight: 0.3
+                    },
+                    {
+                      word: "lancedb",
+                      weight: 0.3
+                    },
+                    {
+                      word: "marqo",
+                      weight: 0.3
+                    },
+                    {
+                      word: "vespa",
+                      weight: 0.3
+                    },
+                    {
+                      word: "opensearch",
+                      weight: 0.3
+                    },
+                    {
+                      word: "elasticsearch",
+                      weight: 0.3
+                    },
+                    {
+                      word: "redisvl",
+                      weight: 0.3
+                    }
+                  ],
+                  phrases: [],
+                  antiWords: [],
+                  importPatterns: [
+                    "from '@pinecone-database/pinecone'",
+                    "require('@pinecone-database/pinecone')",
+                    "from '@zilliz/milvus2-sdk-node'",
+                    "require('@zilliz/milvus2-sdk-node')",
+                    "from '@qdrant/js-client-rest'",
+                    "require('@qdrant/js-client-rest')",
+                    "from 'weaviate-ts-client'",
+                    "require('weaviate-ts-client')",
+                    "from 'weaviate-client'",
+                    "require('weaviate-client')",
+                    "from 'chromadb'",
+                    "require('chromadb')",
+                    "from 'pgvector'",
+                    "require('pgvector')",
+                    "from 'vectordb'",
+                    "require('vectordb')",
+                    "from 'marqo'",
+                    "require('marqo')"
+                  ],
+                  filePatterns: [
+                    "**/pinecone*",
+                    "**/*pinecone*",
+                    "**/milvus*",
+                    "**/*milvus*",
+                    "**/qdrant*",
+                    "**/*qdrant*",
+                    "**/weaviate*",
+                    "**/*weaviate*",
+                    "**/chroma*",
+                    "**/*chroma*",
+                    "**/pgvector*",
+                    "**/*pgvector*",
+                    "**/faiss*",
+                    "**/*faiss*",
+                    "**/vald*",
+                    "**/*vald*",
+                    "**/lancedb*",
+                    "**/*lancedb*",
+                    "**/milvus-lite*",
+                    "**/*milvus-lite*",
+                    "**/marqo*",
+                    "**/*marqo*",
+                    "**/vespa-vector*",
+                    "**/*vespa-vector*",
+                    "**/opensearch-vector*",
+                    "**/*opensearch-vector*",
+                    "**/elasticsearch-vector*",
+                    "**/*elasticsearch-vector*",
+                    "**/redisvl*",
+                    "**/*redisvl*"
+                  ],
+                  symbolPatterns: [
+                    "pinecone",
+                    "pineconeclient",
+                    "milvusclient",
+                    "qdrantclient",
+                    "weaviateclient",
+                    "chromaclient",
+                    "connect",
+                    "client",
+                    "searchindex"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  execution: [
+                    {
+                      id: "vector-similarity-metrics",
+                      summary: "Vector distance metric alignment",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Ensure cosine similarity or L2 euclidean metrics are correctly configured to match the embedding model outputs.",
+                      decisionTree: null,
+                      codePatterns: [],
+                      commonMistakes: [],
+                      selfVerification: [],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ],
+                  verification: null
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [
+                {
+                  word: "database",
+                  weight: 0.5
+                },
+                {
+                  word: "sql",
+                  weight: 0.4
+                },
+                {
+                  word: "query",
+                  weight: 0.3
+                },
+                {
+                  word: "postgresql",
+                  weight: 0.3
+                },
+                {
+                  word: "postgres",
+                  weight: 0.3
+                },
+                {
+                  word: "pg",
+                  weight: 0.3
+                },
+                {
+                  word: "pgpool",
+                  weight: 0.3
+                },
+                {
+                  word: "pgbouncer",
+                  weight: 0.3
+                },
+                {
+                  word: "mysql",
+                  weight: 0.3
+                },
+                {
+                  word: "mariadb",
+                  weight: 0.3
+                },
+                {
+                  word: "myisam",
+                  weight: 0.3
+                },
+                {
+                  word: "innodb",
+                  weight: 0.3
+                },
+                {
+                  word: "sqlite",
+                  weight: 0.3
+                },
+                {
+                  word: "sqlite3",
+                  weight: 0.3
+                },
+                {
+                  word: "better-sqlite3",
+                  weight: 0.3
+                },
+                {
+                  word: "libsql",
+                  weight: 0.3
+                },
+                {
+                  word: "oracle",
+                  weight: 0.3
+                },
+                {
+                  word: "oracledb",
+                  weight: 0.3
+                },
+                {
+                  word: "plsql",
+                  weight: 0.3
+                },
+                {
+                  word: "mssql",
+                  weight: 0.3
+                },
+                {
+                  word: "sqlserver",
+                  weight: 0.3
+                },
+                {
+                  word: "tsql",
+                  weight: 0.3
+                },
+                {
+                  word: "cockroach",
+                  weight: 0.3
+                },
+                {
+                  word: "cockroachdb",
+                  weight: 0.3
+                },
+                {
+                  word: "crdb",
+                  weight: 0.3
+                },
+                {
+                  word: "spanner",
+                  weight: 0.3
+                },
+                {
+                  word: "cloudspanner",
+                  weight: 0.3
+                },
+                {
+                  word: "yugabyte",
+                  weight: 0.3
+                },
+                {
+                  word: "yugabytedb",
+                  weight: 0.3
+                },
+                {
+                  word: "ycql",
+                  weight: 0.3
+                },
+                {
+                  word: "ysql",
+                  weight: 0.3
+                },
+                {
+                  word: "tidb",
+                  weight: 0.3
+                },
+                {
+                  word: "singlestore",
+                  weight: 0.3
+                },
+                {
+                  word: "memsql",
+                  weight: 0.3
+                },
+                {
+                  word: "db2",
+                  weight: 0.3
+                },
+                {
+                  word: "ibmdb2",
+                  weight: 0.3
+                },
+                {
+                  word: "firebird",
+                  weight: 0.3
+                },
+                {
+                  word: "firebirdsql",
+                  weight: 0.3
+                },
+                {
+                  word: "h2",
+                  weight: 0.3
+                },
+                {
+                  word: "h2database",
+                  weight: 0.3
+                },
+                {
+                  word: "derby",
+                  weight: 0.3
+                },
+                {
+                  word: "apachederby",
+                  weight: 0.3
+                },
+                {
+                  word: "informix",
+                  weight: 0.3
+                },
+                {
+                  word: "ingres",
+                  weight: 0.3
+                },
+                {
+                  word: "actian",
+                  weight: 0.3
+                },
+                {
+                  word: "saphana",
+                  weight: 0.3
+                },
+                {
+                  word: "hana",
+                  weight: 0.3
+                },
+                {
+                  word: "aurora",
+                  weight: 0.3
+                },
+                {
+                  word: "rds",
+                  weight: 0.3
+                },
+                {
+                  word: "aws-sdk",
+                  weight: 0.3
+                },
+                {
+                  word: "cloudsql",
+                  weight: 0.3
+                },
+                {
+                  word: "gcp",
+                  weight: 0.3
+                },
+                {
+                  word: "azuresql",
+                  weight: 0.3
+                },
+                {
+                  word: "azure",
+                  weight: 0.3
+                },
+                {
+                  word: "percona",
+                  weight: 0.3
+                },
+                {
+                  word: "teradata",
+                  weight: 0.3
+                },
+                {
+                  word: "sybase",
+                  weight: 0.3
+                },
+                {
+                  word: "ase",
+                  weight: 0.3
+                },
+                {
+                  word: "virtuoso",
+                  weight: 0.3
+                },
+                {
+                  word: "nuodb",
+                  weight: 0.3
+                },
+                {
+                  word: "hive",
+                  weight: 0.3
+                },
+                {
+                  word: "hive2",
+                  weight: 0.3
+                },
+                {
+                  word: "impala",
+                  weight: 0.3
+                },
+                {
+                  word: "greenplum",
+                  weight: 0.3
+                },
+                {
+                  word: "hsqldb",
+                  weight: 0.3
+                },
+                {
+                  word: "presto",
+                  weight: 0.3
+                },
+                {
+                  word: "prestodb",
+                  weight: 0.3
+                },
+                {
+                  word: "trino",
+                  weight: 0.3
+                },
+                {
+                  word: "vertica",
+                  weight: 0.3
+                },
+                {
+                  word: "sqlitecloud",
+                  weight: 0.3
+                },
+                {
+                  word: "turso",
+                  weight: 0.3
+                },
+                {
+                  word: "duckdb",
+                  weight: 0.3
+                },
+                {
+                  word: "oceanbase",
+                  weight: 0.3
+                },
+                {
+                  word: "voltdb",
+                  weight: 0.3
+                },
+                {
+                  word: "mongodb",
+                  weight: 0.3
+                },
+                {
+                  word: "mongo",
+                  weight: 0.3
+                },
+                {
+                  word: "mongoose",
+                  weight: 0.3
+                },
+                {
+                  word: "couchdb",
+                  weight: 0.3
+                },
+                {
+                  word: "nano",
+                  weight: 0.3
+                },
+                {
+                  word: "documentdb",
+                  weight: 0.3
+                },
+                {
+                  word: "cosmosdb",
+                  weight: 0.3
+                },
+                {
+                  word: "cosmos",
+                  weight: 0.3
+                },
+                {
+                  word: "fauna",
+                  weight: 0.3
+                },
+                {
+                  word: "faunadb",
+                  weight: 0.3
+                },
+                {
+                  word: "fql",
+                  weight: 0.3
+                },
+                {
+                  word: "firestore",
+                  weight: 0.3
+                },
+                {
+                  word: "firebase",
+                  weight: 0.3
+                },
+                {
+                  word: "rethinkdb",
+                  weight: 0.3
+                },
+                {
+                  word: "rethink",
+                  weight: 0.3
+                },
+                {
+                  word: "arangodb",
+                  weight: 0.3
+                },
+                {
+                  word: "arangojs",
+                  weight: 0.3
+                },
+                {
+                  word: "aql",
+                  weight: 0.3
+                },
+                {
+                  word: "orientdb",
+                  weight: 0.3
+                },
+                {
+                  word: "ravendb",
+                  weight: 0.3
+                },
+                {
+                  word: "couchbase",
+                  weight: 0.3
+                },
+                {
+                  word: "n1ql",
+                  weight: 0.3
+                },
+                {
+                  word: "pouchdb",
+                  weight: 0.3
+                },
+                {
+                  word: "marklogic",
+                  weight: 0.3
+                },
+                {
+                  word: "basex",
+                  weight: 0.3
+                },
+                {
+                  word: "existdb",
+                  weight: 0.3
+                },
+                {
+                  word: "jackrabbit",
+                  weight: 0.3
+                },
+                {
+                  word: "cloudant",
+                  weight: 0.3
+                },
+                {
+                  word: "supabase",
+                  weight: 0.3
+                },
+                {
+                  word: "postgrest",
+                  weight: 0.3
+                },
+                {
+                  word: "nedb",
+                  weight: 0.3
+                },
+                {
+                  word: "gundb",
+                  weight: 0.3
+                },
+                {
+                  word: "gun",
+                  weight: 0.3
+                },
+                {
+                  word: "rxdb",
+                  weight: 0.3
+                },
+                {
+                  word: "lovefield",
+                  weight: 0.3
+                },
+                {
+                  word: "ejdb",
+                  weight: 0.3
+                },
+                {
+                  word: "lowdb",
+                  weight: 0.3
+                },
+                {
+                  word: "minimongo",
+                  weight: 0.3
+                },
+                {
+                  word: "redis",
+                  weight: 0.3
+                },
+                {
+                  word: "ioredis",
+                  weight: 0.3
+                },
+                {
+                  word: "memcached",
+                  weight: 0.3
+                },
+                {
+                  word: "memcache",
+                  weight: 0.3
+                },
+                {
+                  word: "dynamodb",
+                  weight: 0.3
+                },
+                {
+                  word: "dynamo",
+                  weight: 0.3
+                },
+                {
+                  word: "keydb",
+                  weight: 0.3
+                },
+                {
+                  word: "dragonfly",
+                  weight: 0.3
+                },
+                {
+                  word: "aerospike",
+                  weight: 0.3
+                },
+                {
+                  word: "riak",
+                  weight: 0.3
+                },
+                {
+                  word: "rocksdb",
+                  weight: 0.3
+                },
+                {
+                  word: "leveldb",
+                  weight: 0.3
+                },
+                {
+                  word: "levelup",
+                  weight: 0.3
+                },
+                {
+                  word: "leveldown",
+                  weight: 0.3
+                },
+                {
+                  word: "boltdb",
+                  weight: 0.3
+                },
+                {
+                  word: "bolt",
+                  weight: 0.3
+                },
+                {
+                  word: "badger",
+                  weight: 0.3
+                },
+                {
+                  word: "badgerdb",
+                  weight: 0.3
+                },
+                {
+                  word: "lmdb",
+                  weight: 0.3
+                },
+                {
+                  word: "lightningdb",
+                  weight: 0.3
+                },
+                {
+                  word: "hazelcast",
+                  weight: 0.3
+                },
+                {
+                  word: "geode",
+                  weight: 0.3
+                },
+                {
+                  word: "gemfire",
+                  weight: 0.3
+                },
+                {
+                  word: "coherence",
+                  weight: 0.3
+                },
+                {
+                  word: "ehcache",
+                  weight: 0.3
+                },
+                {
+                  word: "infinispan",
+                  weight: 0.3
+                },
+                {
+                  word: "tile38",
+                  weight: 0.3
+                },
+                {
+                  word: "tarantool",
+                  weight: 0.3
+                },
+                {
+                  word: "tikv",
+                  weight: 0.3
+                },
+                {
+                  word: "etcd",
+                  weight: 0.3
+                },
+                {
+                  word: "consul",
+                  weight: 0.3
+                },
+                {
+                  word: "voldemort",
+                  weight: 0.3
+                },
+                {
+                  word: "berkeleydb",
+                  weight: 0.3
+                },
+                {
+                  word: "bdb",
+                  weight: 0.3
+                },
+                {
+                  word: "cassandra",
+                  weight: 0.3
+                },
+                {
+                  word: "cql",
+                  weight: 0.3
+                },
+                {
+                  word: "cqlsh",
+                  weight: 0.3
+                },
+                {
+                  word: "scylladb",
+                  weight: 0.3
+                },
+                {
+                  word: "scylla",
+                  weight: 0.3
+                },
+                {
+                  word: "hbase",
+                  weight: 0.3
+                },
+                {
+                  word: "accumulo",
+                  weight: 0.3
+                },
+                {
+                  word: "bigtable",
+                  weight: 0.3
+                },
+                {
+                  word: "keyspaces",
+                  weight: 0.3
+                },
+                {
+                  word: "hypertable",
+                  weight: 0.3
+                },
+                {
+                  word: "maprdb",
+                  weight: 0.3
+                },
+                {
+                  word: "mapr",
+                  weight: 0.3
+                },
+                {
+                  word: "dse",
+                  weight: 0.3
+                },
+                {
+                  word: "elassandra",
+                  weight: 0.3
+                },
+                {
+                  word: "splicemachine",
+                  weight: 0.3
+                },
+                {
+                  word: "clickhouse",
+                  weight: 0.3
+                },
+                {
+                  word: "ch",
+                  weight: 0.3
+                },
+                {
+                  word: "snowflake",
+                  weight: 0.3
+                },
+                {
+                  word: "snowsql",
+                  weight: 0.3
+                },
+                {
+                  word: "bigquery",
+                  weight: 0.3
+                },
+                {
+                  word: "bq",
+                  weight: 0.3
+                },
+                {
+                  word: "redshift",
+                  weight: 0.3
+                },
+                {
+                  word: "athena",
+                  weight: 0.3
+                },
+                {
+                  word: "druid",
+                  weight: 0.3
+                },
+                {
+                  word: "pinot",
+                  weight: 0.3
+                },
+                {
+                  word: "monetdb",
+                  weight: 0.3
+                },
+                {
+                  word: "databricks",
+                  weight: 0.3
+                },
+                {
+                  word: "synapse",
+                  weight: 0.3
+                },
+                {
+                  word: "starrocks",
+                  weight: 0.3
+                },
+                {
+                  word: "doris",
+                  weight: 0.3
+                },
+                {
+                  word: "matrixone",
+                  weight: 0.3
+                },
+                {
+                  word: "vectorwise",
+                  weight: 0.3
+                },
+                {
+                  word: "timescaledb",
+                  weight: 0.3
+                },
+                {
+                  word: "timescale",
+                  weight: 0.3
+                },
+                {
+                  word: "influxdb",
+                  weight: 0.3
+                },
+                {
+                  word: "influx",
+                  weight: 0.3
+                },
+                {
+                  word: "flux",
+                  weight: 0.3
+                },
+                {
+                  word: "questdb",
+                  weight: 0.3
+                },
+                {
+                  word: "victoriametrics",
+                  weight: 0.3
+                },
+                {
+                  word: "prometheus",
+                  weight: 0.3
+                },
+                {
+                  word: "promql",
+                  weight: 0.3
+                },
+                {
+                  word: "graphite",
+                  weight: 0.3
+                },
+                {
+                  word: "opentsdb",
+                  weight: 0.3
+                },
+                {
+                  word: "kdb",
+                  weight: 0.3
+                },
+                {
+                  word: "q-language",
+                  weight: 0.3
+                },
+                {
+                  word: "tdengine",
+                  weight: 0.3
+                },
+                {
+                  word: "iotdb",
+                  weight: 0.3
+                },
+                {
+                  word: "timestream",
+                  weight: 0.3
+                },
+                {
+                  word: "timeseries",
+                  weight: 0.3
+                },
+                {
+                  word: "iox",
+                  weight: 0.3
+                },
+                {
+                  word: "opensearch",
+                  weight: 0.3
+                },
+                {
+                  word: "elasticsearch",
+                  weight: 0.3
+                },
+                {
+                  word: "es",
+                  weight: 0.3
+                },
+                {
+                  word: "solr",
+                  weight: 0.3
+                },
+                {
+                  word: "algolia",
+                  weight: 0.3
+                },
+                {
+                  word: "algoliasearch",
+                  weight: 0.3
+                },
+                {
+                  word: "meilisearch",
+                  weight: 0.3
+                },
+                {
+                  word: "typesense",
+                  weight: 0.3
+                },
+                {
+                  word: "vespa",
+                  weight: 0.3
+                },
+                {
+                  word: "sphinx",
+                  weight: 0.3
+                },
+                {
+                  word: "bleve",
+                  weight: 0.3
+                },
+                {
+                  word: "manticore",
+                  weight: 0.3
+                },
+                {
+                  word: "cloudsearch",
+                  weight: 0.3
+                },
+                {
+                  word: "search",
+                  weight: 0.3
+                },
+                {
+                  word: "sonic",
+                  weight: 0.3
+                },
+                {
+                  word: "whoosh",
+                  weight: 0.3
+                },
+                {
+                  word: "quickwit",
+                  weight: 0.3
+                },
+                {
+                  word: "pinecone",
+                  weight: 0.3
+                },
+                {
+                  word: "milvus",
+                  weight: 0.3
+                },
+                {
+                  word: "qdrant",
+                  weight: 0.3
+                },
+                {
+                  word: "weaviate",
+                  weight: 0.3
+                },
+                {
+                  word: "chroma",
+                  weight: 0.3
+                },
+                {
+                  word: "chromadb",
+                  weight: 0.3
+                },
+                {
+                  word: "pgvector",
+                  weight: 0.3
+                },
+                {
+                  word: "vector",
+                  weight: 0.3
+                },
+                {
+                  word: "faiss",
+                  weight: 0.3
+                },
+                {
+                  word: "vald",
+                  weight: 0.3
+                },
+                {
+                  word: "lancedb",
+                  weight: 0.3
+                },
+                {
+                  word: "marqo",
+                  weight: 0.3
+                },
+                {
+                  word: "redisvl",
+                  weight: 0.3
+                }
+              ],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          },
+          {
+            id: "backend.api",
+            label: "API Design & Protocols",
+            children: [
+              {
+                id: "backend.api.rest",
+                label: "RESTful API",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "rest",
+                      weight: 0.85
+                    },
+                    {
+                      word: "restful",
+                      weight: 0.85
+                    },
+                    {
+                      word: "http",
+                      weight: 0.85
+                    },
+                    {
+                      word: "endpoint",
+                      weight: 0.85
+                    },
+                    {
+                      word: "json",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "rest api",
+                      weight: 0.95
+                    },
+                    {
+                      phrase: "http endpoint",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'express'",
+                    "require('express')",
+                    "from 'koa'",
+                    "require('koa')",
+                    "from 'fastify'",
+                    "require('fastify')"
+                  ],
+                  filePatterns: [
+                    "**/rest*",
+                    "**/*rest*"
+                  ],
+                  symbolPatterns: [
+                    "router",
+                    "controller",
+                    "get",
+                    "post"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "rest-semantics",
+                      summary: "RESTful Semantics",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Enforce strict HTTP method semantics: GET (safe/idempotent), POST (non-idempotent), PUT (idempotent replace), PATCH (idempotent partial update), DELETE (idempotent). Ensure proper status codes (e.g., 201 Created, 400 Bad Request, 404 Not Found).",
+                      decisionTree: null,
+                      codePatterns: [
+                        {
+                          concern: "Idempotency and Safety of GET requests",
+                          wrong: {
+                            language: "typescript",
+                            code: 'app.get("/users/:id/activate", async (req, res) => {\n  await db.updateUserStatus(req.params.id, "active");\n  res.json({ success: true });\n});',
+                            explanation: "GET requests must be safe and not cause state mutations."
+                          },
+                          correct: {
+                            language: "typescript",
+                            code: 'app.post("/users/:id/activate", async (req, res) => {\n  await db.updateUserStatus(req.params.id, "active");\n  res.status(200).json({ success: true });\n});',
+                            explanation: "State modification is mapped to a POST request."
+                          },
+                          detectionHint: "Database write or state update inside a GET controller"
+                        },
+                        {
+                          concern: "Idempotent HTTP methods in Python",
+                          wrong: {
+                            language: "python",
+                            code: '@app.get("/items/{item_id}/increment")\ndef increment_item(item_id: str):\n    db.increment(item_id)\n    return {"status": "ok"}',
+                            explanation: "Modifying data via a HTTP GET endpoint violates REST safety guidelines."
+                          },
+                          correct: {
+                            language: "python",
+                            code: '@app.patch("/items/{item_id}")\ndef update_item(item_id: str, delta: int):\n    db.update_item_qty(item_id, delta)\n    return {"status": "updated"}',
+                            explanation: "Use PATCH or POST for actions that update/modify resource state."
+                          },
+                          detectionHint: "GET method modifying database rows"
+                        },
+                        {
+                          concern: "Restful status codes in Go",
+                          wrong: {
+                            language: "go",
+                            code: "func CreateUser(w http.ResponseWriter, r *http.Request) {\n    user := saveUser(r.Body)\n    w.WriteHeader(http.StatusOK)\n    json.NewEncoder(w).Encode(user)\n}",
+                            explanation: "Returning 200 OK for resource creation instead of 201 Created."
+                          },
+                          correct: {
+                            language: "go",
+                            code: "func CreateUser(w http.ResponseWriter, r *http.Request) {\n    user := saveUser(r.Body)\n    w.WriteHeader(http.StatusCreated)\n    json.NewEncoder(w).Encode(user)\n}",
+                            explanation: "Use StatusCreated (201) when a resource is successfully created."
+                          },
+                          detectionHint: "Status OK (200) returned on create handlers"
+                        }
+                      ],
+                      commonMistakes: [
+                        {
+                          mistake: "Using GET requests to delete resources",
+                          whyItHappens: "Quick implementation without writing frontend forms or AJAX POST calls.",
+                          correction: "Map deletion to HTTP DELETE or POST with a payload.",
+                          severity: "security"
+                        }
+                      ],
+                      selfVerification: [
+                        {
+                          check: "All GET requests are read-only",
+                          howToVerify: "Verify that GET routes do not trigger save, update, or delete commands.",
+                          failureIndicator: "GET route containing database write methods",
+                          remediation: "Change the route method to POST, PUT, or PATCH."
+                        }
+                      ],
+                      outputConstraints: null,
+                      guardrails: [
+                        {
+                          rule: "Never allow GET routes to modify database or file state.",
+                          rationale: "Web crawlers, pre-fetching browsers, and caching proxies trigger GET requests automatically.",
+                          alternative: "Use POST for general operations, and PATCH/PUT for specific resource updates."
+                        }
+                      ],
+                      scaffolding: null,
+                      crossReferences: null
+                    },
+                    {
+                      id: "rest-pagination",
+                      summary: "Pagination Strategy",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Prefer cursor-based pagination for large datasets to avoid offset drift and performance issues. Always include `next_cursor` in the response payload.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.api.graphql",
+                label: "GraphQL",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "graphql",
+                      weight: 0.85
+                    },
+                    {
+                      word: "gql",
+                      weight: 0.85
+                    },
+                    {
+                      word: "resolver",
+                      weight: 0.85
+                    },
+                    {
+                      word: "mutation",
+                      weight: 0.85
+                    },
+                    {
+                      word: "subscription",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "graphql schema",
+                      weight: 0.95
+                    },
+                    {
+                      phrase: "apollo server",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'graphql'",
+                    "require('graphql')",
+                    "from 'apollo-server'",
+                    "require('apollo-server')",
+                    "from '@nestjs/graphql'",
+                    "require('@nestjs/graphql')"
+                  ],
+                  filePatterns: [
+                    "**/graphql*",
+                    "**/*graphql*"
+                  ],
+                  symbolPatterns: [
+                    "resolver",
+                    "query",
+                    "mutation"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "graphql-n1",
+                      summary: "N+1 Mitigation",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Always use Dataloaders for batching and caching field resolutions. Never perform inline database queries inside scalar field resolvers.",
+                      decisionTree: null,
+                      codePatterns: [
+                        {
+                          concern: "Inline queries causing N+1",
+                          wrong: {
+                            language: "typescript",
+                            code: "const resolvers = {\n  User: {\n    posts: async (user) => {\n      return await db.getPostsForUser(user.id);\n    }\n  }\n};",
+                            explanation: "Resolves posts individually for every user, issuing N queries for N users."
+                          },
+                          correct: {
+                            language: "typescript",
+                            code: "const resolvers = {\n  User: {\n    posts: (user, args, context) => {\n      return context.loaders.postsLoader.load(user.id);\n    }\n  }\n};",
+                            explanation: "Batches and caches the post resolutions in a single database query."
+                          },
+                          detectionHint: "Database queries invoked inside type-specific sub-resolvers"
+                        },
+                        {
+                          concern: "Python GraphQL batching",
+                          wrong: {
+                            language: "python",
+                            code: "class UserNode(DjangoObjectType):\n    def resolve_posts(self, info):\n        return Post.objects.filter(author=self)",
+                            explanation: "Triggers a separate SQL query for each author resolved in the list."
+                          },
+                          correct: {
+                            language: "python",
+                            code: "class UserNode(DjangoObjectType):\n    def resolve_posts(self, info):\n        return info.context.loaders.posts_by_author.load(self.id)",
+                            explanation: "Loads author posts using a dataloader to batch relational queries."
+                          },
+                          detectionHint: "Django ORM query inside field resolver"
+                        }
+                      ],
+                      commonMistakes: [
+                        {
+                          mistake: "Failing to instantiate DataLoader per-request",
+                          whyItHappens: "Creating the DataLoader as a global singleton, causing users to see cached data of other users.",
+                          correction: "Instantiate all DataLoaders inside the context builder function for every request.",
+                          severity: "security"
+                        }
+                      ],
+                      selfVerification: [
+                        {
+                          check: "DataLoader instance is request-scoped",
+                          howToVerify: "Verify that loaders are created within the request context function, not in global module scope.",
+                          failureIndicator: "new DataLoader() found in root module levels",
+                          remediation: "Move DataLoader instantiation inside the express/apollo context callback."
+                        }
+                      ],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    },
+                    {
+                      id: "graphql-security",
+                      summary: "GraphQL Security",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Enforce query depth limiting and complexity cost analysis to prevent malicious nested queries from causing DoS.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.api.grpc",
+                label: "gRPC",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "grpc",
+                      weight: 0.85
+                    },
+                    {
+                      word: "protobuf",
+                      weight: 0.85
+                    },
+                    {
+                      word: "rpc",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "grpc channel",
+                      weight: 0.95
+                    },
+                    {
+                      phrase: "protocol buffers",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from '@grpc/grpc-js'",
+                    "require('@grpc/grpc-js')",
+                    "from 'google-protobuf'",
+                    "require('google-protobuf')"
+                  ],
+                  filePatterns: [
+                    "**/grpc*",
+                    "**/*grpc*"
+                  ],
+                  symbolPatterns: [
+                    "servercredentials",
+                    "loadpackagedefinition"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "grpc-versioning",
+                      summary: "Protobuf Versioning",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Never rename or change the type of existing fields in Protobuf. Only add new fields with new tag numbers.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.api.websocket",
+                label: "WebSocket",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "websocket",
+                      weight: 0.85
+                    },
+                    {
+                      word: "ws",
+                      weight: 0.85
+                    },
+                    {
+                      word: "socket.io",
+                      weight: 0.85
+                    },
+                    {
+                      word: "socketio",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "web socket",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'ws'",
+                    "require('ws')",
+                    "from 'socket.io'",
+                    "require('socket.io')"
+                  ],
+                  filePatterns: [
+                    "**/websocket*",
+                    "**/*websocket*"
+                  ],
+                  symbolPatterns: [
+                    "server",
+                    "websocketserver",
+                    "on",
+                    "emit"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "ws-lifecycle",
+                      summary: "WebSocket Lifecycle",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Implement ping/pong heartbeats to detect stale connections. Handle disconnections gracefully with exponential backoff reconnections.",
+                      decisionTree: null,
+                      codePatterns: [
+                        {
+                          concern: "Stale connection leaks",
+                          wrong: {
+                            language: "typescript",
+                            code: 'wss.on("connection", (ws) => {\n  console.log("connected");\n});',
+                            explanation: "Fails to detect silent disconnections, leading to socket leaks and dead subscriptions."
+                          },
+                          correct: {
+                            language: "typescript",
+                            code: 'wss.on("connection", (ws) => {\n  ws.isAlive = true;\n  ws.on("pong", () => { ws.isAlive = true; });\n});\nsetInterval(() => {\n  wss.clients.forEach((ws) => {\n    if (!ws.isAlive) return ws.terminate();\n    ws.isAlive = false;\n    ws.ping();\n  });\n}, 30000);',
+                            explanation: "Regularly pings clients and terminates dead sockets that fail to reply."
+                          },
+                          detectionHint: "WebSocket server connection without ping interval"
+                        },
+                        {
+                          concern: "Rust connection management in Axum",
+                          wrong: {
+                            language: "rust",
+                            code: "async fn handle_socket(mut socket: WebSocket) {\n    while let Some(msg) = socket.recv().await {\n        // Process incoming\n    }\n}",
+                            explanation: "Infinite wait loop that fails to handle dead connection cleanups."
+                          },
+                          correct: {
+                            language: "rust",
+                            code: "async fn handle_socket(mut socket: WebSocket) {\n    let mut interval = tokio::time::interval(Duration::from_secs(30));\n    loop {\n        tokio::select! {\n            Some(msg) = socket.recv() => { /* handle msg */ }\n            _ = interval.tick() => { socket.send(Message::Ping(vec![])).await.ok(); }\n        }\n    }\n}",
+                            explanation: "Sends standard WebSocket pings on interval ticks to maintain socket activity."
+                          },
+                          detectionHint: "Axum WebSocket handler missing Ping interval select loop"
+                        }
+                      ],
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    },
+                    {
+                      id: "ws-state",
+                      summary: "WebSocket State",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Do not rely on the WebSocket connection for single source of truth state. Hydrate initial state via REST before opening the socket for deltas.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.api.webhook",
+                label: "Webhook",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "webhook",
+                      weight: 0.85
+                    },
+                    {
+                      word: "signature",
+                      weight: 0.85
+                    },
+                    {
+                      word: "hmac",
+                      weight: 0.85
+                    },
+                    {
+                      word: "callback",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "webhook endpoint",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [],
+                  filePatterns: [
+                    "**/webhook*",
+                    "**/*webhook*"
+                  ],
+                  symbolPatterns: [
+                    "verifysignature"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "webhook-idempotency",
+                      summary: "Webhook Idempotency",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Store webhook event IDs and verify idempotency before processing to handle duplicate deliveries safely.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [
+                {
+                  word: "api",
+                  weight: 0.8
+                },
+                {
+                  word: "endpoint",
+                  weight: 0.6
+                }
+              ],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          },
+          {
+            id: "backend.error-handling",
+            label: "Error Handling & Resiliency",
+            children: [
+              {
+                id: "backend.error-handling.retry-patterns",
+                label: "Retry Patterns",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "retry",
+                      weight: 0.85
+                    },
+                    {
+                      word: "backoff",
+                      weight: 0.85
+                    },
+                    {
+                      word: "jitter",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "exponential backoff",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'async-retry'",
+                    "require('async-retry')"
+                  ],
+                  filePatterns: [
+                    "**/retry-patterns*",
+                    "**/*retry-patterns*"
+                  ],
+                  symbolPatterns: [
+                    "retry"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "retry-logic",
+                      summary: "Safe Retries",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Only retry idempotent operations (GET, PUT, DELETE). Use exponential backoff with full jitter to avoid thundering herd problems.",
+                      decisionTree: null,
+                      codePatterns: [
+                        {
+                          concern: "Linear or raw retries without backoff/jitter",
+                          wrong: {
+                            language: "typescript",
+                            code: "async function fetchWithRetry(url) {\n  for (let i = 0; i < 3; i++) {\n    try { return await fetch(url); }\n    catch (e) { /* retry immediately */ }\n  }\n}",
+                            explanation: "Retries instantly without delay, overwhelming a struggling downstream service."
+                          },
+                          correct: {
+                            language: "typescript",
+                            code: "async function fetchWithRetry(url, retries = 3, delay = 1000) {\n  try {\n    return await fetch(url);\n  } catch (e) {\n    if (retries <= 0) throw e;\n    const jitter = Math.random() * delay;\n    await new Promise(r => setTimeout(r, delay + jitter));\n    return fetchWithRetry(url, retries - 1, delay * 2);\n  }\n}",
+                            explanation: "Applies exponential backoff (delay * 2) combined with random jitter to distribute retries."
+                          },
+                          detectionHint: "Retry loops without delay or setTimeout"
+                        },
+                        {
+                          concern: "Python backoff implementation",
+                          wrong: {
+                            language: "python",
+                            code: "def call_service():\n    for _ in range(3):\n        try: return requests.get(url)\n        except: pass",
+                            explanation: "Performs immediate retries upon failure, contributing to stampedes."
+                          },
+                          correct: {
+                            language: "python",
+                            code: "import time, random\ndef call_service(retries=3, delay=1.0):\n    try:\n        return requests.get(url)\n    except Exception as e:\n        if retries <= 0: raise e\n        time.sleep(delay + random.uniform(0, delay))\n        return call_service(retries - 1, delay * 2)",
+                            explanation: "Uses random.uniform for jitter and multiplies delay to exponentially scale backoff."
+                          },
+                          detectionHint: "time.sleep called in exception blocks without dynamic delay"
+                        }
+                      ],
+                      commonMistakes: [
+                        {
+                          mistake: "Retrying non-idempotent operations (POST)",
+                          whyItHappens: "Treating all network errors identically.",
+                          correction: "Only retry GET, PUT, or DELETE. If POST fails, return error and let caller decide.",
+                          severity: "data-loss"
+                        }
+                      ],
+                      selfVerification: [
+                        {
+                          check: "Only idempotent calls are retried",
+                          howToVerify: "Verify that retry wrappers are not wrapped around POST or non-idempotent requests.",
+                          failureIndicator: "POST requests wrapped with retry logic",
+                          remediation: "Remove retry logic wrapper from the POST request caller."
+                        }
+                      ],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.error-handling.circuit-breaker",
+                label: "Circuit Breaker",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "circuit",
+                      weight: 0.85
+                    },
+                    {
+                      word: "breaker",
+                      weight: 0.85
+                    },
+                    {
+                      word: "opossum",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "circuit breaker",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'opossum'",
+                    "require('opossum')"
+                  ],
+                  filePatterns: [
+                    "**/circuit-breaker*",
+                    "**/*circuit-breaker*"
+                  ],
+                  symbolPatterns: [
+                    "circuitbreaker"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "circuit-breaker",
+                      summary: "Circuit Breaker",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Wrap external network calls in a circuit breaker to fail fast when downstream is degraded.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.error-handling.error-boundaries",
+                label: "Error Boundaries",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "error",
+                      weight: 0.85
+                    },
+                    {
+                      word: "exception",
+                      weight: 0.85
+                    },
+                    {
+                      word: "catch",
+                      weight: 0.85
+                    },
+                    {
+                      word: "throw",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "error handler",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [],
+                  filePatterns: [
+                    "**/error-boundaries*",
+                    "**/*error-boundaries*"
+                  ],
+                  symbolPatterns: [
+                    "errorhandler",
+                    "catch"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "structured-errors",
+                      summary: "Structured Logging",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Log errors as structured JSON. Never expose raw stack traces in HTTP responses to prevent information leakage.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [
+                {
+                  word: "error",
+                  weight: 0.6
+                },
+                {
+                  word: "exception",
+                  weight: 0.6
+                }
+              ],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          },
+          {
+            id: "backend.architecture",
+            label: "Code Architecture",
+            children: [
+              {
+                id: "backend.architecture.dependency-injection",
+                label: "Dependency Injection",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "di",
+                      weight: 0.85
+                    },
+                    {
+                      word: "ioc",
+                      weight: 0.85
+                    },
+                    {
+                      word: "inject",
+                      weight: 0.85
+                    },
+                    {
+                      word: "singleton",
+                      weight: 0.85
+                    },
+                    {
+                      word: "transient",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "dependency injection",
+                      weight: 0.95
+                    },
+                    {
+                      phrase: "inversion of control",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'inversify'",
+                    "require('inversify')",
+                    "from 'tsyringe'",
+                    "require('tsyringe')",
+                    "from '@nestjs/common'",
+                    "require('@nestjs/common')"
+                  ],
+                  filePatterns: [
+                    "**/dependency-injection*",
+                    "**/*dependency-injection*"
+                  ],
+                  symbolPatterns: [
+                    "injectable",
+                    "container"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "di-lifecycle",
+                      summary: "DI Lifecycle",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Be extremely careful with Singletons holding state. Prefer Transient or Request-scoped lifecycles for stateful dependencies.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.architecture.microservices",
+                label: "Microservices",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "microservice",
+                      weight: 0.85
+                    },
+                    {
+                      word: "distributed",
+                      weight: 0.85
+                    },
+                    {
+                      word: "tracing",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "distributed system",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from '@opentelemetry/api'",
+                    "require('@opentelemetry/api')"
+                  ],
+                  filePatterns: [
+                    "**/microservices*",
+                    "**/*microservices*"
+                  ],
+                  symbolPatterns: [
+                    "tracer"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "ms-tracing",
+                      summary: "Distributed Tracing",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Ensure trace context (e.g. W3C traceparent headers) is passed down via context when calling downstream microservices.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.architecture.cqrs",
+                label: "CQRS",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "cqrs",
+                      weight: 0.85
+                    },
+                    {
+                      word: "command",
+                      weight: 0.85
+                    },
+                    {
+                      word: "query",
+                      weight: 0.85
+                    },
+                    {
+                      word: "projection",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "command query",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from '@nestjs/cqrs'",
+                    "require('@nestjs/cqrs')"
+                  ],
+                  filePatterns: [
+                    "**/cqrs*",
+                    "**/*cqrs*"
+                  ],
+                  symbolPatterns: [
+                    "commandhandler",
+                    "queryhandler"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "cqrs-consistency",
+                      summary: "Eventual Consistency",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Queries in CQRS may return stale data. Design UI to handle eventual consistency (e.g. optimistic updates).",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.architecture.saga",
+                label: "Saga Pattern",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "saga",
+                      weight: 0.85
+                    },
+                    {
+                      word: "choreography",
+                      weight: 0.85
+                    },
+                    {
+                      word: "orchestration",
+                      weight: 0.85
+                    },
+                    {
+                      word: "compensating",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "saga pattern",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [],
+                  filePatterns: [
+                    "**/saga*",
+                    "**/*saga*"
+                  ],
+                  symbolPatterns: []
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "saga-compensation",
+                      summary: "Compensating Transactions",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Every step in a Saga must have a reverse compensating action defined to revert partial state on failure.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          },
+          {
+            id: "backend.messaging",
+            label: "Messaging & Queues",
+            children: [
+              {
+                id: "backend.messaging.kafka",
+                label: "Kafka",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "kafka",
+                      weight: 0.85
+                    },
+                    {
+                      word: "producer",
+                      weight: 0.85
+                    },
+                    {
+                      word: "consumer",
+                      weight: 0.85
+                    },
+                    {
+                      word: "partition",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "apache kafka",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'kafkajs'",
+                    "require('kafkajs')"
+                  ],
+                  filePatterns: [
+                    "**/kafka*",
+                    "**/*kafka*"
+                  ],
+                  symbolPatterns: [
+                    "kafka",
+                    "producer",
+                    "consumer"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "kafka-offsets",
+                      summary: "Offset Management",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Handle manual offset commits carefully. Do not commit an offset until the message is fully processed and persisted to your DB.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.messaging.rabbitmq",
+                label: "RabbitMQ",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "rabbitmq",
+                      weight: 0.85
+                    },
+                    {
+                      word: "amqp",
+                      weight: 0.85
+                    },
+                    {
+                      word: "exchange",
+                      weight: 0.85
+                    },
+                    {
+                      word: "queue",
+                      weight: 0.85
+                    },
+                    {
+                      word: "routing-key",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "rabbit mq",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'amqplib'",
+                    "require('amqplib')"
+                  ],
+                  filePatterns: [
+                    "**/rabbitmq*",
+                    "**/*rabbitmq*"
+                  ],
+                  symbolPatterns: [
+                    "connect",
+                    "channel"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "rabbitmq-prefetch",
+                      summary: "Prefetch Limits",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Set a strict prefetch limit on consumers to prevent overwhelming the worker node.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "backend.messaging.sqs",
+                label: "AWS SQS",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "sqs",
+                      weight: 0.85
+                    },
+                    {
+                      word: "fifo",
+                      weight: 0.85
+                    },
+                    {
+                      word: "dlq",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "aws sqs",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from '@aws-sdk/client-sqs'",
+                    "require('@aws-sdk/client-sqs')"
+                  ],
+                  filePatterns: [
+                    "**/sqs*",
+                    "**/*sqs*"
+                  ],
+                  symbolPatterns: [
+                    "sqsclient"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "sqs-visibility",
+                      summary: "Visibility Timeout",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "If a message takes longer to process than the visibility timeout, it will be delivered again. Use heartbeat extensions if necessary.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [
+                {
+                  word: "queue",
+                  weight: 0.8
+                }
+              ],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          }
+        ],
+        triggers: {
+          words: [
+            {
+              word: "backend",
+              weight: 0.4
+            },
+            {
+              word: "server",
+              weight: 0.3
+            },
+            {
+              word: "api",
+              weight: 0.3
+            }
+          ],
+          phrases: [],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          execution: null,
+          verification: null
+        },
+        toolOverrides: []
+      },
+      {
+        id: "frontend",
+        label: "Frontend Development",
+        children: [
+          {
+            id: "frontend.react",
+            label: "React Framework",
+            children: [
+              {
+                id: "frontend.react.state-management",
+                label: "React State Management",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "redux",
+                      weight: 0.9
+                    },
+                    {
+                      word: "zustand",
+                      weight: 0.95
+                    },
+                    {
+                      word: "context",
+                      weight: 0.4
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "state management",
+                      weight: 0.9
+                    },
+                    {
+                      phrase: "react context",
+                      weight: 0.85
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'zustand'",
+                    "from 'react-redux'"
+                  ],
+                  filePatterns: [
+                    "**/store*.ts",
+                    "**/context*.ts"
+                  ],
+                  symbolPatterns: [
+                    "useContext",
+                    "createStore",
+                    "createContext"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  execution: [
+                    {
+                      id: "react-context-perf",
+                      summary: "Prevent React Context unnecessary re-renders",
+                      weight: "awareness",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Use context only for low-frequency updates (themes, user auth). For high-frequency state, use Zustand or Redux.",
+                      decisionTree: null,
+                      codePatterns: [],
+                      commonMistakes: [
+                        {
+                          mistake: "Wrapping full App tree in a high-frequency context provider",
+                          whyItHappens: "Tutorials show Context as a general state solution, ignoring React's global re-render trigger.",
+                          correction: "Use split contexts or Zustand stores.",
+                          severity: "functional"
+                        }
+                      ],
+                      selfVerification: [],
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ],
+                  verification: null
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [
+                {
+                  word: "react",
+                  weight: 0.9
+                },
+                {
+                  word: "jsx",
+                  weight: 0.8
+                },
+                {
+                  word: "tsx",
+                  weight: 0.6
+                }
+              ],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [
+                "from 'react'"
+              ],
+              filePatterns: [
+                "**/*.tsx",
+                "**/*.jsx"
+              ],
+              symbolPatterns: [
+                "useState",
+                "useEffect",
+                "useMemo"
+              ]
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          },
+          {
+            id: "frontend.state-management",
+            label: "State Management",
+            children: [
+              {
+                id: "frontend.state-management.redux",
+                label: "Redux",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "redux",
+                      weight: 0.85
+                    },
+                    {
+                      word: "thunk",
+                      weight: 0.85
+                    },
+                    {
+                      word: "saga",
+                      weight: 0.85
+                    },
+                    {
+                      word: "slice",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "redux toolkit",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from '@reduxjs/toolkit'",
+                    "require('@reduxjs/toolkit')",
+                    "from 'react-redux'",
+                    "require('react-redux')"
+                  ],
+                  filePatterns: [
+                    "**/redux*",
+                    "**/*redux*"
+                  ],
+                  symbolPatterns: [
+                    "useselector",
+                    "usedispatch"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "redux-immutability",
+                      summary: "Immutability",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Never mutate state directly in reducers. Use RTK/Immer properly or spread operators.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "frontend.state-management.zustand",
+                label: "Zustand",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "zustand",
+                      weight: 0.85
+                    },
+                    {
+                      word: "slice",
+                      weight: 0.85
+                    },
+                    {
+                      word: "store",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'zustand'",
+                    "require('zustand')"
+                  ],
+                  filePatterns: [
+                    "**/zustand*",
+                    "**/*zustand*"
+                  ],
+                  symbolPatterns: [
+                    "create"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "zustand-selectors",
+                      summary: "Selectors",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Always use granular selectors when subscribing to Zustand stores to prevent unnecessary component re-renders.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "frontend.state-management.signals",
+                label: "Signals",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "signal",
+                      weight: 0.85
+                    },
+                    {
+                      word: "computed",
+                      weight: 0.85
+                    },
+                    {
+                      word: "effect",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "preact signals",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from '@preact/signals'",
+                    "require('@preact/signals')",
+                    "from '@preact/signals-react'",
+                    "require('@preact/signals-react')"
+                  ],
+                  filePatterns: [
+                    "**/signals*",
+                    "**/*signals*"
+                  ],
+                  symbolPatterns: [
+                    "signal",
+                    "computed"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "signals-derived",
+                      summary: "Derived State",
+                      weight: "principle",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Do not sync derived state into independent signals. Use `computed` for any state that can be derived from other signals.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          }
+        ],
+        triggers: {
+          words: [
+            {
+              word: "frontend",
+              weight: 0.4
+            },
+            {
+              word: "ui",
+              weight: 0.3
+            },
+            {
+              word: "browser",
+              weight: 0.3
+            }
+          ],
+          phrases: [],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          execution: null,
+          verification: null
+        },
+        toolOverrides: []
+      },
+      {
+        id: "security",
+        label: "Security Core",
+        children: [
+          {
+            id: "security.authentication",
+            label: "Authentication",
+            children: [
+              {
+                id: "security.authentication.jwt-refresh-tokens",
+                label: "JWT Refresh Tokens",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "jwt",
+                      weight: 0.8
+                    },
+                    {
+                      word: "token",
+                      weight: 0.3
+                    },
+                    {
+                      word: "refresh",
+                      weight: 0.3
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "refresh token",
+                      weight: 0.9
+                    },
+                    {
+                      phrase: "jwt auth",
+                      weight: 0.9
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'jsonwebtoken'"
+                  ],
+                  filePatterns: [
+                    "**/auth*.ts",
+                    "**/jwt*.ts"
+                  ],
+                  symbolPatterns: [
+                    "sign",
+                    "verify",
+                    "refreshToken"
+                  ]
+                },
+                triggersOverride: null,
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  execution: [
+                    {
+                      id: "jwt-csrf-httponly",
+                      summary: "Always store JWTs in httpOnly cookies",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Refresh tokens and access tokens should never be stored in localStorage. Store in httpOnly, Secure, SameSite=Strict cookies.",
+                      decisionTree: null,
+                      codePatterns: [],
+                      commonMistakes: [
+                        {
+                          mistake: "Storing sensitive tokens in localStorage",
+                          whyItHappens: "localStorage is easy to access in JavaScript; developers forget about XSS risks.",
+                          correction: "Use res.cookie('token', val, { httpOnly: true, secure: true })",
+                          severity: "security"
+                        }
+                      ],
+                      selfVerification: [],
+                      outputConstraints: null,
+                      guardrails: [
+                        {
+                          rule: "NEVER expose refresh tokens to JavaScript (do not use localStorage or standard cookies)",
+                          rationale: "Makes tokens vulnerable to cross-site scripting (XSS) extraction.",
+                          alternative: "Use httpOnly, Secure cookies."
+                        }
+                      ],
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ],
+                  verification: null
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [
+                {
+                  word: "auth",
+                  weight: 0.6
+                },
+                {
+                  word: "login",
+                  weight: 0.5
+                },
+                {
+                  word: "authenticate",
+                  weight: 0.7
+                }
+              ],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          },
+          {
+            id: "security.injection",
+            label: "Injection Prevention",
+            children: [
+              {
+                id: "security.injection.sql-injection",
+                label: "SQL Injection",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "sql",
+                      weight: 0.85
+                    },
+                    {
+                      word: "query",
+                      weight: 0.85
+                    },
+                    {
+                      word: "raw",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "raw query",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [],
+                  filePatterns: [
+                    "**/sql-injection*",
+                    "**/*sql-injection*"
+                  ],
+                  symbolPatterns: []
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "prevent-sqli",
+                      summary: "Parameterized Queries",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "NEVER interpolate string variables directly into SQL. Always use parameterized queries or the ORMs strict binding mechanisms.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "security.injection.xss",
+                label: "XSS",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "xss",
+                      weight: 0.85
+                    },
+                    {
+                      word: "dangerouslySetInnerHTML",
+                      weight: 0.85
+                    },
+                    {
+                      word: "sanitize",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "cross site scripting",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'dompurify'",
+                    "require('dompurify')"
+                  ],
+                  filePatterns: [
+                    "**/xss*",
+                    "**/*xss*"
+                  ],
+                  symbolPatterns: [
+                    "sanitize"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "prevent-xss",
+                      summary: "DOM Purify",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Never use `dangerouslySetInnerHTML` with untrusted user input without running it through DOMPurify first.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          },
+          {
+            id: "security.secrets-management",
+            label: "Secrets Management",
+            children: [
+              {
+                id: "security.secrets-management.env-vars",
+                label: "Environment Variables",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "env",
+                      weight: 0.85
+                    },
+                    {
+                      word: "dotenv",
+                      weight: 0.85
+                    },
+                    {
+                      word: "process.env",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "environment variable",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'dotenv'",
+                    "require('dotenv')"
+                  ],
+                  filePatterns: [
+                    "**/env-vars*",
+                    "**/*env-vars*"
+                  ],
+                  symbolPatterns: [
+                    "config"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "no-hardcoded-secrets",
+                      summary: "No Hardcoded Secrets",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "NEVER hardcode API keys, passwords, or tokens in source code. Ensure `.env` is in `.gitignore`.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          },
+          {
+            id: "security.cryptography",
+            label: "Cryptography",
+            children: [
+              {
+                id: "security.cryptography.password-hashing",
+                label: "Password Hashing",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "hash",
+                      weight: 0.85
+                    },
+                    {
+                      word: "bcrypt",
+                      weight: 0.85
+                    },
+                    {
+                      word: "argon2",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "hash password",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'bcrypt'",
+                    "require('bcrypt')",
+                    "from 'argon2'",
+                    "require('argon2')"
+                  ],
+                  filePatterns: [
+                    "**/password-hashing*",
+                    "**/*password-hashing*"
+                  ],
+                  symbolPatterns: [
+                    "hash",
+                    "compare"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "strong-hashing",
+                      summary: "Strong Hashing",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Use Argon2id or bcrypt with appropriate work factors for passwords. Never use MD5 or SHA-1 for passwords.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              },
+              {
+                id: "security.cryptography.constant-time",
+                label: "Constant Time Compares",
+                children: [],
+                triggers: {
+                  words: [
+                    {
+                      word: "compare",
+                      weight: 0.85
+                    },
+                    {
+                      word: "hmac",
+                      weight: 0.85
+                    },
+                    {
+                      word: "signature",
+                      weight: 0.85
+                    }
+                  ],
+                  phrases: [
+                    {
+                      phrase: "timing attack",
+                      weight: 0.95
+                    }
+                  ],
+                  antiWords: [],
+                  importPatterns: [
+                    "from 'crypto'",
+                    "require('crypto')"
+                  ],
+                  filePatterns: [
+                    "**/constant-time*",
+                    "**/*constant-time*"
+                  ],
+                  symbolPatterns: [
+                    "timingsafeequal"
+                  ]
+                },
+                fragments: {
+                  chat: null,
+                  planning: null,
+                  taskCreation: null,
+                  investigation: null,
+                  verification: null,
+                  execution: [
+                    {
+                      id: "timing-attacks",
+                      summary: "Timing Attacks",
+                      weight: "critical",
+                      trigger: "always",
+                      defersToCodebase: true,
+                      coreGuidance: "Always use `crypto.timingSafeEqual` when comparing HMAC signatures or tokens to prevent timing attacks.",
+                      decisionTree: null,
+                      codePatterns: null,
+                      commonMistakes: null,
+                      selfVerification: null,
+                      outputConstraints: null,
+                      guardrails: null,
+                      scaffolding: null,
+                      crossReferences: null
+                    }
+                  ]
+                },
+                toolOverrides: []
+              }
+            ],
+            triggers: {
+              words: [
+                {
+                  word: "crypto",
+                  weight: 0.8
+                }
+              ],
+              phrases: [],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              execution: null,
+              verification: null
+            },
+            toolOverrides: []
+          }
+        ],
+        triggers: {
+          words: [
+            {
+              word: "security",
+              weight: 0.5
+            },
+            {
+              word: "safe",
+              weight: 0.2
+            },
+            {
+              word: "vulnerability",
+              weight: 0.6
+            }
+          ],
+          phrases: [],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          execution: null,
+          verification: null
+        },
+        toolOverrides: []
+      },
+      {
+        id: "testing",
+        label: "Testing Methodologies",
+        children: [
+          {
+            id: "testing.unit",
+            label: "Unit Testing",
+            children: [],
+            triggers: {
+              words: [
+                {
+                  word: "jest",
+                  weight: 0.85
+                },
+                {
+                  word: "mocha",
+                  weight: 0.85
+                },
+                {
+                  word: "vitest",
+                  weight: 0.85
+                },
+                {
+                  word: "unit",
+                  weight: 0.85
+                },
+                {
+                  word: "mock",
+                  weight: 0.85
+                },
+                {
+                  word: "spy",
+                  weight: 0.85
+                }
+              ],
+              phrases: [
+                {
+                  phrase: "unit test",
+                  weight: 0.95
+                }
+              ],
+              antiWords: [],
+              importPatterns: [
+                "from 'jest'",
+                "require('jest')",
+                "from 'vitest'",
+                "require('vitest')"
+              ],
+              filePatterns: [
+                "**/unit*",
+                "**/*unit*"
+              ],
+              symbolPatterns: [
+                "describe",
+                "it",
+                "expect"
+              ]
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              verification: null,
+              execution: [
+                {
+                  id: "unit-aaa",
+                  summary: "AAA Pattern",
+                  weight: "principle",
+                  trigger: "always",
+                  defersToCodebase: true,
+                  coreGuidance: "Format unit tests using Arrange, Act, Assert blocks. Mock I/O boundaries aggressively.",
+                  decisionTree: null,
+                  codePatterns: null,
+                  commonMistakes: null,
+                  selfVerification: null,
+                  outputConstraints: null,
+                  guardrails: null,
+                  scaffolding: null,
+                  crossReferences: null
+                },
+                {
+                  id: "pure-functions",
+                  summary: "Pure Function Testing",
+                  weight: "principle",
+                  trigger: "always",
+                  defersToCodebase: true,
+                  coreGuidance: "For pure functions, use table-driven tests or parameterized inputs to cover edge cases exhaustively.",
+                  decisionTree: null,
+                  codePatterns: null,
+                  commonMistakes: null,
+                  selfVerification: null,
+                  outputConstraints: null,
+                  guardrails: null,
+                  scaffolding: null,
+                  crossReferences: null
+                }
+              ]
+            },
+            toolOverrides: []
+          },
+          {
+            id: "testing.integration",
+            label: "Integration Testing",
+            children: [],
+            triggers: {
+              words: [
+                {
+                  word: "integration",
+                  weight: 0.85
+                },
+                {
+                  word: "testcontainers",
+                  weight: 0.85
+                },
+                {
+                  word: "supertest",
+                  weight: 0.85
+                }
+              ],
+              phrases: [
+                {
+                  phrase: "integration test",
+                  weight: 0.95
+                }
+              ],
+              antiWords: [],
+              importPatterns: [
+                "from 'testcontainers'",
+                "require('testcontainers')",
+                "from 'supertest'",
+                "require('supertest')"
+              ],
+              filePatterns: [
+                "**/integration*",
+                "**/*integration*"
+              ],
+              symbolPatterns: [
+                "genericcontainer"
+              ]
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              verification: null,
+              execution: [
+                {
+                  id: "integration-db",
+                  summary: "Database Isolation",
+                  weight: "principle",
+                  trigger: "always",
+                  defersToCodebase: true,
+                  coreGuidance: "Run integration tests against ephemeral databases (e.g. Testcontainers) and rollback transactions after each test suite.",
+                  decisionTree: null,
+                  codePatterns: null,
+                  commonMistakes: null,
+                  selfVerification: null,
+                  outputConstraints: null,
+                  guardrails: null,
+                  scaffolding: null,
+                  crossReferences: null
+                }
+              ]
+            },
+            toolOverrides: []
+          },
+          {
+            id: "testing.e2e",
+            label: "E2E Testing",
+            children: [],
+            triggers: {
+              words: [
+                {
+                  word: "cypress",
+                  weight: 0.85
+                },
+                {
+                  word: "playwright",
+                  weight: 0.85
+                },
+                {
+                  word: "puppeteer",
+                  weight: 0.85
+                },
+                {
+                  word: "e2e",
+                  weight: 0.85
+                }
+              ],
+              phrases: [
+                {
+                  phrase: "e2e test",
+                  weight: 0.95
+                },
+                {
+                  phrase: "end to end",
+                  weight: 0.95
+                }
+              ],
+              antiWords: [],
+              importPatterns: [
+                "from 'cypress'",
+                "require('cypress')",
+                "from '@playwright/test'",
+                "require('@playwright/test')"
+              ],
+              filePatterns: [
+                "**/e2e*",
+                "**/*e2e*"
+              ],
+              symbolPatterns: [
+                "page",
+                "browser"
+              ]
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              verification: null,
+              execution: [
+                {
+                  id: "e2e-flakiness",
+                  summary: "E2E Flakiness",
+                  weight: "principle",
+                  trigger: "always",
+                  defersToCodebase: true,
+                  coreGuidance: "Avoid setting state via UI clicks. Seed database state via direct API calls before running UI assertions to reduce test flakiness.",
+                  decisionTree: null,
+                  codePatterns: null,
+                  commonMistakes: null,
+                  selfVerification: null,
+                  outputConstraints: null,
+                  guardrails: null,
+                  scaffolding: null,
+                  crossReferences: null
+                }
+              ]
+            },
+            toolOverrides: []
+          }
+        ],
+        triggers: {
+          words: [
+            {
+              word: "test",
+              weight: 0.8
+            },
+            {
+              word: "spec",
+              weight: 0.6
+            }
+          ],
+          phrases: [],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [
+            "**/*.spec.*",
+            "**/*.test.*"
+          ],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          execution: null,
+          verification: null
+        },
+        toolOverrides: []
+      },
+      {
+        id: "devops",
+        label: "DevOps & Infrastructure",
+        children: [
+          {
+            id: "devops.ci-cd",
+            label: "CI/CD Pipelines",
+            children: [],
+            triggers: {
+              words: [
+                {
+                  word: "github-actions",
+                  weight: 0.85
+                },
+                {
+                  word: "gitlab-ci",
+                  weight: 0.85
+                },
+                {
+                  word: "jenkins",
+                  weight: 0.85
+                },
+                {
+                  word: "pipeline",
+                  weight: 0.85
+                }
+              ],
+              phrases: [
+                {
+                  phrase: "continuous integration",
+                  weight: 0.95
+                }
+              ],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [
+                "**/ci-cd*",
+                "**/*ci-cd*"
+              ],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              verification: null,
+              execution: [
+                {
+                  id: "ci-caching",
+                  summary: "Build Caching",
+                  weight: "principle",
+                  trigger: "always",
+                  defersToCodebase: true,
+                  coreGuidance: "Implement proper dependency caching in CI to speed up build times.",
+                  decisionTree: null,
+                  codePatterns: null,
+                  commonMistakes: null,
+                  selfVerification: null,
+                  outputConstraints: null,
+                  guardrails: null,
+                  scaffolding: null,
+                  crossReferences: null
+                }
+              ]
+            },
+            toolOverrides: []
+          },
+          {
+            id: "devops.docker",
+            label: "Docker",
+            children: [],
+            triggers: {
+              words: [
+                {
+                  word: "docker",
+                  weight: 0.85
+                },
+                {
+                  word: "dockerfile",
+                  weight: 0.85
+                },
+                {
+                  word: "container",
+                  weight: 0.85
+                }
+              ],
+              phrases: [
+                {
+                  phrase: "docker image",
+                  weight: 0.95
+                }
+              ],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [
+                "**/docker*",
+                "**/*docker*"
+              ],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              verification: null,
+              execution: [
+                {
+                  id: "docker-multi-stage",
+                  summary: "Multi-stage Builds",
+                  weight: "critical",
+                  trigger: "always",
+                  defersToCodebase: true,
+                  coreGuidance: "Use multi-stage builds to keep final image sizes small. Never run the node process as `root` user in production.",
+                  decisionTree: null,
+                  codePatterns: null,
+                  commonMistakes: null,
+                  selfVerification: null,
+                  outputConstraints: null,
+                  guardrails: null,
+                  scaffolding: null,
+                  crossReferences: null
+                }
+              ]
+            },
+            toolOverrides: []
+          },
+          {
+            id: "devops.terraform",
+            label: "Terraform",
+            children: [],
+            triggers: {
+              words: [
+                {
+                  word: "terraform",
+                  weight: 0.85
+                },
+                {
+                  word: "tf",
+                  weight: 0.85
+                },
+                {
+                  word: "hcl",
+                  weight: 0.85
+                },
+                {
+                  word: "provider",
+                  weight: 0.85
+                }
+              ],
+              phrases: [
+                {
+                  phrase: "infrastructure as code",
+                  weight: 0.95
+                }
+              ],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [
+                "**/terraform*",
+                "**/*terraform*"
+              ],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              verification: null,
+              execution: [
+                {
+                  id: "tf-state",
+                  summary: "State Management",
+                  weight: "critical",
+                  trigger: "always",
+                  defersToCodebase: true,
+                  coreGuidance: "Always configure a remote backend for state (e.g. S3 + DynamoDB locking). Never commit `terraform.tfstate` to source control.",
+                  decisionTree: null,
+                  codePatterns: null,
+                  commonMistakes: null,
+                  selfVerification: null,
+                  outputConstraints: null,
+                  guardrails: null,
+                  scaffolding: null,
+                  crossReferences: null
+                }
+              ]
+            },
+            toolOverrides: []
+          }
+        ],
+        triggers: {
+          words: [],
+          phrases: [],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [
+            "**/*.tf",
+            "**/Dockerfile",
+            "**/.github/workflows/*"
+          ],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          execution: null,
+          verification: null
+        },
+        toolOverrides: []
+      },
+      {
+        id: "performance",
+        label: "Performance Optimization",
+        children: [
+          {
+            id: "performance.caching-strategy",
+            label: "Caching Strategy",
+            children: [],
+            triggers: {
+              words: [
+                {
+                  word: "cache",
+                  weight: 0.85
+                },
+                {
+                  word: "redis",
+                  weight: 0.85
+                },
+                {
+                  word: "memcached",
+                  weight: 0.85
+                },
+                {
+                  word: "ttl",
+                  weight: 0.85
+                }
+              ],
+              phrases: [
+                {
+                  phrase: "cache aside",
+                  weight: 0.95
+                },
+                {
+                  phrase: "write through",
+                  weight: 0.95
+                }
+              ],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [
+                "**/caching-strategy*",
+                "**/*caching-strategy*"
+              ],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              verification: null,
+              execution: [
+                {
+                  id: "cache-stampede",
+                  summary: "Cache Stampede",
+                  weight: "principle",
+                  trigger: "always",
+                  defersToCodebase: true,
+                  coreGuidance: "Implement probabilistic early expiration or mutex locks to prevent cache stampedes on hot keys.",
+                  decisionTree: null,
+                  codePatterns: null,
+                  commonMistakes: null,
+                  selfVerification: null,
+                  outputConstraints: null,
+                  guardrails: null,
+                  scaffolding: null,
+                  crossReferences: null
+                }
+              ]
+            },
+            toolOverrides: []
+          },
+          {
+            id: "performance.memory-management",
+            label: "Memory Management",
+            children: [],
+            triggers: {
+              words: [
+                {
+                  word: "memory",
+                  weight: 0.85
+                },
+                {
+                  word: "leak",
+                  weight: 0.85
+                },
+                {
+                  word: "stream",
+                  weight: 0.85
+                },
+                {
+                  word: "buffer",
+                  weight: 0.85
+                }
+              ],
+              phrases: [
+                {
+                  phrase: "memory leak",
+                  weight: 0.95
+                },
+                {
+                  phrase: "garbage collection",
+                  weight: 0.95
+                }
+              ],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [
+                "**/memory-management*",
+                "**/*memory-management*"
+              ],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              verification: null,
+              execution: [
+                {
+                  id: "stream-vs-buffer",
+                  summary: "Streams vs Buffers",
+                  weight: "critical",
+                  trigger: "always",
+                  defersToCodebase: true,
+                  coreGuidance: "Always use Streams (`fs.createReadStream`, `.pipe()`) for handling large files or payloads. Never buffer large files entirely in RAM.",
+                  decisionTree: null,
+                  codePatterns: null,
+                  commonMistakes: null,
+                  selfVerification: null,
+                  outputConstraints: null,
+                  guardrails: null,
+                  scaffolding: null,
+                  crossReferences: null
+                }
+              ]
+            },
+            toolOverrides: []
+          },
+          {
+            id: "performance.query-optimization",
+            label: "Query Optimization",
+            children: [],
+            triggers: {
+              words: [
+                {
+                  word: "explain",
+                  weight: 0.85
+                },
+                {
+                  word: "index",
+                  weight: 0.85
+                },
+                {
+                  word: "n+1",
+                  weight: 0.85
+                },
+                {
+                  word: "slow-query",
+                  weight: 0.85
+                }
+              ],
+              phrases: [
+                {
+                  phrase: "query optimization",
+                  weight: 0.95
+                }
+              ],
+              antiWords: [],
+              importPatterns: [],
+              filePatterns: [
+                "**/query-optimization*",
+                "**/*query-optimization*"
+              ],
+              symbolPatterns: []
+            },
+            fragments: {
+              chat: null,
+              planning: null,
+              taskCreation: null,
+              investigation: null,
+              verification: null,
+              execution: [
+                {
+                  id: "n-plus-1",
+                  summary: "N+1 Query Prevention",
+                  weight: "principle",
+                  trigger: "always",
+                  defersToCodebase: true,
+                  coreGuidance: "Check loops fetching relations. Batch them using `IN` clauses or join eagerly to prevent N+1 queries.",
+                  decisionTree: null,
+                  codePatterns: null,
+                  commonMistakes: null,
+                  selfVerification: null,
+                  outputConstraints: null,
+                  guardrails: null,
+                  scaffolding: null,
+                  crossReferences: null
+                }
+              ]
+            },
+            toolOverrides: []
+          }
+        ],
+        triggers: {
+          words: [
+            {
+              word: "performance",
+              weight: 0.8
+            }
+          ],
+          phrases: [],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          execution: null,
+          verification: null
+        },
+        toolOverrides: []
+      }
+    ]
+  },
+  paradigm: {
+    id: "paradigm",
+    label: "Paradigm Axis Root",
+    children: [
+      {
+        id: "paradigm.functional",
+        label: "Functional Programming",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "fp",
+              weight: 0.85
+            },
+            {
+              word: "pure",
+              weight: 0.85
+            },
+            {
+              word: "immutable",
+              weight: 0.85
+            },
+            {
+              word: "map",
+              weight: 0.85
+            },
+            {
+              word: "reduce",
+              weight: 0.85
+            },
+            {
+              word: "filter",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "pure function",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [
+            "from 'ramda'",
+            "require('ramda')",
+            "from 'lodash/fp'",
+            "require('lodash/fp')"
+          ],
+          filePatterns: [
+            "**/functional*",
+            "**/*functional*"
+          ],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          execution: [
+            {
+              id: "functional-pure",
+              summary: "Pure Functions",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Avoid mutations and side effects. Return new copies of objects/arrays rather than modifying arguments in place.",
+              decisionTree: null,
+              codePatterns: [
+                {
+                  concern: "In-place argument mutation",
+                  wrong: {
+                    language: "typescript",
+                    code: "function addActiveUser(users: User[], newUser: User): User[] {\n  users.push(newUser);\n  return users;\n}",
+                    explanation: "Mutates the input array argument directly, which can cause unexpected reactivity bugs."
+                  },
+                  correct: {
+                    language: "typescript",
+                    code: "function addActiveUser(users: User[], newUser: User): User[] {\n  return [...users, newUser];\n}",
+                    explanation: "Returns a brand new array, preserving the original array argument immutable."
+                  },
+                  detectionHint: "push, splice, shift, pop, or object property assignments on arguments"
+                },
+                {
+                  concern: "Python list mutability pitfalls",
+                  wrong: {
+                    language: "python",
+                    code: "def append_to(element, target=[]):\n    target.append(element)\n    return target",
+                    explanation: "Mutable default arguments are shared across all function calls, leading to cross-call leaks."
+                  },
+                  correct: {
+                    language: "python",
+                    code: "def append_to(element, target=None):\n    if target is None:\n        target = []\n    new_target = list(target)\n    new_target.append(element)\n    return new_target",
+                    explanation: "Uses None as a default placeholder and constructs a copy of the list before mutating."
+                  },
+                  detectionHint: "Mutable default arguments in python method definitions"
+                }
+              ],
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ]
+        },
+        toolOverrides: []
+      },
+      {
+        id: "paradigm.object-oriented",
+        label: "Object-Oriented Programming",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "oop",
+              weight: 0.85
+            },
+            {
+              word: "class",
+              weight: 0.85
+            },
+            {
+              word: "interface",
+              weight: 0.85
+            },
+            {
+              word: "extends",
+              weight: 0.85
+            },
+            {
+              word: "implements",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "object oriented",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [
+            "**/object-oriented*",
+            "**/*object-oriented*"
+          ],
+          symbolPatterns: [
+            "class",
+            "interface"
+          ]
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          execution: [
+            {
+              id: "oop-solid",
+              summary: "SOLID Principles",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Favor composition over inheritance. Ensure subclasses can be substituted for base classes without breaking behavior (Liskov Substitution).",
+              decisionTree: null,
+              codePatterns: null,
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ]
+        },
+        toolOverrides: []
+      },
+      {
+        id: "paradigm.event-driven",
+        label: "Event-Driven",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "event",
+              weight: 0.85
+            },
+            {
+              word: "emit",
+              weight: 0.85
+            },
+            {
+              word: "subscriber",
+              weight: 0.85
+            },
+            {
+              word: "publisher",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "event driven",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [
+            "from 'events'",
+            "require('events')"
+          ],
+          filePatterns: [
+            "**/event-driven*",
+            "**/*event-driven*"
+          ],
+          symbolPatterns: [
+            "eventemitter"
+          ]
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          execution: [
+            {
+              id: "ed-idempotency",
+              summary: "Idempotent Handlers",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Event handlers must be idempotent. They may be called multiple times for the same event payload.",
+              decisionTree: null,
+              codePatterns: null,
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ]
+        },
+        toolOverrides: []
+      }
+    ],
+    triggers: {
+      words: [],
+      phrases: [],
+      antiWords: [],
+      importPatterns: [],
+      filePatterns: [],
+      symbolPatterns: []
+    },
+    fragments: {
+      chat: null,
+      planning: null,
+      taskCreation: null,
+      investigation: null,
+      execution: null,
+      verification: null
+    },
+    toolOverrides: []
+  },
+  scale: {
+    id: "scale",
+    label: "Scale Axis Root",
+    children: [
+      {
+        id: "scale.single-user",
+        label: "Single User",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "desktop",
+              weight: 0.85
+            },
+            {
+              word: "local",
+              weight: 0.85
+            },
+            {
+              word: "cli",
+              weight: 0.85
+            },
+            {
+              word: "electron",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "single user",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [
+            "**/single-user*",
+            "**/*single-user*"
+          ],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          execution: [
+            {
+              id: "scale-single",
+              summary: "Local Scale",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Favor local files or SQLite over distributed networks. Avoid heavy connection pooling.",
+              decisionTree: null,
+              codePatterns: null,
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ]
+        },
+        toolOverrides: []
+      },
+      {
+        id: "scale.production",
+        label: "Production",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "production",
+              weight: 0.85
+            },
+            {
+              word: "cluster",
+              weight: 0.85
+            },
+            {
+              word: "ha",
+              weight: 0.85
+            },
+            {
+              word: "lb",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "high availability",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [
+            "**/production*",
+            "**/*production*"
+          ],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          execution: [
+            {
+              id: "scale-ha",
+              summary: "High Availability",
+              weight: "critical",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Assume servers can die at any time. Keep node processes strictly stateless. Offload all session state to Redis/DB.",
+              decisionTree: null,
+              codePatterns: [
+                {
+                  concern: "In-memory stateful sessions",
+                  wrong: {
+                    language: "typescript",
+                    code: 'const activeSessions = new Map();\napp.post("/login", (req, res) => {\n  activeSessions.set(req.body.userId, req.session);\n  res.send("logged in");\n});',
+                    explanation: "Sessions stored in local maps are lost when the instance restarts or scales horizontally."
+                  },
+                  correct: {
+                    language: "typescript",
+                    code: 'app.post("/login", async (req, res) => {\n  await redis.set(`session:${req.body.userId}`, JSON.stringify(req.session), "EX", 3600);\n  res.send("logged in");\n});',
+                    explanation: "Offloads session state to a shared Redis cluster, keeping the web process completely stateless."
+                  },
+                  detectionHint: "In-memory Maps or arrays storing session or user state"
+                },
+                {
+                  concern: "Stateless Python handlers",
+                  wrong: {
+                    language: "python",
+                    code: 'logged_in_users = {}\n@app.post("/session")\ndef create_session(user_id: str):\n    logged_in_users[user_id] = True',
+                    explanation: "Global dictionary storage prevents horizontal scaling across multiple Gunicorn/Uvicorn workers."
+                  },
+                  correct: {
+                    language: "python",
+                    code: '@app.post("/session")\ndef create_session(user_id: str, redis_client=Depends(get_redis)):\n    redis_client.setex(f"session:{user_id}", 3600, "active")',
+                    explanation: "Stores login/session details externally in Redis for multi-instance stateless coordination."
+                  },
+                  detectionHint: "Global module variables modified in request routes"
+                }
+              ],
+              commonMistakes: [
+                {
+                  mistake: "Using local filesystem storage for user uploads",
+                  whyItHappens: "Simpler setup than configuring cloud object storage.",
+                  correction: "Stream uploads directly to cloud storage (S3, GCS) rather than saving to local disk.",
+                  severity: "data-loss"
+                }
+              ],
+              selfVerification: [
+                {
+                  check: "Process contains zero local stateful dependencies",
+                  howToVerify: "Verify that node restarts or parallel execution does not impact session or transaction completeness.",
+                  failureIndicator: "Local filesystem storage or global arrays used to tracks active user transaction states",
+                  remediation: "Migrate global state variables to shared cache (Redis) or database tables."
+                }
+              ],
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ]
+        },
+        toolOverrides: []
+      },
+      {
+        id: "scale.serverless",
+        label: "Serverless",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "lambda",
+              weight: 0.85
+            },
+            {
+              word: "serverless",
+              weight: 0.85
+            },
+            {
+              word: "cold-start",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "aws lambda",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [
+            "**/serverless*",
+            "**/*serverless*"
+          ],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          execution: [
+            {
+              id: "scale-serverless",
+              summary: "Cold Starts",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Minimize dependencies and avoid heavy initialization code in the global scope to reduce cold start times.",
+              decisionTree: null,
+              codePatterns: null,
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ]
+        },
+        toolOverrides: []
+      }
+    ],
+    triggers: {
+      words: [],
+      phrases: [],
+      antiWords: [],
+      importPatterns: [],
+      filePatterns: [],
+      symbolPatterns: []
+    },
+    fragments: {
+      chat: null,
+      planning: null,
+      taskCreation: null,
+      investigation: null,
+      execution: null,
+      verification: null
+    },
+    toolOverrides: []
+  },
+  concurrency: {
+    id: "concurrency",
+    label: "Concurrency Axis Root",
+    children: [
+      {
+        id: "concurrency.async-await",
+        label: "Async/Await",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "async",
+              weight: 0.85
+            },
+            {
+              word: "await",
+              weight: 0.85
+            },
+            {
+              word: "promise",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "promise all",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [
+            "**/async-await*",
+            "**/*async-await*"
+          ],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          execution: [
+            {
+              id: "async-errors",
+              summary: "Unhandled Rejections",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Always wrap `await` calls in try/catch or use `.catch()` on promises. Never leave unhandled rejections.",
+              decisionTree: null,
+              codePatterns: null,
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ]
+        },
+        toolOverrides: []
+      },
+      {
+        id: "concurrency.multi-threaded",
+        label: "Multi-threaded",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "worker",
+              weight: 0.85
+            },
+            {
+              word: "thread",
+              weight: 0.85
+            },
+            {
+              word: "pool",
+              weight: 0.85
+            },
+            {
+              word: "mutex",
+              weight: 0.85
+            },
+            {
+              word: "lock",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "worker thread",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [
+            "from 'worker_threads'",
+            "require('worker_threads')"
+          ],
+          filePatterns: [
+            "**/multi-threaded*",
+            "**/*multi-threaded*"
+          ],
+          symbolPatterns: [
+            "worker",
+            "sharedarraybuffer"
+          ]
+        },
+        fragments: {
+          chat: null,
+          planning: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          execution: [
+            {
+              id: "thread-safety",
+              summary: "Thread Safety",
+              weight: "critical",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Use `Atomics` when interacting with `SharedArrayBuffer` to prevent race conditions across worker threads.",
+              decisionTree: null,
+              codePatterns: [
+                {
+                  concern: "Non-atomic shared array mutations",
+                  wrong: {
+                    language: "typescript",
+                    code: "const sharedArray = new Int32Array(sharedBuffer);\nsharedArray[0]++;",
+                    explanation: "Increments shared memory non-atomically, leading to lost updates under multi-threaded races."
+                  },
+                  correct: {
+                    language: "typescript",
+                    code: "const sharedArray = new Int32Array(sharedBuffer);\nAtomics.add(sharedArray, 0, 1);",
+                    explanation: "Uses Atomics.add to perform thread-safe, atomic updates in shared memory."
+                  },
+                  detectionHint: "Direct array index assignments on SharedArrayBuffer views"
+                },
+                {
+                  concern: "Java multi-threaded synchronization",
+                  wrong: {
+                    language: "java",
+                    code: "public class Counter {\n    private int count = 0;\n    public void increment() { count++; }\n}",
+                    explanation: "The count++ operation is not atomic and causes race conditions across threads."
+                  },
+                  correct: {
+                    language: "java",
+                    code: "import java.util.concurrent.atomic.AtomicInteger;\npublic class Counter {\n    private final AtomicInteger count = new AtomicInteger(0);\n    public void increment() { count.incrementAndGet(); }\n}",
+                    explanation: "AtomicInteger uses lock-free hardware instructions (CAS) to perform thread-safe increments."
+                  },
+                  detectionHint: "Non-synchronized variables modified across threads"
+                },
+                {
+                  concern: "C++ thread synchronization",
+                  wrong: {
+                    language: "cpp",
+                    code: "int counter = 0;\nvoid worker() {\n    for (int i = 0; i < 1000; ++i) {\n        counter++;\n    }\n}",
+                    explanation: "Unsynchronized concurrent modifications on a global variable trigger undefined behavior."
+                  },
+                  correct: {
+                    language: "cpp",
+                    code: "#include <atomic>\nstd::atomic<int> counter(0);\nvoid worker() {\n    for (int i = 0; i < 1000; ++i) {\n        counter++;\n    }\n}",
+                    explanation: "std::atomic wrappers execute safe atomic operations that compile to hardware lock instructions."
+                  },
+                  detectionHint: "Global variable updates in thread loops without mutex or std::atomic"
+                }
+              ],
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ]
+        },
+        toolOverrides: []
+      }
+    ],
+    triggers: {
+      words: [],
+      phrases: [],
+      antiWords: [],
+      importPatterns: [],
+      filePatterns: [],
+      symbolPatterns: []
+    },
+    fragments: {
+      chat: null,
+      planning: null,
+      taskCreation: null,
+      investigation: null,
+      execution: null,
+      verification: null
+    },
+    toolOverrides: []
+  },
+  lifecycle: {
+    id: "lifecycle",
+    label: "Lifecycle Stage Axis Root",
+    children: [
+      {
+        id: "lifecycle.bug-fix",
+        label: "Bug Fixing",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "bug",
+              weight: 0.85
+            },
+            {
+              word: "fix",
+              weight: 0.85
+            },
+            {
+              word: "issue",
+              weight: 0.85
+            },
+            {
+              word: "patch",
+              weight: 0.85
+            },
+            {
+              word: "hotfix",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "fix bug",
+              weight: 0.95
+            },
+            {
+              phrase: "resolve issue",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [
+            "**/bug-fix*",
+            "**/*bug-fix*"
+          ],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          planning: [
+            {
+              id: "bug-rca",
+              summary: "Root Cause Analysis",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Identify the root cause, not just the symptom. Write a regression test BEFORE applying the fix to ensure it remains fixed.",
+              decisionTree: null,
+              codePatterns: null,
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ],
+          execution: [
+            {
+              id: "bug-blast-radius",
+              summary: "Minimal Blast Radius",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Keep code changes strictly isolated to the bug. Do not mix refactoring with bug fixes to minimize risk.",
+              decisionTree: null,
+              codePatterns: null,
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ]
+        },
+        toolOverrides: []
+      },
+      {
+        id: "lifecycle.feature-addition",
+        label: "Feature Addition",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "feature",
+              weight: 0.85
+            },
+            {
+              word: "feat",
+              weight: 0.85
+            },
+            {
+              word: "add",
+              weight: 0.85
+            },
+            {
+              word: "implement",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "new feature",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [
+            "**/feature-addition*",
+            "**/*feature-addition*"
+          ],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          planning: [
+            {
+              id: "feat-compat",
+              summary: "Backwards Compatibility",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Ensure new features do not break existing API contracts or require immediate client upgrades. Use feature flags if rolling out incrementally.",
+              decisionTree: null,
+              codePatterns: null,
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ],
+          execution: null
+        },
+        toolOverrides: []
+      },
+      {
+        id: "lifecycle.refactoring",
+        label: "Refactoring",
+        children: [],
+        triggers: {
+          words: [
+            {
+              word: "refactor",
+              weight: 0.85
+            },
+            {
+              word: "cleanup",
+              weight: 0.85
+            },
+            {
+              word: "technical-debt",
+              weight: 0.85
+            }
+          ],
+          phrases: [
+            {
+              phrase: "refactor code",
+              weight: 0.95
+            }
+          ],
+          antiWords: [],
+          importPatterns: [],
+          filePatterns: [
+            "**/refactoring*",
+            "**/*refactoring*"
+          ],
+          symbolPatterns: []
+        },
+        fragments: {
+          chat: null,
+          taskCreation: null,
+          investigation: null,
+          verification: null,
+          planning: [
+            {
+              id: "refactor-test",
+              summary: "Test-First Refactoring",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Ensure a solid test harness exists covering the current behavior before changing internal structures.",
+              decisionTree: null,
+              codePatterns: null,
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ],
+          execution: [
+            {
+              id: "refactor-behavior",
+              summary: "Preserve Behavior",
+              weight: "principle",
+              trigger: "always",
+              defersToCodebase: true,
+              coreGuidance: "Do not alter the public API or observable behavior of the module being refactored.",
+              decisionTree: null,
+              codePatterns: null,
+              commonMistakes: null,
+              selfVerification: null,
+              outputConstraints: null,
+              guardrails: null,
+              scaffolding: null,
+              crossReferences: null
+            }
+          ]
+        },
+        toolOverrides: []
+      }
+    ],
+    triggers: {
+      words: [],
+      phrases: [],
+      antiWords: [],
+      importPatterns: [],
+      filePatterns: [],
+      symbolPatterns: []
+    },
+    fragments: {
+      chat: null,
+      planning: null,
+      taskCreation: null,
+      investigation: null,
+      execution: null,
+      verification: null
+    },
+    toolOverrides: []
+  }
+};
+
+// electron/services/taxonomy/crossAxisRules.json
+var crossAxisRules_default = {
+  rules: [
+    {
+      axis1: "domain",
+      axis1Path: "backend.database.relational.postgresql",
+      axis2: "scale",
+      axis2Path: "single-user.local-desktop",
+      resolution: "Prefer local SQLite connection patterns if suitable; if PostgreSQL is requested, disable heavy connection pooling sizes or distributed setups. Enforce local single-client mode.",
+      intersectionGuidance: "Local PostgreSQL execution: Keep pool size small (max: 2-5 connections). Avoid configuring distributed replication, master-replica routing, or horizontal scaling parameters."
+    },
+    {
+      axis1: "domain",
+      axis1Path: "backend.database.relational.postgresql",
+      axis2: "paradigm",
+      axis2Path: "functional",
+      resolution: "Use database connection parameters passed as function arguments. Avoid mutating global objects or relying on class-scoped connections.",
+      intersectionGuidance: "Functional Database Pattern: Maintain pure functions. Pass query clients (PoolClient or Transaction) explicitly as the first argument to database functions."
+    },
+    {
+      axis1: "domain",
+      axis1Path: "backend.database.relational.sqlite",
+      axis2: "concurrency",
+      axis2Path: "async-await",
+      resolution: "Configure SQLite in WAL mode and use an appropriate busy_timeout (e.g. 5000ms) to prevent lock blocking on concurrent async writes.",
+      intersectionGuidance: "SQLite Concurrency: Enable WAL mode (`db.pragma('journal_mode = WAL')`) and set busy_timeout to 5000ms. Handle transaction retries if SQLITE_BUSY occurs."
+    },
+    {
+      axis1: "domain",
+      axis1Path: "backend.database.keyvalue.redis",
+      axis2: "concurrency",
+      axis2Path: "async-await",
+      resolution: "Use atomic Redis transactions (MULTI/EXEC) or Lua scripting (EVAL) to prevent race conditions during concurrent read-modify-write cache operations.",
+      intersectionGuidance: "Redis Concurrency: Wrap multi-step key operations in MULTI/EXEC or deploy an atomic Lua script to run checks and mutations on the Redis server in a single thread-safe step."
+    },
+    {
+      axis1: "domain",
+      axis1Path: "backend.database.relational.postgresql",
+      axis2: "scale",
+      axis2Path: "production",
+      resolution: "Configure pgbouncer or connection pooling dynamically. Set statement_timeout and lock_timeout to prevent query pileups.",
+      intersectionGuidance: "Production PostgreSQL: Set connection pool size strictly. Implement lock_timeout (e.g., `SET lock_timeout = '3s'`) on transaction runs to prevent lock cascades on high-traffic tables."
+    },
+    {
+      axis1: "domain",
+      axis1Path: "backend.database.search.opensearch",
+      axis2: "scale",
+      axis2Path: "production",
+      resolution: "Buffer search documents and execute updates in bulk. Configure circuit breakers and index refresh intervals for high write throughput.",
+      intersectionGuidance: "Production OpenSearch: Batch search indexing requests into bulk (_bulk) API transactions. Set refresh_interval to 30s or longer to reduce IO contention under heavy loads."
+    },
+    {
+      axis1: "domain",
+      axis1Path: "backend.database.keyvalue.dynamodb",
+      axis2: "scale",
+      axis2Path: "production",
+      resolution: "Mitigate hot partition keys. Use composite partition keys or pre-sharded suffixes if writes exceed 1000 WCU per key.",
+      intersectionGuidance: "Production DynamoDB: Distribute writes evenly. If a partition key handles hot traffic (such as tenant or daily stats), append a random hash suffix (e.g. USER_123#2) to distribute data across physical storage nodes."
+    },
+    {
+      axis1: "domain",
+      axis1Path: "backend.database.columnar.clickhouse",
+      axis2: "concurrency",
+      axis2Path: "async-await",
+      resolution: "Aggregate concurrent inserts into a single batch write. Avoid triggering concurrent inserts of individual rows to prevent clickhouse parts limits exhaustion.",
+      intersectionGuidance: "ClickHouse Concurrency: Implement an in-memory buffer queue. Collect rows from concurrent async processes and flush them in batches of 10,000+ records to avoid exhausting merge parts."
+    }
+  ]
+};
+
 // electron/services/taxonomy/TaxonomyService.ts
 var TaxonomyService = class _TaxonomyService {
   static instance = null;
@@ -2412,18 +17433,8 @@ var TaxonomyService = class _TaxonomyService {
   initialize() {
     if (this.isInitialized) return;
     try {
-      const servicesDir = typeof __filename !== "undefined" ? path3.dirname(__filename) : path3.dirname(fileURLToPath(import.meta.url));
-      const treePath = path3.join(servicesDir, "taxonomyTree.json");
-      const rulesPath = path3.join(servicesDir, "crossAxisRules.json");
-      if (!fs.existsSync(treePath)) {
-        throw new Error(`Taxonomy tree JSON file not found at ${treePath}`);
-      }
-      if (!fs.existsSync(rulesPath)) {
-        throw new Error(`Cross-axis rules JSON file not found at ${rulesPath}`);
-      }
-      this.taxonomyTree = JSON.parse(fs.readFileSync(treePath, "utf8"));
-      const rulesJson = JSON.parse(fs.readFileSync(rulesPath, "utf8"));
-      this.crossAxisRules = rulesJson.rules || [];
+      this.taxonomyTree = taxonomyTree_default;
+      this.crossAxisRules = crossAxisRules_default.rules || [];
       this.buildIndices();
       this.validateTreeIntegrity();
       this.isInitialized = true;
@@ -2529,10 +17540,10 @@ var TaxonomyService = class _TaxonomyService {
     for (const key of axesKeys) {
       const rootNode = this.taxonomyTree[key];
       if (rootNode) {
-        const path5 = TaxonomyClassifier.classifyAxis(key, rootNode, signals);
-        if (path5) {
-          classification[key] = path5;
-          totalConfidence += path5.confidence;
+        const path4 = TaxonomyClassifier.classifyAxis(key, rootNode, signals);
+        if (path4) {
+          classification[key] = path4;
+          totalConfidence += path4.confidence;
           activeCount++;
         }
       }
@@ -2547,9 +17558,9 @@ var TaxonomyService = class _TaxonomyService {
       this.taxonomyTree
     );
     const toolOverrides = [];
-    const collectOverrides = (path5) => {
-      for (const nodeId of path5.nodeIds) {
-        const node = TaxonomyClassifier.findNodeInSubtree(rootNodeForPath(path5.axisName), nodeId);
+    const collectOverrides = (path4) => {
+      for (const nodeId of path4.nodeIds) {
+        const node = TaxonomyClassifier.findNodeInSubtree(rootNodeForPath(path4.axisName), nodeId);
         if (node && node.toolOverrides) {
           toolOverrides.push(...node.toolOverrides);
         }
@@ -2557,9 +17568,9 @@ var TaxonomyService = class _TaxonomyService {
     };
     const rootNodeForPath = (axisName) => this.taxonomyTree[axisName];
     for (const key of axesKeys) {
-      const path5 = classification[key];
-      if (path5) {
-        collectOverrides(path5);
+      const path4 = classification[key];
+      if (path4) {
+        collectOverrides(path4);
       }
     }
     const uniqueOverridesMap = /* @__PURE__ */ new Map();
@@ -2608,15 +17619,15 @@ var TaxonomyService = class _TaxonomyService {
       `);
       const axesKeys = ["domain", "paradigm", "scale", "concurrency", "lifecycle"];
       for (const key of axesKeys) {
-        const path5 = result.classification[key];
-        if (path5) {
-          const depth = path5.depth;
+        const path4 = result.classification[key];
+        if (path4) {
+          const depth = path4.depth;
           const fragmentsCount = result.activeFragmentIds.length;
           stmt.run(
             taskId,
             key,
-            path5.nodeIds.join("."),
-            path5.confidence,
+            path4.nodeIds.join("."),
+            path4.confidence,
             result.classifiedBy,
             depth,
             fragmentsCount,
@@ -2641,13 +17652,13 @@ function assert(condition, message) {
 }
 async function run() {
   console.log("--- STARTING TAXONOMY ENGINE TESTS ---");
-  const currentDir = path4.dirname(fileURLToPath2(import.meta.url));
-  const srcDir = path4.resolve(currentDir, "../../../electron/services/taxonomy");
+  const currentDir = path3.dirname(fileURLToPath(import.meta.url));
+  const srcDir = path3.resolve(currentDir, "../../../electron/services/taxonomy");
   for (const file of ["taxonomyTree.json", "crossAxisRules.json"]) {
-    const srcFile = path4.join(srcDir, file);
-    const destFile = path4.join(currentDir, file);
-    if (fs2.existsSync(srcFile)) {
-      fs2.copyFileSync(srcFile, destFile);
+    const srcFile = path3.join(srcDir, file);
+    const destFile = path3.join(currentDir, file);
+    if (fs.existsSync(srcFile)) {
+      fs.copyFileSync(srcFile, destFile);
     } else {
       console.warn(`\u26A0\uFE0F Warning: Source taxonomy JSON file not found at ${srcFile}`);
     }

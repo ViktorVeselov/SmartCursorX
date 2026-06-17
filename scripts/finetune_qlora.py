@@ -96,6 +96,7 @@ def train_with_transformers(args: argparse.Namespace, samples: list):
         Trainer,
         DataCollatorForSeq2Seq,
         BitsAndBytesConfig,
+        TrainerCallback,
     )
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     from datasets import Dataset
@@ -259,7 +260,7 @@ def train_with_transformers(args: argparse.Namespace, samples: list):
 
     start_time = time.time()
 
-    class ProgressCallback:
+    class ProgressCallback(TrainerCallback):
         def on_log(self, args, state, control, logs=None, **kwargs):
             if logs is None:
                 return
@@ -285,14 +286,12 @@ def train_with_transformers(args: argparse.Namespace, samples: list):
                 )
                 print(line, flush=True)
 
-    progress_cb = ProgressCallback()
-
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=tokenized,
         data_collator=DataCollatorForSeq2Seq(tokenizer, pad_to_multiple_of=8),
-        callbacks=[type("ProgressCB", (object,), {"on_log": progress_cb.on_log})()],
+        callbacks=[ProgressCallback()],
     )
 
     if main_process:
@@ -497,6 +496,11 @@ def main():
     if main_process:
         mode = "DDP" if args.ddp else "FSDP" if args.fsdp else "DeepSpeed" if args.deepspeed else "single GPU" if args.num_gpus <= 1 else "DDP"
         print(f"Training mode: {mode} ({args.num_gpus} GPU(s), {'ROCm' if args.rocm else 'CUDA'})", flush=True)
+        import torch
+        if torch.cuda.is_available():
+            print(f"PyTorch GPU detection: SUCCESS (Using {torch.cuda.get_device_name(0)})", flush=True)
+        else:
+            print("PyTorch GPU detection: FAILED (No GPU detected by PyTorch, falling back to CPU)", flush=True)
 
     try:
         if args.use_unsloth:

@@ -1,11 +1,13 @@
 {
   "name": "smart-cursor-x",
   "private": true,
-  "version": "0.0.3-alpha",
+  "version": "0.0.4-alpha",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build:native": "npm --prefix native run build",
+    "fetch:llama": "powershell -File scripts/download-llama-server.ps1",
+    "fetch:llama:full": "powershell -File scripts/download-llama-server.ps1 -All",
     "build": "npm run build:native && tsc && vite build && electron-builder",
     "build:all": "npm run build:native && tsc && vite build && electron-builder -w -m",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",

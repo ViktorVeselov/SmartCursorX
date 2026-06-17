@@ -1,6 +1,6 @@
-//! # Cursor Replacer Native Modules
+//! # SmartCursorX Native Modules
 //!
-//! Performance-critical components written in Rust for the Cursor Replacer IDE.
+//! Performance-critical components written in Rust for the SmartCursorX IDE.
 //!
 //! ## Modules
 //! - `search`: Fast regex file search (ripgrep-style)

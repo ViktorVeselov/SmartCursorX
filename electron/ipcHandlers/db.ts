@@ -109,6 +109,41 @@ export function registerDBHandlers(ipcMain: Electron.IpcMain) {
         return true;
     });
 
+    // Fine-Tuned Models
+    ipcMain.handle('finetuned:get-models', () => {
+        return dbService.getFineTunedModels();
+    });
+    ipcMain.handle('finetuned:get-model', (_event, id: string) => {
+        checkArgs(typeof id === 'string' && id.length > 0, 'Model ID must be a non-empty string');
+        return dbService.getFineTunedModel(id);
+    });
+    ipcMain.handle('finetuned:add-model', (_event, model: {
+        id: string;
+        name: string;
+        baseModelId: string;
+        baseModelHfRepo: string;
+        adapterPath: string;
+        backend: 'llamacpp' | 'python';
+        quantization: '4bit' | '8bit' | '16bit';
+        tags: string[];
+    }) => {
+        checkArgs(typeof model.id === 'string' && model.id.length > 0, 'Model ID is required');
+        checkArgs(typeof model.name === 'string' && model.name.length > 0, 'Model Name is required');
+        checkArgs(typeof model.baseModelId === 'string' && model.baseModelId.length > 0, 'Base Model ID is required');
+        checkArgs(typeof model.baseModelHfRepo === 'string' && model.baseModelHfRepo.length > 0, 'Base Model HF Repo is required');
+        checkArgs(typeof model.adapterPath === 'string' && model.adapterPath.length > 0, 'Adapter Path is required');
+        checkArgs(model.backend === 'llamacpp' || model.backend === 'python', 'Backend must be llamacpp or python');
+        checkArgs(model.quantization === '4bit' || model.quantization === '8bit' || model.quantization === '16bit', 'Quantization must be 4bit, 8bit, or 16bit');
+        checkArgs(Array.isArray(model.tags), 'Tags must be an array');
+        dbService.addFineTunedModel(model);
+        return true;
+    });
+    ipcMain.handle('finetuned:delete-model', (_event, id: string) => {
+        checkArgs(typeof id === 'string' && id.length > 0, 'Model ID must be a non-empty string');
+        dbService.deleteFineTunedModel(id);
+        return true;
+    });
+
     // LiteLLM
     ipcMain.handle('litellm:get-status', () => {
         return {

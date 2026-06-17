@@ -97,8 +97,8 @@ export class CostEstimatorService {
 
         const normModel = model.toLowerCase();
 
-        // Local models (Ollama) cost nothing
-        if (provider === 'ollama' || normModel.includes('llama') || normModel.includes('mistral') || normModel.includes('phi')) {
+        // Local models (Ollama, local GGUF) cost nothing
+        if (provider === 'ollama' || provider === 'local' || normModel.includes('llama') || normModel.includes('mistral') || normModel.includes('phi')) {
             return { inputCostPerM: 0, outputCostPerM: 0 };
         }
 

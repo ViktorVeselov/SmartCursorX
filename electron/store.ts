@@ -15,5 +15,5 @@ export const store = new Store<StoreSchema>({
     theme: 'dark'
   },
   // In a real app, use a proper encryption key derived from OS keychain
-  encryptionKey: 'cursor-replacer-secure-key'
+  encryptionKey: 'smart-cursor-x-secure-key'
 });

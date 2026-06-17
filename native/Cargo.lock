@@ -79,22 +79,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cursor-replacer-native"
-version = "0.1.0"
-dependencies = [
- "grep-regex",
- "grep-searcher",
- "ignore",
- "napi",
- "napi-build",
- "napi-derive",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -396,6 +380,23 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "smart-cursor-x-native"
+version = "0.1.0"
+dependencies = [
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

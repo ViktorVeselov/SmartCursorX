@@ -1,10 +1,10 @@
 {
-    "name": "cursor-replacer-native",
+    "name": "smart-cursor-x-native",
     "version": "0.1.0",
     "main": "index.js",
     "types": "index.d.ts",
     "napi": {
-        "name": "cursor-replacer-native",
+        "name": "smart-cursor-x-native",
         "triples": {
             "defaults": true,
             "additional": []
