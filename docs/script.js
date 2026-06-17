@@ -33,13 +33,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (isMac) {
     // Dynamic shaping for macOS platforms
-    btnDownload.href = "https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Mac-0.0.3-alpha-Installer.dmg";
+    btnDownload.href = "https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Mac-0.0.4-alpha-Installer.dmg";
     btnText.textContent = "Download for macOS (.dmg)";
-    releaseMeta.textContent = "macOS DMG • Version 0.0.3-alpha • Cleaned by Scan";
+    releaseMeta.textContent = "macOS DMG • Version 0.0.4-alpha • Cleaned by Scan";
   } else {
     // Default/dynamic shape for Windows platforms
-    btnDownload.href = "https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Windows-0.0.3-alpha-Setup.exe";
+    btnDownload.href = "https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Windows-0.0.4-alpha-Setup.exe";
     btnText.textContent = "Download for Windows (x64)";
-    releaseMeta.textContent = "Windows Setup • Version 0.0.3-alpha • Cleaned by Scan";
+    releaseMeta.textContent = "Windows Setup • Version 0.0.4-alpha • Cleaned by Scan";
   }
 });
