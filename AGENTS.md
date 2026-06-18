@@ -264,3 +264,64 @@ Pre-existing warnings (CSS pseudo-element, chunk size, Node.js version) are unre
 ### OneDrive Sync Conflict
 - Project files in OneDrive-synced folders can trigger file creation/rename failures for `.exe` files
 - `startServer()` searches `userData/bin/` first (never OneDrive-synced), then `resources/` as fallback
+
+## Session 7: Context Size Control, Token Estimation Fix, and AI Tool Instructions (COMPLETE ✅)
+
+### 14. Fixed AI system prompts to instruct tool usage ✅
+- **Files**: `electron/services/ai/prompts/default.txt`, `openai.txt`, `anthropic.txt`, `ollama.txt`, `zen.txt`
+- All 5 prompt files had no mention of `write_file`/`edit_file` tools, causing AI to describe fixes instead of making them
+- Added `# File operations` section telling the AI to USE the tools immediately
+
+### 15. Fixed tool result format (diff-style) ✅
+- **Files**: `electron/services/tools.ts`, `electron/services/PlanningService.ts`
+- Changed from prose `"(42 lines, 1200 bytes)"` / `"removed 3 lines"` to compact `"(+42/-0, 1200b)"` / `"(+5/-6)"`
+
+### 16. Fixed token estimation (truncation was silently not firing) ✅
+- **Files**: `electron/services/ai/prompts.ts`, `electron/services/AIService.ts`
+- **chars/token ratio**: `/4` → `/3` — code-heavy content is ~2-2.5 chars/token, old ratio underestimated by ~33%
+- **Tools payload**: added `JSON.stringify(options.tools).length / 3` to the estimate — 3 tool schemas added ~500 real tokens that were invisible before
+- **Hard cap**: after truncation, if estimate still exceeds 80% of usable context, throws clear error telling user to increase slider or reduce history
+
+### 17. Built per-model context size slider (full stack, 8 files) ✅
+- **DB schema** (`schema.ts`): added `context_size INTEGER` column to `custom_models`
+- **DB functions** (`agents.ts`, `index.ts`): added `updateCustomModelContextSize()`, updated `addCustomModel()`
+- **Service** (`LocalModelService.ts`): added `resolveModelMaxContext()` — checks `TOP_CODING_MODELS` by name prefix, falls back to regex patterns (SmolLM2→2048, Llama-3→8192, Mistral→32768, etc.). `startServer()` now always applies `clampContextByHardware()`. Added `restartServer()` for live restart
+- **IPC** (`ipcHandlers/ai.ts`): `local:start-server` accepts `contextSize` param. Added `local:get-model-settings` and `local:set-context-size` handlers. Cache synced on every start/size change
+- **Preload** (`preload.ts`): registered new invoke channels
+- **UI** (`SettingsLocalModels.tsx`): chevron `>` per model → expandable section with slider (512–32768) + number input. Debounced save (500ms). Live restart when slider changes while model is running
+
+### 18. Fixed context cache sync ✅
+- **Files**: `electron/ipcHandlers/ai.ts`
+- `local:start-server` and `local:set-context-size` both update `dbService.setCachedContext()` so `AIService.chat()` always reads the current running context size, not a stale cached value
+
+### 19. Fixed external server.js (race condition + fetch perf) ✅
+- **File**: `C:\Users\lipov\OneDrive\Documents\Coding Projects\codex-weaver-project\backend\server.js`
+- `node-fetch` re-imported on every API call → cached `_fetchPromise` (one-time load)
+- DB init race condition (requests before DB ready) → `const dbReady = (async () => {...})()` with readiness middleware returning 503 if DB never initialized
+
+### 20. Verified taxonomy compatibility ✅
+- Explored taxonomy system (`electron/services/taxonomy/`) — it's a domain-aware prompt enrichment layer
+- **Taxonomy is orthogonal** to context management, token estimation, truncation, and tool calling
+- Zero references in `electron/services/ai/` (AIService, prompts.ts, provider.ts)
+- No conflicts with any features built in this session
+
+## Session 8: Workspace Path Fix, Inline Monaco DiffEditor with Accept/Reject (COMPLETE ✅)
+
+### 21. Fixed workspace path bug (files created at wrong root) ✅
+- **Files**: `src/components/useChatSending.ts`, `electron/ipcHandlers/ai.ts`, `electron/services/PathGuard.ts`
+- **Root cause**: `ai.ts` read workspace from stale `PathGuard` singleton instead of renderer's authoritative `rootPath`
+- **Fix**: `rootPath` (already flowing via React props: App.tsx → ChatPanel → useChatSending) now sent in `ai:chat-start` IPC payload as `rootPath` field
+- Handler accepts `rootPath` from event, falls back to `getWorkspacePath()` if not provided (backward compat)
+- Also calls `PathGuard.setWorkspacePath(rootPath)` to sync the `write-file` IPC handler security gate
+- **Result**: Files created/edited by AI tools land in the correct user workspace (e.g. `Coding Projects/`) instead of `cursor-replacer/`
+
+### 22. Inline Monaco DiffEditor with Accept/Reject per file ✅
+- **Files**: `src/components/ChatPanel.tsx`
+- **Replaced** the summary banner with expandable per-file diff cards using `ChatFileDiffCard` component
+- Each card shows: file name, `+N/-M` line stats, **Accept** button (dismiss), **Reject** button (restore original via `write-file` IPC)
+- Click `▶` to expand a 300px Monaco `DiffEditor` side-by-side view (language auto-detected from extension)
+- **Accept All** dismisses all cards at once
+- `@monaco-editor/react` `DiffEditor` imported directly — no tab system, no pre-approval gate
+- **Files already written by tools** — Accept is cosmetic; Reject is the action that actually undoes changes
+
+### Build Status: ✅ `npx tsc --noEmit` passes clean — zero errors

@@ -78,11 +78,15 @@ export interface ChatUsage {
 export interface ChatResponse {
   text: string;
   usage: ChatUsage;
+  estimatedInput?: number;
+  contextLength?: number;
 }
 
 export interface ChatStreamResult {
   textStream: AsyncIterable<string>;
   usage: Promise<ChatUsage>;
+  estimatedInput?: number;
+  contextLength?: number;
 }
 
 export interface ObjectStreamResult {
@@ -231,7 +235,10 @@ export class AIService {
     }
     const reservedBuffer = Math.min(10000, Math.floor(contextLength * 0.08));
     const usableInput = contextLength - reservedBuffer;
-    const estimatedInput = estimateMessageTokens(composedMessages);
+    const toolEstimate = options?.tools
+      ? Math.ceil(JSON.stringify(options.tools).length / 3)
+      : 0;
+    const estimatedInput = estimateMessageTokens(composedMessages) + toolEstimate;
     if (estimatedInput > usableInput) {
       const truncated: TruncationResult = truncateMessages(composedMessages, usableInput);
       composedMessages = truncated.messages;
@@ -243,6 +250,16 @@ export class AIService {
           content: `[Earlier conversation history was compressed to fit within the ${contextLength}-token context window. ${truncated.droppedTurns > 0 ? `${truncated.droppedTurns} old messages were removed. ` : ''}The context before these messages is no longer available in full. If you need details from the removed history, ask the user. ]`
         });
       }
+    }
+
+    const finalEstimate = estimateMessageTokens(composedMessages) + toolEstimate;
+    const hardLimit = Math.floor(usableInput * 0.8);
+    if (finalEstimate > hardLimit) {
+      throw new Error(
+        `Request (${finalEstimate} est. tokens) may exceed the ${contextLength}-token context window ` +
+        `for ${modelId} even after truncation. Either reduce conversation history or increase the ` +
+        `context size in Settings → Models → Local Models (click the chevron on your model).`
+      );
     }
 
     try {
@@ -267,7 +284,7 @@ export class AIService {
           },
         });
         console.log('[AIService:chat] streamText returned, textStream type:', typeof result.textStream);
-        return { textStream: result.textStream, usage: usagePromise };
+        return { textStream: result.textStream, usage: usagePromise, estimatedInput, contextLength };
       }
 
       if (options?.responseSchema) {
@@ -286,6 +303,8 @@ export class AIService {
             inputTokens: result.usage?.inputTokens ?? 0,
             outputTokens: result.usage?.outputTokens ?? 0,
           },
+          estimatedInput,
+          contextLength,
         };
       }
 
@@ -304,6 +323,8 @@ export class AIService {
           inputTokens: result.usage?.inputTokens ?? 0,
           outputTokens: result.usage?.outputTokens ?? 0,
         },
+        estimatedInput,
+        contextLength,
       };
     } catch (err: unknown) {
       if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {

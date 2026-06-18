@@ -50,6 +50,9 @@ pub struct SearchOptions {
     /// File extensions to include (e.g., ["ts", "tsx"])
     #[napi(ts_type = "string[] | undefined")]
     pub include_extensions: Option<Vec<String>>,
+    /// Respect .gitignore patterns (default: true)
+    #[napi(ts_type = "boolean | undefined")]
+    pub respect_gitignore: Option<bool>,
 }
 
 /// Search for a pattern across files in a directory.
@@ -68,6 +71,7 @@ pub fn search_files(options: SearchOptions) -> Result<Vec<SearchMatch>> {
     let max_results = options.max_results.unwrap_or(100) as usize;
     let ignore_case = options.ignore_case.unwrap_or(false);
     let is_literal = options.literal.unwrap_or(false);
+    let respect_gitignore = options.respect_gitignore.unwrap_or(true);
     let extensions = options.include_extensions.as_ref().map(|exts| {
         exts.iter()
             .map(|e| e.trim_start_matches('.').to_lowercase())
@@ -91,9 +95,9 @@ pub fn search_files(options: SearchOptions) -> Result<Vec<SearchMatch>> {
 
     // Build file walker - respects .gitignore automatically via the ignore crate
     let walker = WalkBuilder::new(root)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
+        .git_ignore(respect_gitignore)
+        .git_global(respect_gitignore)
+        .git_exclude(respect_gitignore)
         .require_git(false)
         .hidden(false)
         .parents(true)
@@ -176,7 +180,7 @@ pub fn search_files(options: SearchOptions) -> Result<Vec<SearchMatch>> {
 /// Quick search that returns just file paths matching a pattern.
 /// Useful for "find file" use cases.
 #[napi]
-pub fn search_file_names(pattern: String, root_path: String) -> Result<Vec<String>> {
+pub fn search_file_names(pattern: String, root_path: String, respect_gitignore: Option<bool>) -> Result<Vec<String>> {
     let root = Path::new(&root_path);
 
     if !root.exists() {
@@ -186,6 +190,8 @@ pub fn search_file_names(pattern: String, root_path: String) -> Result<Vec<Strin
         ));
     }
 
+    let respect_gitignore = respect_gitignore.unwrap_or(true);
+
     let re = Regex::new(&pattern).map_err(|e| {
         Error::new(
             Status::GenericFailure,
@@ -194,8 +200,8 @@ pub fn search_file_names(pattern: String, root_path: String) -> Result<Vec<Strin
     })?;
 
     let walker = WalkBuilder::new(root)
-        .git_ignore(true)
-        .git_global(true)
+        .git_ignore(respect_gitignore)
+        .git_global(respect_gitignore)
         .require_git(false)
         .build();
 

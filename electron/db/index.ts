@@ -12,6 +12,7 @@ import {
     addFlow, getFlows, deleteFlow, updateFlow,
     addCustomProvider, getCustomProviders, deleteCustomProvider,
     addCustomModel, getCustomModels, toggleCustomModelThinking, deleteCustomModel,
+    updateCustomModelContextSize,
     addFineTunedModel, getFineTunedModels, getFineTunedModel, deleteFineTunedModel
 } from './agents';
 import {
@@ -169,6 +170,9 @@ export class DatabaseService {
     }
     deleteCustomModel(providerId: string, modelName: string) {
         return deleteCustomModel(this.db, providerId, modelName);
+    }
+    updateCustomModelContextSize(providerId: string, modelName: string, contextSize: number) {
+        return updateCustomModelContextSize(this.db, providerId, modelName, contextSize);
     }
 
     // ── Fine-Tuned Models ──

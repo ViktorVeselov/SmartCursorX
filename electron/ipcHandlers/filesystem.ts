@@ -9,6 +9,16 @@ import type { IpcHandlerContext } from './index';
 const require = createRequire(import.meta.url);
 const fs = require('fs').promises;
 
+function getWorkspacePath(context: IpcHandlerContext): string {
+    return context.workspacePath || PathGuard.getWorkspacePath() || '';
+}
+
+function resolveWorkspacePath(filePath: string, context: IpcHandlerContext): string {
+    const workspacePath = getWorkspacePath(context);
+    if (!workspacePath) return filePath;
+    return path.isAbsolute(filePath) ? filePath : path.resolve(workspacePath, filePath);
+}
+
 export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: IpcHandlerContext) {
     ipcMain.handle('native-search', async (_event, options) => {
         if (!context.native) throw new Error('Native module not loaded');
@@ -29,14 +39,15 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('read-dir', async (_event, dirPath) => {
         if (typeof dirPath !== 'string') throw new Error('Invalid path argument');
-        if (!PathGuard.isContained(dirPath)) {
+        const resolvedPath = resolveWorkspacePath(dirPath, context);
+        if (!PathGuard.isContained(resolvedPath)) {
             throw new Error(`Security: Read directory "${dirPath}" is outside the workspace root`);
         }
 
         try {
-            const names = await fs.readdir(dirPath);
+            const names = await fs.readdir(resolvedPath);
             const items = await Promise.all(names.map(async (name: string) => {
-                const fullPath = path.join(dirPath, name);
+                const fullPath = path.join(resolvedPath, name);
                 const stats = await fs.stat(fullPath);
                 return {
                     name,
@@ -56,25 +67,26 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('read-file', async (_event, filePath) => {
         if (typeof filePath !== 'string') throw new Error('Invalid path argument');
-        if (!PathGuard.isContained(filePath)) {
+        const resolvedPath = resolveWorkspacePath(filePath, context);
+        if (!PathGuard.isContained(resolvedPath)) {
             throw new Error(`Security: Read of "${filePath}" is outside the workspace root`);
         }
 
         const binaryExts = ['.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.bmp', '.svg',
             '.pdf', '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.dylib',
             '.woff', '.woff2', '.eot', '.ttf', '.mp4', '.mp3', '.wav', '.ogg'];
-        const ext = path.extname(filePath).toLowerCase();
+        const ext = path.extname(resolvedPath).toLowerCase();
         if (binaryExts.includes(ext)) {
-            throw new Error(`Cannot read binary file "${path.basename(filePath)}" — reading images, PDFs, and other binary files is not supported through the file read interface`);
+            throw new Error(`Cannot read binary file "${path.basename(resolvedPath)}" — reading images, PDFs, and other binary files is not supported through the file read interface`);
         }
 
         try {
             _event.sender.send('main-process-message', {
                 type: 'file-read',
-                path: filePath,
+                path: resolvedPath,
                 timestamp: Date.now()
             });
-            return await fs.readFile(filePath, 'utf-8');
+            return await fs.readFile(resolvedPath, 'utf-8');
         } catch (err) {
             console.error('Error reading file:', err);
             throw err;
@@ -84,7 +96,8 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
     ipcMain.handle('write-file', async (_event, filePath, content) => {
         if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('Invalid file path');
         if (typeof content !== 'string') throw new Error('Invalid content');
-        if (!PathGuard.isContained(filePath)) {
+        const resolvedPath = resolveWorkspacePath(filePath, context);
+        if (!PathGuard.isContained(resolvedPath)) {
             throw new Error(`Security: Write to "${filePath}" is outside the workspace root`);
         }
 
@@ -92,7 +105,7 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
             let additions = 0;
             let deletions = 0;
             try {
-                const prevContent = await fs.readFile(filePath, 'utf-8');
+                const prevContent = await fs.readFile(resolvedPath, 'utf-8');
                 const prevLines = prevContent.split('\n');
                 const newLines = content.split('\n');
 
@@ -109,11 +122,11 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
                 additions = content.split('\n').length;
             }
 
-            await fs.writeFile(filePath, content, 'utf-8');
+            await fs.writeFile(resolvedPath, content, 'utf-8');
 
             _event.sender.send('main-process-message', {
                 type: 'file-write',
-                path: filePath,
+                path: resolvedPath,
                 additions,
                 deletions,
                 timestamp: Date.now()
@@ -127,15 +140,16 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('delete-path', async (_event, targetPath) => {
         if (typeof targetPath !== 'string') throw new Error('Invalid path argument');
-        if (!PathGuard.isContained(targetPath)) {
+        const resolvedPath = resolveWorkspacePath(targetPath, context);
+        if (!PathGuard.isContained(resolvedPath)) {
             throw new Error(`Security: Delete of "${targetPath}" is outside the workspace root`);
         }
         try {
-            const stats = await fs.stat(targetPath);
+            const stats = await fs.stat(resolvedPath);
             if (stats.isDirectory()) {
-                await fs.rm(targetPath, { recursive: true, force: true });
+                await fs.rm(resolvedPath, { recursive: true, force: true });
             } else {
-                await fs.unlink(targetPath);
+                await fs.unlink(resolvedPath);
             }
             return true;
         } catch (err) {
@@ -146,14 +160,16 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('rename-path', async (_event, oldPath, newPath) => {
         if (typeof oldPath !== 'string' || typeof newPath !== 'string') throw new Error('Invalid path arguments');
-        if (!PathGuard.isContained(oldPath)) {
+        const resolvedOldPath = resolveWorkspacePath(oldPath, context);
+        const resolvedNewPath = resolveWorkspacePath(newPath, context);
+        if (!PathGuard.isContained(resolvedOldPath)) {
             throw new Error(`Security: Rename source "${oldPath}" is outside the workspace root`);
         }
-        if (!PathGuard.isContained(newPath)) {
+        if (!PathGuard.isContained(resolvedNewPath)) {
             throw new Error(`Security: Rename target "${newPath}" is outside the workspace root`);
         }
         try {
-            await fs.rename(oldPath, newPath);
+            await fs.rename(resolvedOldPath, resolvedNewPath);
             return true;
         } catch (err) {
             console.error('Error renaming path:', err);
@@ -163,11 +179,12 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('create-directory', async (_event, dirPath) => {
         if (typeof dirPath !== 'string') throw new Error('Invalid path argument');
-        if (!PathGuard.isContained(dirPath)) {
+        const resolvedPath = resolveWorkspacePath(dirPath, context);
+        if (!PathGuard.isContained(resolvedPath)) {
             throw new Error(`Security: Create directory "${dirPath}" is outside the workspace root`);
         }
         try {
-            await fs.mkdir(dirPath, { recursive: true });
+            await fs.mkdir(resolvedPath, { recursive: true });
             return true;
         } catch (err) {
             console.error('Error creating directory:', err);
@@ -177,6 +194,15 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
 
     ipcMain.handle('resolve-path', async (_event, ...paths) => {
         try {
+            const workspacePath = getWorkspacePath(context);
+            if (paths.length === 0) {
+                return workspacePath || path.resolve('.');
+            }
+            // If first path is relative and workspace exists, resolve against workspace
+            const firstPath = paths[0];
+            if (workspacePath && !path.isAbsolute(firstPath)) {
+                return path.resolve(workspacePath, ...paths);
+            }
             return path.resolve(...paths);
         } catch (err) {
             console.error('Error resolving path:', err);

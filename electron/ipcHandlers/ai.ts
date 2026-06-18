@@ -11,8 +11,135 @@ import { checkArgs } from '../../src/helpers/invariant';
 import * as fs from 'fs';
 import { tool } from 'ai';
 import { z } from 'zod';
-import { executeReadFile, executeWriteFile, executeEditFile, getWorkspacePath } from '../services/tools';
+import { executeReadFile, executeWriteFile, executeEditFile, getWorkspacePath, executeListFiles, executeGrep, SearchMatch } from '../services/tools';
+import { PathGuard } from '../services/PathGuard';
+import { diffLines } from 'diff';
 import type { IpcHandlerContext } from './index';
+
+type ToolPermission = 'allow' | 'deny' | 'ask';
+
+interface ToolPermissions {
+  read_file: ToolPermission;
+  write_file: ToolPermission;
+  edit_file: ToolPermission;
+  list_files: ToolPermission;
+  grep: ToolPermission;
+}
+
+const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = {
+  read_file: 'allow',
+  write_file: 'ask',
+  edit_file: 'ask',
+  list_files: 'allow',
+  grep: 'allow',
+};
+
+async function requestToolApproval(
+  event: Electron.IpcMainInvokeEvent,
+  toolName: string,
+  args: Record<string, unknown>,
+  description: string
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const requestId = `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    event.sender.send('tool:approval-request', {
+      id: requestId,
+      toolName,
+      args,
+      description,
+    });
+    const handleResponse = (_e: Electron.IpcMainEvent, response: { id: string; approved: boolean }) => {
+      if (response.id === requestId) {
+        ipcMain.removeListener('tool:approval-response', handleResponse);
+        resolve(response.approved);
+      }
+    };
+    ipcMain.on('tool:approval-response', handleResponse);
+    setTimeout(() => {
+      ipcMain.removeListener('tool:approval-response', handleResponse);
+      resolve(false);
+    }, 120000);
+  });
+}
+
+function getToolPermissions(): ToolPermissions {
+  try {
+    const settings = secureStore.getToolPermissions?.();
+    return settings ? { ...DEFAULT_TOOL_PERMISSIONS, ...settings } : DEFAULT_TOOL_PERMISSIONS;
+  } catch {
+    return DEFAULT_TOOL_PERMISSIONS;
+  }
+}
+
+function createToolWithPermission<T extends Record<string, unknown>>(
+  toolName: keyof ToolPermissions,
+  description: string,
+  schema: z.ZodObject<any>,
+  executeFn: (args: T) => Promise<string>,
+  event: Electron.IpcMainInvokeEvent
+) {
+  const permission = getToolPermissions()[toolName] || 'allow';
+  if (permission === 'deny') {
+    return undefined;
+  }
+  if (permission === 'ask') {
+    return tool({
+      description,
+      inputSchema: schema,
+      execute: async (args: T) => {
+        const approved = await requestToolApproval(event, toolName, args as Record<string, unknown>, description);
+        if (!approved) {
+          return `Tool ${toolName} was denied by user`;
+        }
+        return executeFn(args);
+      },
+    });
+  }
+  return tool({
+    description,
+    inputSchema: schema,
+    execute: executeFn,
+  });
+}
+
+interface FileDiff {
+  filePath: string;
+  originalContent: string;
+  proposedContent: string;
+  addedLines: number;
+  removedLines: number;
+}
+
+function computeLineStats(original: string, proposed: string): { addedLines: number; removedLines: number } {
+  let added = 0;
+  let removed = 0;
+  for (const part of diffLines(original, proposed)) {
+    if (part.added) added += part.count || 0;
+    if (part.removed) removed += part.count || 0;
+  }
+  return { addedLines: added, removedLines: removed };
+}
+
+function parseCodeBlocks(text: string): { filePath: string; content: string }[] {
+  const blocks: { filePath: string; content: string }[] = [];
+  // Match ```lang:path or ```path followed by content then ```
+  const regex = /```(\S*?)(?::(\S+))?\n([\s\S]*?)```/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const lang = match[1] || '';
+    const pathAfterColon = match[2];
+    const content = match[3].trimEnd();
+    let filePath = pathAfterColon || '';
+    // If no path after colon, try the language itself if it looks like a file path
+    if (!filePath && (lang.includes('/') || lang.includes('\\') || lang.endsWith('.ts') || lang.endsWith('.js') || lang.endsWith('.py') || lang.endsWith('.rs') || lang.endsWith('.json') || lang.endsWith('.md') || lang.endsWith('.css') || lang.endsWith('.html') || lang.endsWith('.tsx') || lang.endsWith('.jsx'))) {
+      filePath = lang;
+    }
+    if (filePath && content) {
+      blocks.push({ filePath, content });
+    }
+  }
+  return blocks;
+}
 
 export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandlerContext) {
     ipcMain.on('ai:chat-abort', () => {
@@ -25,7 +152,11 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
         }
     });
 
-    ipcMain.on('ai:chat-start', async (event, { messages, providerId, model, effortLevel, thinking }) => {
+    ipcMain.on('tool:approval-response', (_event, response: { id: string; approved: boolean }) => {
+        console.log('[AI] Tool approval response received:', response);
+    });
+
+    ipcMain.on('ai:chat-start', async (event, { messages, providerId, model, effortLevel, thinking, rootPath }) => {
         checkArgs(Array.isArray(messages), 'messages must be a valid array');
         console.log('[ChatStream] ai:chat-start received, model:', model, 'provider:', providerId, 'thinking:', thinking);
         if (context.activeAbortController) {
@@ -61,33 +192,105 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                 aiService.initializeFromStore(targetProvider);
             }
 
-            const workspacePath = getWorkspacePath();
+            const workspacePath = rootPath || getWorkspacePath();
+            if (rootPath) {
+                PathGuard.setWorkspacePath(rootPath);
+            }
+            const chatFileDiffs: FileDiff[] = [];
+
             const chatTools: Record<string, any> | undefined = workspacePath && fs.existsSync(workspacePath) ? {
-                read_file: tool({
-                    description: 'Read the contents of a file in the workspace to verify code structures or signatures (truncated to 8000 chars).',
-                    inputSchema: z.object({ filePath: z.string() }),
-                    execute: async ({ filePath }: { filePath: string }) => executeReadFile(filePath, workspacePath),
-                }),
-                write_file: tool({
-                    description: 'Create or overwrite a workspace file. Creates parent directories if they do not exist. Use this to write new files or replace entire file contents.',
-                    inputSchema: z.object({
-                        filePath: z.string().describe('Relative path from workspace root'),
-                        content: z.string().describe('Full file content to write'),
+                read_file: createToolWithPermission('read_file', 
+                  'Read the contents of a file in the workspace to verify code structures or signatures (truncated to 8000 chars).',
+                  z.object({ filePath: z.string() }),
+                  async ({ filePath }: { filePath: string }) => executeReadFile(filePath, workspacePath),
+                  event
+                ),
+                write_file: createToolWithPermission('write_file',
+                  'Create or overwrite a workspace file. Creates parent directories if they do not exist. Use this to write new files or replace entire file contents.',
+                  z.object({
+                    filePath: z.string().describe('Relative path from workspace root'),
+                    content: z.string().describe('Full file content to write'),
+                  }),
+                  async ({ filePath, content }: { filePath: string; content: string }) => {
+                    const absPath = (() => {
+                      const root = path.resolve(workspacePath);
+                      const rp = path.isAbsolute(filePath) ? filePath : path.resolve(root, filePath);
+                      const normRoot = root.toLowerCase();
+                      const normResolved = rp.toLowerCase();
+                      const rel = path.relative(normRoot, normResolved);
+                      return (rel === '' || (rel && !rel.startsWith('..') && !path.isAbsolute(rel))) ? rp : null;
+                    })();
+                    const originalContent = absPath && fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
+                    const result = executeWriteFile(filePath, content, workspacePath);
+                    if (result.startsWith('Successfully')) {
+                      const proposedContent = content;
+                      const { addedLines, removedLines } = computeLineStats(originalContent, proposedContent);
+                      chatFileDiffs.push({ filePath, originalContent, proposedContent, addedLines, removedLines });
+                    }
+                    return result;
+                  },
+                  event
+                ),
+                edit_file: createToolWithPermission('edit_file',
+                  'Find exact text in a file and replace it. Use for surgical edits without rewriting the whole file. Returns error if the file does not exist or the text is not found.',
+                  z.object({
+                    filePath: z.string().describe('Relative path from workspace root'),
+                    find: z.string().describe('Exact text to find (case-sensitive)'),
+                    replace: z.string().describe('Replacement text'),
+                  }),
+                  async ({ filePath, find, replace }: { filePath: string; find: string; replace: string }) => {
+                    const absPath = (() => {
+                      const root = path.resolve(workspacePath);
+                      const rp = path.isAbsolute(filePath) ? filePath : path.resolve(root, filePath);
+                      const normRoot = root.toLowerCase();
+                      const normResolved = rp.toLowerCase();
+                            const rel = path.relative(normRoot, normResolved);
+                            return (rel === '' || (rel && !rel.startsWith('..') && !path.isAbsolute(rel))) ? rp : null;
+                        })();
+                        const originalContent = absPath && fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
+                        const result = executeEditFile(filePath, find, replace, workspacePath);
+                        if (result.startsWith('Successfully')) {
+                            const proposedContent = absPath && fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
+                            const { addedLines, removedLines } = computeLineStats(originalContent, proposedContent);
+                            chatFileDiffs.push({ filePath, originalContent, proposedContent, addedLines, removedLines });
+                        }
+                        return result;
+                    },
+                    event
+                ),
+                list_files: createToolWithPermission('list_files',
+                    'List files in the workspace matching a glob pattern (e.g., "**/*.ts", "src/**"). Returns relative paths.',
+                    z.object({ pattern: z.string().default('**/*') }),
+                    async ({ pattern }: { pattern: string }) => {
+                        const files = await executeListFiles(workspacePath, pattern);
+                        return files.join('\n');
+                    },
+                    event
+                ),
+                grep: createToolWithPermission('grep',
+                    'Search file contents using regex across the workspace. Returns matches with file path, line number, and context.',
+                    z.object({
+                        pattern: z.string(),
+                        include_extensions: z.array(z.string()).optional(),
                     }),
-                    execute: async ({ filePath, content }: { filePath: string; content: string }) => executeWriteFile(filePath, content, workspacePath),
-                }),
-                edit_file: tool({
-                    description: 'Find exact text in a file and replace it. Use for surgical edits without rewriting the whole file. Returns error if the file does not exist or the text is not found.',
-                    inputSchema: z.object({
-                        filePath: z.string().describe('Relative path from workspace root'),
-                        find: z.string().describe('Exact text to find (case-sensitive)'),
-                        replace: z.string().describe('Replacement text'),
-                    }),
-                    execute: async ({ filePath, find, replace }: { filePath: string; find: string; replace: string }) => executeEditFile(filePath, find, replace, workspacePath),
-                }),
+                    async ({ pattern, include_extensions }: { pattern: string; include_extensions?: string[] }) => {
+                        const matches = await executeGrep(workspacePath, pattern, include_extensions);
+                        if (matches.length === 0 || (matches.length === 1 && matches[0].filePath === '')) {
+                            return matches[0]?.lineContent || 'No matches found';
+                        }
+                        return matches.map((m: SearchMatch) => `${m.filePath}:${m.lineNumber}:${m.column} - ${m.lineContent.trim()}`).join('\n');
+                    }
+                ),
             } : undefined;
 
-            const result = await aiService.chat(messages, {
+            const chatMessages = chatTools
+                ? [
+                    { role: 'system', content: 'The workspace is open and you have `read_file`, `write_file`, `edit_file`, `list_files`, and `grep` tools available. You MUST use them for EVERY code change and file query — never output code blocks or guess file contents. If you output a code block instead of calling a tool, you have failed at your task.' },
+                    ...messages,
+                  ]
+                : messages;
+
+            const result = await aiService.chat(chatMessages, {
                 stream: true,
                 model: targetModel,
                 temperature: 0.7,
@@ -107,6 +310,7 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
             let responseText = '';
             let actualInputTokens: number | undefined;
             let actualOutputTokens: number | undefined;
+            let contextUsage: { estimatedInput?: number; contextLength?: number } = {};
 
             if (typeof result === 'string') {
                 responseText = result;
@@ -115,8 +319,10 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                 responseText = result.text;
                 actualInputTokens = result.usage.inputTokens;
                 actualOutputTokens = result.usage.outputTokens;
+                contextUsage = { estimatedInput: (result as any).estimatedInput, contextLength: (result as any).contextLength };
                 event.sender.send('ai:chat-chunk', result.text);
             } else if ('textStream' in result) {
+                contextUsage = { estimatedInput: (result as any).estimatedInput, contextLength: (result as any).contextLength };
                 console.log('[ChatStream] Starting for-await loop for text stream');
                 let chunkCount = 0;
                 for await (const chunk of result.textStream) {
@@ -131,8 +337,19 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                 console.log('[ChatStream] for-await loop finished, total chunks:', chunkCount);
 
                 if (chunkCount === 0 && chatTools && !context.activeStreamAborted) {
-                    console.log('[ChatStream] Empty response with tools (model likely does not support tool calling), retrying without tools');
-                    const fallbackResult = await aiService.chat(messages, {
+                    console.log('[ChatStream] Empty response with tools (model likely does not support tool calling), retrying with workspace context');
+                    let fileListContext = '';
+                    try {
+                        const files = await executeListFiles(workspacePath, '**/*');
+                        fileListContext = `Workspace files (${files.length} total):\n${files.slice(0, 300).join('\n')}\n${files.length > 300 ? `... (${files.length - 300} more)` : ''}`;
+                    } catch (e) {
+                        fileListContext = 'Could not load workspace file list.';
+                    }
+                    const fallbackMessages = [
+                        { role: 'system', content: `You are a coding assistant with access to a workspace. Here is the current file structure:\n\n${fileListContext}\n\nAnswer questions about the workspace using this context. You cannot use tools in this mode.` },
+                        ...messages,
+                    ];
+                    const fallbackResult = await aiService.chat(fallbackMessages, {
                         stream: true,
                         model: targetModel,
                         temperature: 0.7,
@@ -182,10 +399,33 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                 }
             }
 
+            // Post-process: if no tool diffs captured but response has code blocks, extract and write them
+            if (chatFileDiffs.length === 0 && chatTools) {
+                const codeBlocks = parseCodeBlocks(responseText);
+                for (const block of codeBlocks) {
+                    const absPath = (() => {
+                        const root = path.resolve(workspacePath || '');
+                        const rp = path.isAbsolute(block.filePath) ? block.filePath : path.resolve(root, block.filePath);
+                        const normRoot = root.toLowerCase();
+                        const normResolved = rp.toLowerCase();
+                        const rel = path.relative(normRoot, normResolved);
+                        return (rel === '' || (rel && !rel.startsWith('..') && !path.isAbsolute(rel))) ? rp : null;
+                    })();
+                    if (!absPath) continue;
+                    const originalContent = fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
+                    const dir = path.dirname(absPath);
+                    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                    fs.writeFileSync(absPath, block.content, 'utf-8');
+                    const { addedLines, removedLines } = computeLineStats(originalContent, block.content);
+                    chatFileDiffs.push({ filePath: block.filePath, originalContent, proposedContent: block.content, addedLines, removedLines });
+                    console.log(`[ChatStream] Applied code block to ${block.filePath} (+${addedLines}/-${removedLines})`);
+                }
+            }
+
             const latency = Date.now() - startTime;
 
             const outputTokens = actualOutputTokens || Math.max(1, Math.ceil(responseText.length / 4));
-            const finalInputTokens = actualInputTokens || messages.map((m: any) => m.content || '').join('\n').length / 4;
+            const finalInputTokens = actualInputTokens || chatMessages.map((m: any) => m.content || '').join('\n').length / 4;
             const totalTokens = finalInputTokens + outputTokens;
 
             try {
@@ -206,8 +446,8 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
 
             const chatCost = CostEstimatorService.estimateCost(targetModel, finalInputTokens, outputTokens, targetProvider);
 
-            console.log('[ChatStream] Sending ai:chat-end, response length:', responseText.length, 'tokens:', { input: finalInputTokens, output: outputTokens, cost: chatCost });
-            event.sender.send('ai:chat-end', { inputTokens: finalInputTokens, output: outputTokens, outputTokens: outputTokens, cost: chatCost });
+            console.log('[ChatStream] Sending ai:chat-end, response length:', responseText.length, 'tokens:', { input: finalInputTokens, output: outputTokens, cost: chatCost, fileChanges: chatFileDiffs.length });
+            event.sender.send('ai:chat-end', { inputTokens: finalInputTokens, output: outputTokens, outputTokens: outputTokens, cost: chatCost, ...contextUsage, fileDiffs: chatFileDiffs });
 
         } catch (error: unknown) {
             const errMsg = error instanceof Error ? error.message : String(error);
@@ -584,10 +824,12 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
         return LocalModelService.getInstance().deleteModel(name);
     });
 
-    ipcMain.handle('local:start-server', async (_event, modelPath: string) => {
+    ipcMain.handle('local:start-server', async (_event, modelPath: string, contextSize?: number) => {
         checkArgs(typeof modelPath === 'string', 'modelPath must be a string');
-        const port = await LocalModelService.getInstance().startServer(modelPath);
+        const port = await LocalModelService.getInstance().startServer(modelPath, contextSize);
         const modelName = path.basename(modelPath);
+        const actualCtx = LocalModelService.getInstance().getContextSize();
+        dbService.setCachedContext('local:' + modelName, actualCtx);
         try {
             dbService.addCustomModel('local', modelName, 0);
         } catch (dbErr) {
@@ -630,6 +872,26 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
             });
             proc.on('error', reject);
         });
+        return true;
+    });
+
+    ipcMain.handle('local:get-model-settings', async (_event, providerId: string, modelName: string) => {
+        checkArgs(typeof providerId === 'string', 'providerId must be a string');
+        checkArgs(typeof modelName === 'string', 'modelName must be a string');
+        const models = dbService.getCustomModels(providerId);
+        const match = models.find((m: any) => m.model_name === modelName);
+        return match ? { context_size: match.context_size ?? null } : null;
+    });
+
+    ipcMain.handle('local:set-context-size', async (_event, modelName: string, contextSize: number) => {
+        checkArgs(typeof modelName === 'string', 'modelName must be a string');
+        checkArgs(typeof contextSize === 'number' && contextSize >= 512, 'contextSize must be >= 512');
+        dbService.updateCustomModelContextSize('local', modelName, contextSize);
+        dbService.setCachedContext('local:' + modelName, contextSize);
+        const instance = LocalModelService.getInstance();
+        if (instance.isServerRunning() && instance.getRunningModel() === modelName) {
+            await instance.restartServer(contextSize);
+        }
         return true;
     });
 }

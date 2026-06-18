@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { PathGuard } from './PathGuard';
+import { searchFiles, searchFileNames } from '../../native';
 
 function resolvePath(filePath: string, workspacePath: string): string | null {
   const root = path.resolve(workspacePath);
@@ -10,6 +11,53 @@ function resolvePath(filePath: string, workspacePath: string): string | null {
   const relative = path.relative(normRoot, normResolved);
   const contained = relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
   return contained ? resolvedPath : null;
+}
+
+export interface SearchMatch {
+  filePath: string;
+  lineNumber: number;
+  column: number;
+  lineContent: string;
+  matchText: string;
+}
+
+export async function executeListFiles(workspacePath: string, pattern: string = '**/*'): Promise<string[]> {
+  try {
+    if (!fs.existsSync(workspacePath)) {
+      return [`Error: Workspace path does not exist: ${workspacePath}`];
+    }
+    // Convert glob pattern to regex for search_file_names
+    // For simple glob patterns like **/*.ts, we can use regex
+    const regexPattern = pattern
+      .replace(/\./g, '\\.')
+      .replace(/\*\*/g, '.*')
+      .replace(/\*/g, '[^/]*');
+    const results = await searchFileNames(regexPattern, workspacePath, false); // respectGitignore = false
+    return results;
+  } catch (err: any) {
+    return [`Error listing files: ${err.message}`];
+  }
+}
+
+export async function executeGrep(workspacePath: string, pattern: string, includeExtensions?: string[]): Promise<SearchMatch[]> {
+  try {
+    if (!fs.existsSync(workspacePath)) {
+      return [{ filePath: '', lineNumber: 0, column: 0, lineContent: `Error: Workspace path does not exist: ${workspacePath}`, matchText: '' }];
+    }
+    const options = {
+      pattern,
+      rootPath: workspacePath,
+      ignoreCase: false,
+      literal: false,
+      maxResults: 100,
+      includeExtensions,
+      respectGitignore: false,
+    };
+    const results = await searchFiles(options);
+    return results;
+  } catch (err: any) {
+    return [{ filePath: '', lineNumber: 0, column: 0, lineContent: `Error searching: ${err.message}`, matchText: '' }];
+  }
 }
 
 export function executeReadFile(filePath: string, workspacePath: string): string {
@@ -33,7 +81,7 @@ export function executeWriteFile(filePath: string, content: string, workspacePat
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(absPath, content, 'utf-8');
     const lines = content.split('\n').length;
-    return `Successfully wrote ${filePath} (${lines} lines, ${content.length} bytes)`;
+    return `Successfully wrote ${filePath} (+${lines}/-0, ${content.length}b)`;
   } catch (err: any) {
     return `Error writing file: ${err.message}`;
   }
@@ -50,9 +98,9 @@ export function executeEditFile(filePath: string, find: string, replace: string,
     }
     const newContent = content.replace(find, replace);
     fs.writeFileSync(absPath, newContent, 'utf-8');
-    const diff = content.split('\n').length - newContent.split('\n').length;
-    const diffStr = diff > 0 ? `removed ${diff} lines` : diff < 0 ? `added ${Math.abs(diff)} lines` : 'no line count change';
-    return `Successfully edited ${filePath} (${diffStr})`;
+    const oldLines = content.split('\n').length;
+    const newLines = newContent.split('\n').length;
+    return `Successfully edited ${filePath} (+${newLines > oldLines ? newLines - oldLines : 0}/-${oldLines > newLines ? oldLines - newLines : 0})`;
   } catch (err: any) {
     return `Error editing file: ${err.message}`;
   }

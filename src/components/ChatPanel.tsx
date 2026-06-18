@@ -16,6 +16,7 @@ import { usePlanSync } from './usePlanSync';
 import { useAgentHandler } from './useAgentHandler';
 import { useConversations } from './useConversations';
 import { useChatSending } from './useChatSending';
+import { DiffEditor } from '@monaco-editor/react';
 
 import { checkArgs } from '../helpers/invariant';
 import type { ActivityTimelineItem } from '../helpers/chatParsing';
@@ -144,6 +145,39 @@ const getChatTokenDetails = (
     };
 };
 
+function ChatFileDiffCard({ diff, onDismiss }: { diff: { filePath: string; originalContent: string; proposedContent: string; addedLines: number; removedLines: number }; onDismiss: () => void }) {
+    const [collapsed, setCollapsed] = useState(true);
+    const handleReject = async () => {
+        try {
+            await window.ipcRenderer.invoke('write-file', diff.filePath, diff.originalContent);
+            onDismiss();
+        } catch (e) {
+            console.error('Failed to reject changes:', e);
+        }
+    };
+    const ext = diff.filePath.split('.').pop()?.toLowerCase() || '';
+    const langMap: Record<string, string> = { ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript', py: 'python', rs: 'rust', json: 'json', md: 'markdown', css: 'css', html: 'html', yaml: 'yaml', yml: 'yaml', sql: 'sql', sh: 'shell', bash: 'shell' };
+    const language = langMap[ext] || 'plaintext';
+    return (
+        <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 12px', fontSize: 11 }}>
+                <button onClick={() => setCollapsed(!collapsed)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: 0, fontSize: 10 }}>{collapsed ? '▶' : '▼'}</button>
+                <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{diff.filePath}</span>
+                <span style={{ color: '#34d399', fontWeight: 500 }}>+{diff.addedLines}</span>
+                <span style={{ color: '#f43f5e', fontWeight: 500 }}>-{diff.removedLines}</span>
+                <span style={{ flex: 1 }} />
+                <button onClick={onDismiss} style={{ background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.3)', color: '#34d399', cursor: 'pointer', fontSize: 10, padding: '2px 8px', borderRadius: 4 }}>Accept</button>
+                <button onClick={handleReject} style={{ background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.2)', color: '#f43f5e', cursor: 'pointer', fontSize: 10, padding: '2px 8px', borderRadius: 4 }}>Reject</button>
+            </div>
+            {!collapsed && (
+                <div style={{ height: 300, borderTop: '1px solid var(--border-subtle)' }}>
+                    <DiffEditor height="100%" language={language} original={diff.originalContent} modified={diff.proposedContent} theme="vs-dark" options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false }, scrollBeyondLastLine: false, automaticLayout: true }} />
+                </div>
+            )}
+        </div>
+    );
+}
+
 export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, settingsSavedTrigger, onOpenPlan, onActiveTaskIdChange, rootPath = '', pendingReview, pendingReviewApplying, onOpenReview, onAcceptAllChanges, onRejectAllChanges }: ChatPanelProps) {
     const [messages, setMessages] = useState<Message[]>([{ role: 'system', content: 'You are a helpful coding assistant.' }]);
     const [apiError, setApiError] = useState<{ type: string; message: string; timestamp: number; provider?: string; model?: string } | null>(null);
@@ -174,6 +208,8 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
     const [inlineModelInput, setInlineModelInput] = useState('');
     const [customModels, setCustomModels] = useState<Record<string, unknown>[]>([]);
     const [currentPlan, setCurrentPlan] = useState<Record<string, unknown>[] | null>(null);
+    const [contextUsage, setContextUsage] = useState<{ estimatedInput: number; contextLength: number } | null>(null);
+    const [chatFileDiffs, setChatFileDiffs] = useState<{ filePath: string; originalContent: string; proposedContent: string; addedLines: number; removedLines: number }[]>([]);
     const [isAwaitingApproval, setIsAwaitingApproval] = useState(false);
     const [panelWidth, setPanelWidth] = useState(() => { const s = localStorage.getItem('chatPanelWidth'); return s ? parseInt(s, 10) : 400; });
     const [_flows, _setFlows] = useState<{ id: number; name: string; description: string; steps: unknown; agent_id: number }[]>([]);
@@ -253,6 +289,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
         dbAgents, flows: _flows, activeAgent: activeAgent as unknown as Record<string, unknown>, activeWorkflow: activeWorkflow as unknown as Record<string, unknown>,
         planStartTimeRef, timerRef, currentActivitiesRef,
         setApiError: setApiError as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown> | null>>, setCurrentlyReadingFiles, setStreamElapsed,
+        setContextUsage, setFileDiffs: setChatFileDiffs,
         cleanupActiveListeners, streamActiveRef, activeChunkListenerRef, activeEndListenerRef, onOpenPlan,
         rootPath,
     });
@@ -484,6 +521,39 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                         activeAgent={activeAgent} onRemoveAgent={() => setActiveAgent(null)}
                         activeWorkflow={activeWorkflow} onRemoveWorkflow={() => setActiveWorkflow(null)}
                     />
+                    {contextUsage && contextUsage.contextLength > 0 && (
+                        <div style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '2px 12px', fontSize: 10, color: 'var(--text-secondary)',
+                            borderTop: '1px solid var(--border-color)', background: 'var(--bg-secondary)',
+                        }}>
+                            <div style={{ flex: 1, height: 4, background: 'var(--border-color)', borderRadius: 2, overflow: 'hidden' }}>
+                                <div style={{
+                                    width: `${Math.min(100, (contextUsage.estimatedInput / contextUsage.contextLength) * 100)}%`,
+                                    height: '100%',
+                                    background: contextUsage.estimatedInput > contextUsage.contextLength * 0.8 ? 'var(--accent-danger, #e74c3c)' : 'var(--accent-primary)',
+                                    borderRadius: 2, transition: 'width 0.3s ease',
+                                }} />
+                            </div>
+                            <span>{contextUsage.estimatedInput.toLocaleString()} / {contextUsage.contextLength.toLocaleString()} ({(contextUsage.estimatedInput / contextUsage.contextLength * 100).toFixed(0)}%)</span>
+                        </div>
+                    )}
+                    {chatFileDiffs.length > 0 && (
+                        <div style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 11 }}>
+                                <span className="codicon codicon-diff" style={{ color: 'var(--accent-primary)', fontSize: 14 }} />
+                                <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+                                    {chatFileDiffs.length} file{chatFileDiffs.length !== 1 ? 's' : ''} modified
+                                    (+{chatFileDiffs.reduce((s, d) => s + d.addedLines, 0)} / -{chatFileDiffs.reduce((s, d) => s + d.removedLines, 0)})
+                                </span>
+                                <span style={{ flex: 1 }} />
+                                <button onClick={() => setChatFileDiffs([])} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 10, padding: '2px 8px', borderRadius: 4 }}>Dismiss All</button>
+                            </div>
+                            {chatFileDiffs.map((diff, idx) => (
+                                <ChatFileDiffCard key={idx} diff={diff} onDismiss={() => setChatFileDiffs(prev => prev.filter((_, i) => i !== idx))} />
+                            ))}
+                        </div>
+                    )}
                     <ChatInputArea input={input} setInput={setInput}
                         isLoading={isLoading} isPlanModifying={isPlanModifying} isPlanModeActive={isPlanModeActive}
                         attachedFile={attachedFile} activeModel={activeModel} activeProvider={activeProvider}

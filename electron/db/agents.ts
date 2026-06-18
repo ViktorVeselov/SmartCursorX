@@ -117,12 +117,21 @@ export function deleteCustomProvider(db: any, id: string) {
     secureStore.deleteCustomProviderKey(id);
 }
 
-export function addCustomModel(db: any, providerId: string, modelName: string, hasThinking: number = 0) {
+export function addCustomModel(db: any, providerId: string, modelName: string, hasThinking: number = 0, contextSize?: number) {
     checkArgs(typeof providerId === 'string' && providerId.length > 0, 'Provider ID must be a valid non-empty string');
     checkArgs(typeof modelName === 'string' && modelName.length > 0, 'Model Name must be a valid non-empty string');
     if (!db) throw new Error('DB not initialized');
-    db.prepare('INSERT INTO custom_models (provider_id, model_name, has_thinking) VALUES (?, ?, ?) ON CONFLICT(provider_id, model_name) DO UPDATE SET has_thinking = excluded.has_thinking')
-        .run(providerId, modelName, hasThinking);
+    db.prepare('INSERT INTO custom_models (provider_id, model_name, has_thinking, context_size) VALUES (?, ?, ?, ?) ON CONFLICT(provider_id, model_name) DO UPDATE SET has_thinking = excluded.has_thinking, context_size = excluded.context_size')
+        .run(providerId, modelName, hasThinking, contextSize ?? null);
+}
+
+export function updateCustomModelContextSize(db: any, providerId: string, modelName: string, contextSize: number) {
+    checkArgs(typeof providerId === 'string' && providerId.length > 0, 'Provider ID must be a valid non-empty string');
+    checkArgs(typeof modelName === 'string' && modelName.length > 0, 'Model Name must be a valid non-empty string');
+    checkArgs(typeof contextSize === 'number' && contextSize > 0, 'Context size must be a positive number');
+    if (!db) throw new Error('DB not initialized');
+    db.prepare('UPDATE custom_models SET context_size = ? WHERE provider_id = ? AND model_name = ?')
+        .run(contextSize, providerId, modelName);
 }
 
 export function getCustomModels(db: any, providerId?: string) {

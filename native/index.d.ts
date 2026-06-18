@@ -30,6 +30,8 @@ export interface SearchOptions {
   maxResults?: number | undefined
   /** File extensions to include (e.g., ["ts", "tsx"]) */
   includeExtensions?: string[] | undefined
+  /** Respect .gitignore patterns (default: true) */
+  respectGitignore?: boolean | undefined
 }
 /**
  * Search for a pattern across files in a directory.
@@ -40,7 +42,7 @@ export declare function searchFiles(options: SearchOptions): Array<SearchMatch>
  * Quick search that returns just file paths matching a pattern.
  * Useful for "find file" use cases.
  */
-export declare function searchFileNames(pattern: string, rootPath: string): Array<string>
+export declare function searchFileNames(pattern: string, rootPath: string, respectGitignore?: boolean): Array<string>
 /** Health check function to verify native module is loaded */
 export declare function nativeHealthCheck(): string
 /** Get version of the native module */

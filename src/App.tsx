@@ -18,6 +18,7 @@ import { ActiveFileEditor } from './components/ActiveFileEditor';
 import { NewFileDialog } from './components/NewFileDialog';
 import { NotificationToast } from './components/NotificationToast';
 import { DlqGuidanceModal } from './components/DlqGuidanceModal';
+import { ToolApprovalDialog } from './components/ToolApprovalDialog';
 import { isBinaryFile } from './utils/fileTypes';
 
 import { OpenFile } from './types/appTypes';
@@ -66,6 +67,16 @@ function App() {
     attemptHistory: string[];
     maxRetries: number;
   } | null>(null);
+
+  // Tool approval state
+  const [toolApprovalRequests, setToolApprovalRequests] = useState<Array<{
+    id: string;
+    toolName: string;
+    args: Record<string, unknown>;
+    description: string;
+    timestamp: number;
+    resolve: (approved: boolean) => void;
+  }>>([]);
 
   // General Dynamic configurations
   const [appTheme, setAppTheme] = useState<'light' | 'dark'>('dark');
@@ -357,18 +368,13 @@ function App() {
     if (newFileDialogOpen) {
       // Resolve absolute path
       const currentName = newFileName || '';
-      const args = newFileDir ? [newFileDir, currentName] : [currentName];
+      // Priority: explicit newFileDir > workspace rootPath > CWD
+      const baseDir = newFileDir || rootPath || '.';
+      const args = [baseDir, currentName].filter(Boolean);
 
-      // If args are empty strings, resolve-path checks CWD
-      // But we want to show '...' if empty filename
-      if (!currentName && !newFileDir) {
-        // Get CWD
-        window.ipcRenderer.invoke('resolve-path', '.').then(setPreviewPath);
-      } else {
-        window.ipcRenderer.invoke('resolve-path', ...args).then(setPreviewPath);
-      }
+      window.ipcRenderer.invoke('resolve-path', ...args).then(setPreviewPath);
     }
-  }, [newFileDialogOpen, newFileName, newFileDir]);
+  }, [newFileDialogOpen, newFileName, newFileDir, rootPath]);
 
   const handleCreateFile = (targetDir?: string) => {
     // Fix: Ensure targetDir is a string, as this might be called with an Event object
@@ -440,6 +446,37 @@ function App() {
   const showNotification = (msg: string) => {
     setNotification(msg);
     setTimeout(() => setNotification(null), 3000);
+  };
+
+  // Tool approval handlers
+  const requestToolApproval = (toolName: string, args: Record<string, unknown>, description: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const id = `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      setToolApprovalRequests(prev => [...prev, { id, toolName, args, description, timestamp: Date.now(), resolve }]);
+    });
+  };
+
+  const handleApproveTool = (id: string) => {
+    setToolApprovalRequests(prev => {
+      const request = prev.find(r => r.id === id);
+      if (request) request.resolve(true);
+      return prev.filter(r => r.id !== id);
+    });
+  };
+
+  const handleDenyTool = (id: string) => {
+    setToolApprovalRequests(prev => {
+      const request = prev.find(r => r.id === id);
+      if (request) request.resolve(false);
+      return prev.filter(r => r.id !== id);
+    });
+  };
+
+  const handleCloseAllToolRequests = () => {
+    setToolApprovalRequests(prev => {
+      prev.forEach(r => r.resolve(false));
+      return [];
+    });
   };
 
   const handleOpenFolder = async (specifiedPath?: string) => {
@@ -699,6 +736,13 @@ function App() {
             showNotification('Absolute path copied!');
           }
         }}
+      />
+
+      <ToolApprovalDialog
+        requests={toolApprovalRequests}
+        onApprove={handleApproveTool}
+        onDeny={handleDenyTool}
+        onClose={handleCloseAllToolRequests}
       />
 
       <NotificationToast message={notification} />

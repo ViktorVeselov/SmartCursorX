@@ -35,7 +35,8 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'finetune:install-dependencies', 'finetune:check-packages',
   'shell:exec',
   'local:list', 'local:search-hf', 'local:hf-files', 'local:download', 'local:delete',
-  'local:start-server', 'local:stop-server', 'local:redownload-llama', 'local:server-status'
+  'local:start-server', 'local:stop-server', 'local:redownload-llama', 'local:server-status',
+  'local:get-model-settings', 'local:set-context-size'
 ]);
 
 const ALLOWED_SEND_CHANNELS = new Set([

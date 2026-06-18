@@ -2,6 +2,7 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, execSync } from 'child_process';
+import { TOP_CODING_MODELS } from '../constants/models';
 
 export interface LocalModelEntry {
   name: string;
@@ -24,6 +25,28 @@ interface DownloadProgress {
 }
 
 export const DEFAULT_CONTEXT_SIZE = 2048;
+
+const MODEL_MAX_CONTEXT_MAP: { pattern: string; contextWindow: number }[] = TOP_CODING_MODELS.map(m => {
+  const repoName = m.hfRepo.split('/').slice(1).join('/').toLowerCase();
+  return { pattern: repoName, contextWindow: m.contextWindow };
+});
+
+function resolveModelMaxContext(modelName: string): number {
+  const name = modelName.toLowerCase().replace(/\.gguf$/, '').replace(/-q\d+_\d+$/, '');
+  for (const entry of MODEL_MAX_CONTEXT_MAP) {
+    if (name.includes(entry.pattern)) return entry.contextWindow;
+  }
+  const commonPatterns: [RegExp, number][] = [
+    [/smollm2?\d*/i, 2048], [/llama\s*-?\s*3/i, 8192], [/llama\s*-?\s*2/i, 4096],
+    [/mistral/i, 32768], [/mixtral/i, 32768], [/gemma/i, 8192],
+    [/falcon/i, 2048], [/starcoder/i, 8192], [/dolphin/i, 8192],
+    [/nous-?hermes/i, 8192], [/yi/i, 4096], [/phi/i, 4096],
+  ];
+  for (const [re, ctx] of commonPatterns) {
+    if (re.test(name)) return ctx;
+  }
+  return 4096;
+}
 
 const BYTES_PER_GB = 1024 * 1024 * 1024;
 
@@ -198,8 +221,13 @@ export class LocalModelService {
 
   startServer(modelPath: string, contextSize?: number): Promise<number> {
     const modelName = path.basename(modelPath);
-    const ctx = contextSize ? clampContextByHardware(modelPath, contextSize) : DEFAULT_CONTEXT_SIZE;
+    const modelMaxCtx = resolveModelMaxContext(modelName);
+    const target = contextSize ?? modelMaxCtx;
+    const ctx = clampContextByHardware(modelPath, target);
     this.serverContextSize = ctx;
+    if (ctx !== target) {
+      console.log(`[LocalModelService] Context clamped: requested=${target} modelMax=${modelMaxCtx} actual=${ctx}`);
+    }
     if (this.serverProcess) {
       this.runningModel = modelName;
       return Promise.resolve(this.serverPort);
@@ -288,5 +316,14 @@ export class LocalModelService {
 
   getContextSize(): number {
     return this.serverContextSize;
+  }
+
+  restartServer(contextSize: number): Promise<number> {
+    const modelPath = this.runningModel ? path.join(this.modelsDir, this.runningModel) : null;
+    if (!modelPath || !fs.existsSync(modelPath)) {
+      return Promise.reject(new Error('No running model to restart'));
+    }
+    this.stopServer();
+    return this.startServer(modelPath, contextSize);
   }
 }

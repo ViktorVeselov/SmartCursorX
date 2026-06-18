@@ -158,6 +158,12 @@ export function createTables(db: any) {
     }
 
     try {
+        db.prepare('ALTER TABLE custom_models ADD COLUMN context_size INTEGER DEFAULT NULL').run();
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
+    }
+
+    try {
         db.prepare('ALTER TABLE custom_providers ADD COLUMN is_local INTEGER DEFAULT 0').run();
     } catch (e: any) {
         if (!e?.message?.includes('duplicate column')) throw e;

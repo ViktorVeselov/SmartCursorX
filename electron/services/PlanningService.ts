@@ -255,7 +255,7 @@ For "consequences": You MUST include at least 3 entries. Think critically about 
                                     }
                                     fs.writeFileSync(absolutePath, content, 'utf-8');
                                     const lines = content.split('\n').length;
-                                    return `Successfully wrote ${filePath} (${lines} lines, ${content.length} bytes)`;
+                                    return `Successfully wrote ${filePath} (+${lines}/-0, ${content.length}b)`;
                                 } catch (err: any) {
                                     return `Error writing file: ${err.message}`;
                                 }
@@ -287,9 +287,9 @@ For "consequences": You MUST include at least 3 entries. Think critically about 
                                     }
                                     const newContent = content.replace(find, replace);
                                     fs.writeFileSync(absolutePath, newContent, 'utf-8');
-                                    const diff = content.split('\n').length - newContent.split('\n').length;
-                                    const diffStr = diff > 0 ? `removed ${diff} lines` : diff < 0 ? `added ${Math.abs(diff)} lines` : 'no line count change';
-                                    return `Successfully edited ${filePath} (${diffStr})`;
+                                    const oldLines = content.split('\n').length;
+                                    const newLines = newContent.split('\n').length;
+                                    return `Successfully edited ${filePath} (+${newLines > oldLines ? newLines - oldLines : 0}/-${oldLines > newLines ? oldLines - newLines : 0})`;
                                 } catch (err: any) {
                                     return `Error editing file: ${err.message}`;
                                 }

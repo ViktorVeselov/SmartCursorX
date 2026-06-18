@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 const getIpc = () => window.ipcRenderer;
 
@@ -22,6 +22,10 @@ interface DownloadProgress {
   percent: number;
 }
 
+const CTX_MIN = 512;
+const CTX_MAX = 32768;
+const CTX_STEP = 256;
+
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
   if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
@@ -43,10 +47,28 @@ export function SettingsLocalModels() {
   const [troubleshootingOpen, setTroubleshootingOpen] = useState(false);
   const [redownloading, setRedownloading] = useState(false);
   const [hfToken, setHfToken] = useState('');
+  const [expandedModel, setExpandedModel] = useState<string | null>(null);
+  const [modelContextSizes, setModelContextSizes] = useState<Record<string, number>>({});
+  const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const loadModels = useCallback(async () => {
     const list = await getIpc().invoke('local:list');
     setModels(list || []);
+  }, []);
+
+  const loadModelSettings = useCallback(async (modelNames: string[]) => {
+    const sizes: Record<string, number> = {};
+    for (const name of modelNames) {
+      try {
+        const settings = await getIpc().invoke('local:get-model-settings', 'local', name);
+        if (settings && settings.context_size) {
+          sizes[name] = settings.context_size;
+        }
+      } catch (e) {
+        console.error('Failed to load settings for', name, e);
+      }
+    }
+    setModelContextSizes(prev => ({ ...prev, ...sizes }));
   }, []);
 
   useEffect(() => {
@@ -70,6 +92,30 @@ export function SettingsLocalModels() {
     getIpc().on('local:download-progress', listener);
     return () => { getIpc().off('local:download-progress', listener); };
   }, [loadModels]);
+
+  useEffect(() => {
+    if (models.length > 0) {
+      loadModelSettings(models.map(m => m.name));
+    }
+  }, [models, loadModelSettings]);
+
+  const saveContextSize = useCallback(async (modelName: string, ctx: number) => {
+    try {
+      await getIpc().invoke('local:set-context-size', modelName, ctx);
+    } catch (e: any) {
+      console.error('Failed to save context size:', e);
+    }
+  }, []);
+
+  const handleContextSizeChange = (modelName: string, ctx: number) => {
+    setModelContextSizes(prev => ({ ...prev, [modelName]: ctx }));
+    if (debounceTimers.current[modelName]) {
+      clearTimeout(debounceTimers.current[modelName]);
+    }
+    debounceTimers.current[modelName] = setTimeout(() => {
+      saveContextSize(modelName, ctx);
+    }, 500);
+  };
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
@@ -106,18 +152,17 @@ export function SettingsLocalModels() {
   const handleStartServer = async (modelPath: string, modelName: string) => {
     setServerStarting(modelName);
     try {
-      await getIpc().invoke('local:start-server', modelPath);
+      const ctx = modelContextSizes[modelName];
+      await getIpc().invoke('local:start-server', modelPath, ctx || undefined);
       setServerRunning(true);
       setServerModel(modelName);
 
-      // Auto save settings to make it the active model & provider immediately
       const settings = await getIpc().invoke('get-general-settings');
       await getIpc().invoke('save-general-settings', {
         ...(settings || {}),
         activeProvider: 'local',
         selectedModel: modelName
       });
-      // Save config to initialize AIService
       await getIpc().invoke('ai:save-config', {
         providerId: 'local',
         apiKey: ''
@@ -189,36 +234,85 @@ export function SettingsLocalModels() {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {models.map(m => (
-              <div key={m.name} style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '8px 12px', background: 'var(--bg-input)',
-                borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)',
-              }}>
-                <span className="codicon codicon-file binary" style={{ color: 'var(--accent-primary)', fontSize: 14 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.name}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{formatSize(m.size)}</div>
+              <div key={m.name}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '8px 12px', background: 'var(--bg-input)',
+                  borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)',
+                }}>
+                  <span
+                    onClick={() => setExpandedModel(expandedModel === m.name ? null : m.name)}
+                    className={`codicon codicon-${expandedModel === m.name ? 'chevron-down' : 'chevron-right'}`}
+                    style={{ color: 'var(--text-secondary)', fontSize: 12, cursor: 'pointer', flexShrink: 0 }}
+                  />
+                  <span className="codicon codicon-file binary" style={{ color: 'var(--accent-primary)', fontSize: 14 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.name}</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{formatSize(m.size)}</div>
+                  </div>
+                  {serverRunning && serverModel === m.name ? (
+                    <button onClick={handleStopServer} style={{
+                      padding: '4px 12px', fontSize: 11, fontWeight: 500,
+                      background: '#ef4444', color: '#fff', border: 'none',
+                      borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                    }}>Stop</button>
+                  ) : serverStarting === m.name ? (
+                    <span style={{ color: 'var(--accent-primary)', fontSize: 11, fontWeight: 500 }}>Starting...</span>
+                  ) : (
+                    <button onClick={() => handleStartServer(m.path, m.name)} style={{
+                      padding: '4px 12px', fontSize: 11, fontWeight: 500,
+                      background: 'var(--accent-primary)', color: '#fff', border: 'none',
+                      borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                    }}>Run</button>
+                  )}
+                  <button onClick={() => handleDelete(m.name)} style={{
+                    padding: '4px 8px', fontSize: 11,
+                    background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                  }}>Delete</button>
                 </div>
-                {serverRunning && serverModel === m.name ? (
-                  <button onClick={handleStopServer} style={{
-                    padding: '4px 12px', fontSize: 11, fontWeight: 500,
-                    background: '#ef4444', color: '#fff', border: 'none',
-                    borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-                  }}>Stop</button>
-                ) : serverStarting === m.name ? (
-                  <span style={{ color: 'var(--accent-primary)', fontSize: 11, fontWeight: 500 }}>Starting...</span>
-                ) : (
-                  <button onClick={() => handleStartServer(m.path, m.name)} style={{
-                    padding: '4px 12px', fontSize: 11, fontWeight: 500,
-                    background: 'var(--accent-primary)', color: '#fff', border: 'none',
-                    borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-                  }}>Run</button>
+                {expandedModel === m.name && (
+                  <div style={{
+                    marginTop: 4, padding: '10px 12px 10px 36px',
+                    background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--border-subtle)',
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Context Size</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <input
+                        type="range"
+                        min={CTX_MIN}
+                        max={CTX_MAX}
+                        step={CTX_STEP}
+                        value={modelContextSizes[m.name] ?? CTX_MIN}
+                        onChange={e => handleContextSizeChange(m.name, parseInt(e.target.value, 10))}
+                        style={{ flex: 1, accentColor: 'var(--accent-primary)' }}
+                      />
+                      <input
+                        type="number"
+                        min={CTX_MIN}
+                        max={CTX_MAX}
+                        step={CTX_STEP}
+                        value={modelContextSizes[m.name] ?? CTX_MIN}
+                        onChange={e => {
+                          const v = Math.min(CTX_MAX, Math.max(CTX_MIN, parseInt(e.target.value, 10) || CTX_MIN));
+                          handleContextSizeChange(m.name, v);
+                        }}
+                        style={{
+                          width: 70, padding: '3px 6px', fontSize: 11,
+                          background: 'var(--bg-input)', border: '1px solid var(--border-subtle)',
+                          color: 'var(--text-primary)', borderRadius: '3px', outline: 'none', textAlign: 'center',
+                        }}
+                      />
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 6 }}>
+                      Range: {CTX_MIN} – {CTX_MAX} | Step: {CTX_STEP}
+                      {serverRunning && serverModel === m.name ? (
+                        <span style={{ marginLeft: 8, color: '#eab308', fontWeight: 500 }}>● Live — changing restarts server</span>
+                      ) : null}
+                    </div>
+                  </div>
                 )}
-                <button onClick={() => handleDelete(m.name)} style={{
-                  padding: '4px 8px', fontSize: 11,
-                  background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-                }}>Delete</button>
               </div>
             ))}
           </div>

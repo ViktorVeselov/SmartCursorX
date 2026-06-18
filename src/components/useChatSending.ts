@@ -55,6 +55,8 @@ export interface ChatSendingParams {
     setApiError: React.Dispatch<React.SetStateAction<Record<string, unknown> | null>>;
     setCurrentlyReadingFiles: React.Dispatch<React.SetStateAction<{ path: string; timestamp: number }[]>>;
     setStreamElapsed: React.Dispatch<React.SetStateAction<number>>;
+    setContextUsage?: React.Dispatch<React.SetStateAction<{ estimatedInput: number; contextLength: number } | null>>;
+    setFileDiffs?: React.Dispatch<React.SetStateAction<{ filePath: string; originalContent: string; proposedContent: string; addedLines: number; removedLines: number }[]>>;
     cleanupActiveListeners: () => void;
     streamActiveRef: React.MutableRefObject<boolean>;
     activeChunkListenerRef: React.MutableRefObject<((_: unknown, chunk: string) => void) | null>;
@@ -272,6 +274,14 @@ export function useChatSending(params: ChatSendingParams) {
                 setIsLoading(false);
                 cleanupActiveListeners();
                 if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+
+                if (!isPlanModeActive && arg1 && typeof arg1.estimatedInput === 'number' && typeof arg1.contextLength === 'number') {
+                    p.setContextUsage?.({ estimatedInput: arg1.estimatedInput, contextLength: arg1.contextLength });
+                }
+
+                if (!isPlanModeActive && arg1 && Array.isArray(arg1.fileDiffs) && arg1.fileDiffs.length > 0) {
+                    p.setFileDiffs?.(arg1.fileDiffs);
+                }
                 
                 const usageData = isPlanModeActive ? arg2 : arg1;
                 console.log('[useChatSending:handleEnd] usageData identified:', usageData);
@@ -359,7 +369,8 @@ export function useChatSending(params: ChatSendingParams) {
             lastSentMessageRef.current = { content: sendContent, attachedFile: sendAttachedFile, isPlanMode: sendPlanModeActive };
             window.ipcRenderer.send(isPlanModeActive ? 'ai:plan-start' : 'ai:chat-start', {
                 messages: messagesToSend, providerId: activeProvider, model: activeModel,
-                effortLevel: effortLevel === 'default' ? undefined : effortLevel, thinking: executionMode === 'think'
+                effortLevel: effortLevel === 'default' ? undefined : effortLevel, thinking: executionMode === 'think',
+                rootPath: rootPath || '',
             });
         } catch (error: unknown) {
             rError('[ChatPanel:send] ERROR:', error instanceof Error ? error.message : String(error));
