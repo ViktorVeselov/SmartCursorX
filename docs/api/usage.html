@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Usage & Costs - SmartCursorX API</title>
+  <meta name="description" content="SmartCursorX token usage tracking, cost estimation, and budget monitoring across all AI providers.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../styles.css">
+  <script src="../script.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="container nav-wrapper">
+      <a href="../" class="logo">
+        <div class="logo-icon">S</div>
+        SmartCursorX
+      </a>
+      <nav class="nav-doc-links">
+        <a href="../" class="nav-doc-link">Home</a>
+        <a href="../guide/ai-providers.html" class="nav-doc-link">Guide</a>
+        <a href="../reference/agent.html" class="nav-doc-link">Reference</a>
+        <a href="usage.html" class="nav-doc-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="nav-doc-link" target="_blank">GitHub</a>
+      </nav>
+      <button id="sidebar-toggle" class="btn-sidebar-toggle" aria-label="Toggle navigation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="doc-layout">
+    <aside class="doc-sidebar" id="doc-sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Guide</div>
+        <a href="../guide/ai-providers.html" class="sidebar-link">AI Providers</a>
+        <a href="../guide/local-models.html" class="sidebar-link">Local LLMs</a>
+        <a href="../guide/fine-tuning.html" class="sidebar-link">Fine-Tuning</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Reference</div>
+        <a href="../reference/agent.html" class="sidebar-link">Agent System</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">API</div>
+        <a href="usage.html" class="sidebar-link active">Usage & Costs</a>
+      </div>
+    </aside>
+
+    <main class="doc-content">
+      <h1>Usage & Costs</h1>
+      <p>SmartCursorX tracks token usage and estimated costs across all AI provider interactions. This helps you monitor consumption, manage budgets, and optimize model selection.</p>
+
+      <h2 id="usage-tracking">Usage Tracking</h2>
+      <p>Every AI chat request is logged with:</p>
+      <ul>
+        <li><strong>Provider:</strong> Which AI service was used (OpenAI, Anthropic, OpenRouter, local, etc.)</li>
+        <li><strong>Model:</strong> Specific model identifier (e.g., <code>gpt-4o</code>, <code>claude-3-5-sonnet</code>)</li>
+        <li><strong>Input tokens:</strong> Number of tokens sent to the model (prompt + context)</li>
+        <li><strong>Output tokens:</strong> Number of tokens generated in the response</li>
+        <li><strong>Estimated cost:</strong> Calculated from per-model pricing tables</li>
+        <li><strong>Timestamp:</strong> When the request occurred</li>
+      </ul>
+
+      <h3 id="stored-data">Stored Data</h3>
+      <p>Usage records are stored in the local SQLite database (<code>smart-cursor-x.sqlite</code>):</p>
+      <ul>
+        <li>Indefinite retention (no auto-deletion)</li>
+        <li>Accessible via the <strong>Usage & Costs</strong> settings panel</li>
+        <li>Can be cleared manually</li>
+      </ul>
+
+      <h2 id="cost-estimation">Cost Estimation</h2>
+      <p>The CostEstimatorService calculates costs using built-in pricing tables:</p>
+      <table>
+        <tr><th>Provider</th><th>Pricing Model</th></tr>
+        <tr><td>OpenAI</td><td>Per-model tiers (GPT-4, GPT-3.5, etc.)</td></tr>
+        <tr><td>Anthropic</td><td>Per-model tiers (Claude 3 Opus, Sonnet, Haiku)</td></tr>
+        <tr><td>OpenRouter</td><td>Fetches real-time pricing from OpenRouter API</td></tr>
+        <tr><td>Gemini</td><td>Flat rate per model</td></tr>
+        <tr><td>Ollama / Zen / Local</td><td>Zero cost (flagged as $0.00)</td></tr>
+      </table>
+
+      <h3 id="custom-pricing">Custom Pricing</h3>
+      <p>For custom providers, costs default to $0.00. You can configure pricing by registering custom models with specific cost parameters.</p>
+
+      <h2 id="token-budget-monitoring">Token Budget Monitoring</h2>
+      <p>The conversation panel displays:</p>
+      <ul>
+        <li><strong>Current usage:</strong> Active context size for the current chat</li>
+        <li><strong>Total budget:</strong> Configurable token limit (default: 200,000 tokens)</li>
+        <li><strong>Warning indicator:</strong> Visual alert when approaching the limit</li>
+        <li><strong>Breakdown:</strong> Inputs vs outputs vs system vs tool call tokens</li>
+      </ul>
+
+      <h3 id="budget-configuration">Budget Configuration</h3>
+      <p>Token budget warnings trigger at configurable thresholds:</p>
+      <ul>
+        <li><strong>Warning:</strong> 70% of budget (yellow indicator)</li>
+        <li><strong>Critical:</strong> 90% of budget (red indicator)</li>
+      </ul>
+
+      <h2 id="model-statistics">Model Statistics</h2>
+      <p>The Model Stats panel shows per-model aggregates:</p>
+      <ul>
+        <li>Total requests made</li>
+        <li>Total input and output tokens</li>
+        <li>Estimated total cost</li>
+        <li>Average tokens per request</li>
+        <li>Cost per model breakdown</li>
+      </ul>
+
+      <h2 id="clearing-data">Clearing Data</h2>
+      <p>To reset usage statistics:</p>
+      <ol>
+        <li>Open <strong>Settings → Usage & Costs</strong></li>
+        <li>Click <strong>Clear All Stats</strong></li>
+        <li>Confirm the action</li>
+        <li>All records are permanently deleted</li>
+      </ol>
+      <p>This does not affect chat history — only the token usage and cost records.</p>
+    </main>
+  </div>
+
+  <footer>
+    <div class="container">
+      <p class="footer-text">© 2026 SmartCursorX Prototype. Scrutinized and Hardened fork of Agent Development Kit.</p>
+      <div class="footer-links">
+        <a href="../" class="footer-link">Home</a>
+        <a href="../guide/ai-providers.html" class="footer-link">Guide</a>
+        <a href="../reference/agent.html" class="footer-link">Reference</a>
+        <a href="usage.html" class="footer-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="footer-link" target="_blank">GitHub</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Providers - SmartCursorX Guide</title>
+  <meta name="description" content="SmartCursorX AI provider setup guide - OpenAI, Anthropic, Gemini, OpenRouter, Ollama, LiteLLM, Zen, local and fine-tuned models.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../styles.css">
+  <script src="../script.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="container nav-wrapper">
+      <a href="../" class="logo">
+        <div class="logo-icon">S</div>
+        SmartCursorX
+      </a>
+      <nav class="nav-doc-links">
+        <a href="../" class="nav-doc-link">Home</a>
+        <a href="ai-providers.html" class="nav-doc-link">Guide</a>
+        <a href="../reference/agent.html" class="nav-doc-link">Reference</a>
+        <a href="../api/usage.html" class="nav-doc-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="nav-doc-link" target="_blank">GitHub</a>
+      </nav>
+      <button id="sidebar-toggle" class="btn-sidebar-toggle" aria-label="Toggle navigation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="doc-layout">
+    <aside class="doc-sidebar" id="doc-sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Guide</div>
+        <a href="ai-providers.html" class="sidebar-link active">AI Providers</a>
+        <a href="local-models.html" class="sidebar-link">Local LLMs</a>
+        <a href="fine-tuning.html" class="sidebar-link">Fine-Tuning</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Reference</div>
+        <a href="../reference/agent.html" class="sidebar-link">Agent System</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">API</div>
+        <a href="../api/usage.html" class="sidebar-link">Usage & Costs</a>
+      </div>
+    </aside>
+
+    <main class="doc-content">
+      <h1>AI Providers</h1>
+      <p>SmartCursorX supports multiple AI providers for chat and code completion. Providers are configured in <strong>Settings → Models</strong>.</p>
+
+      <h2 id="supported-providers">Supported Providers</h2>
+
+      <h3 id="openai">OpenAI</h3>
+      <ul>
+        <li><strong>Models:</strong> <code>gpt-4o</code>, <code>gpt-4-turbo</code>, <code>gpt-3.5-turbo</code>, and any custom OpenAI model</li>
+        <li><strong>API key format:</strong> <code>sk-...</code></li>
+        <li><strong>Base URL</strong> can be customized for proxy setups</li>
+      </ul>
+
+      <h3 id="anthropic">Anthropic</h3>
+      <ul>
+        <li><strong>Models:</strong> <code>claude-3-5-sonnet</code>, <code>claude-3-5-haiku</code>, <code>claude-3-opus</code></li>
+        <li><strong>API key format:</strong> <code>sk-ant-...</code></li>
+      </ul>
+
+      <h3 id="gemini">Gemini</h3>
+      <ul>
+        <li><strong>Models:</strong> <code>gemini-2.0-flash</code>, <code>gemini-1.5-flash</code>, <code>gemini-1.5-pro</code></li>
+        <li><strong>API key:</strong> From Google AI Studio</li>
+      </ul>
+
+      <h3 id="openrouter">OpenRouter</h3>
+      <ul>
+        <li>Access to 200+ models through a single API</li>
+        <li>API key format: <code>sk-or-v1-...</code></li>
+        <li>Supports dynamic model discovery and context length lookup</li>
+        <li>HTTP-Referer and X-Title headers sent for analytics</li>
+      </ul>
+
+      <h3 id="ollama">Ollama</h3>
+      <ul>
+        <li>Fully local models via <code>localhost:11434</code></li>
+        <li>Requires Ollama server running locally</li>
+        <li>Model list fetched dynamically from local Ollama instance</li>
+        <li>No API key needed</li>
+      </ul>
+
+      <h3 id="litellm">LiteLLM</h3>
+      <ul>
+        <li>OpenAI-compatible proxy endpoint</li>
+        <li>Custom base URL configuration</li>
+        <li>Useful for self-hosted model gateways</li>
+      </ul>
+
+      <h3 id="zen">Zen (Built-in)</h3>
+      <ul>
+        <li>Free tier model via <code>opencode.ai/zen/v1</code></li>
+        <li>No configuration required</li>
+        <li>Supports effort levels (low/high)</li>
+      </ul>
+
+      <h3 id="local">Local (Experimental)</h3>
+      <ul>
+        <li>Runs quantized GGUF models locally via bundled llama-server</li>
+        <li>See <a href="local-models.html">Local LLMs</a> for setup</li>
+        <li>No API key needed</li>
+      </ul>
+
+      <h3 id="fine-tuned">Fine-Tuned</h3>
+      <ul>
+        <li>User-registered LoRA adapters and fine-tuned models</li>
+        <li>Stored in SQLite database</li>
+        <li>Inferences run through local endpoints</li>
+      </ul>
+
+      <h2 id="api-key-security">API Key Security</h2>
+      <p>All API keys are encrypted using OS-level credential storage:</p>
+      <ul>
+        <li><strong>Windows:</strong> DPAPI via Electron <code>safeStorage</code></li>
+        <li><strong>macOS:</strong> Keychain</li>
+        <li><strong>Linux:</strong> libsecret</li>
+      </ul>
+      <p>Keys are never stored as plaintext in database tables or logs. The Secure Store architecture uses an AES-256-GCM encrypted JSON file with a random 32-byte key.</p>
+
+      <h2 id="custom-providers">Custom Providers</h2>
+      <p>You can add custom OpenAI-compatible providers:</p>
+      <ol>
+        <li>Open <strong>Settings → Models</strong></li>
+        <li>Click <strong>Add Custom Provider</strong></li>
+        <li>Enter a name, base URL, and API key</li>
+        <li>Models populate automatically from the provider's <code>/v1/models</code> endpoint</li>
+      </ol>
+
+      <h2 id="custom-models">Custom Models</h2>
+      <p>Register specific models with custom context lengths and thinking support:</p>
+      <ul>
+        <li>Set context window size per model</li>
+        <li>Toggle reasoning/thinking mode for supported models</li>
+        <li>Models are stored in the local SQLite database</li>
+      </ul>
+
+      <h2 id="cost-estimation">Cost Estimation</h2>
+      <p>The Cost Estimator Service tracks token usage per model:</p>
+      <ul>
+        <li>Input and output token counts</li>
+        <li>Per-model pricing (configurable)</li>
+        <li>Zero-cost for local, Ollama, and Zen providers</li>
+        <li>Usage statistics viewable in <strong>Settings → Usage & Costs</strong></li>
+      </ul>
+    </main>
+  </div>
+
+  <footer>
+    <div class="container">
+      <p class="footer-text">© 2026 SmartCursorX Prototype. Scrutinized and Hardened fork of Agent Development Kit.</p>
+      <div class="footer-links">
+        <a href="../" class="footer-link">Home</a>
+        <a href="ai-providers.html" class="footer-link">Guide</a>
+        <a href="../reference/agent.html" class="footer-link">Reference</a>
+        <a href="../api/usage.html" class="footer-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="footer-link" target="_blank">GitHub</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

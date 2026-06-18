@@ -1,472 +1,237 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SmartCursorX - Secure & Hardened Agentic IDE Prototype</title>
-
-  <!-- SEO Meta Tags -->
-  <meta name="description"
-    content="Download SmartCursorX, a secure, hardened, and highly isolated agentic IDE prototype featuring robust local loopback bindings, zero plaintext API keys storage, and pluggable cognitive steering engines.">
+  <title>SmartCursorX - Secure & Hardened Agentic IDE</title>
+  <meta name="description" content="Download SmartCursorX, a secure, hardened agentic IDE with zero plaintext API keys, loopback-bound API, and pluggable cognitive steering.">
   <meta name="keywords" content="SmartCursorX, Agentic IDE, Secure IDE, AI Coding, Developer Tools, Electron, React">
   <meta name="author" content="Viktor Veselov">
-
-  <!-- Modern Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
-    rel="stylesheet">
-
-  <!-- Modular CSS Styling -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
-
-  <!-- Modular Client Script (Deferred for loading optimization) -->
   <script src="script.js" defer></script>
 </head>
-
 <body>
-
-  <!-- Header Navbar -->
   <header>
     <div class="container nav-wrapper">
-      <a href="#" class="logo">
+      <a href="/SmartCursorX/" class="logo">
         <div class="logo-icon">S</div>
         SmartCursorX
       </a>
-      <div class="badge-status">
-        <div class="badge-dot"></div>
-        Local Sandbox Secure
-      </div>
+      <nav class="nav-doc-links">
+        <a href="/SmartCursorX/" class="nav-doc-link">Home</a>
+        <a href="/SmartCursorX/guide/ai-providers.html" class="nav-doc-link">Guide</a>
+        <a href="/SmartCursorX/reference/agent.html" class="nav-doc-link">Reference</a>
+        <a href="/SmartCursorX/api/usage.html" class="nav-doc-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="nav-doc-link" target="_blank">GitHub</a>
+      </nav>
+      <button id="sidebar-toggle" class="btn-sidebar-toggle" aria-label="Toggle navigation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 12h18M3 6h18M3 18h18"/>
+        </svg>
+      </button>
     </div>
   </header>
 
-  <!-- Hero Section -->
   <section class="hero">
     <div class="container">
       <span class="section-label">Now Available</span>
       <h1 class="hero-title">Hardened & Isolated<br>Agentic IDE Prototype</h1>
-      <p class="hero-subtitle">SmartCursorX is an optimized fork designed specifically to run secure local development
-        environments with robust AI integrations, zero plain-text credential leakages, and dynamic policy steering.</p>
-
+      <p class="hero-subtitle">SmartCursorX is an optimized fork designed to run secure local development environments with robust AI integrations, zero plain-text credential leakages, and dynamic policy steering.</p>
       <div class="cta-container">
-        <!-- Direct release installer URL triggers automatically on setup draft -->
-        <a id="btn-download-primary"
-          href="https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Windows-0.0.4-alpha-Setup.exe"
-          class="btn-download">
-          <svg viewBox="0 0 20 20">
-            <path
-              d="M10 2a1 1 0 0 1 1 1v7.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 1.4-1.42l2.3 2.3V3a1 1 0 0 1 1-1zm-7 13a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1z" />
-          </svg>
+        <a id="btn-download-primary" href="https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Windows-0.0.4-alpha-Setup.exe" class="btn-download">
+          <svg viewBox="0 0 20 20"><path d="M10 2a1 1 0 0 1 1 1v7.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 1.4-1.42l2.3 2.3V3a1 1 0 0 1 1-1zm-7 13a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1z"/></svg>
           <span id="btn-download-text">Download for Windows (x64)</span>
         </a>
         <div id="release-meta-text" class="release-meta">Windows Setup • Version 0.0.4-alpha • Cleaned by Scan</div>
-
-        <!-- Cross-platform alternative selectors -->
         <div style="margin-top: 12px; font-size: 13px; color: var(--text-secondary);">
           Looking for other platforms? Download for
-          <a href="https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Windows-0.0.4-alpha-Setup.exe"
-            style="color: var(--color-accent); text-decoration: none; margin: 0 4px; border-bottom: 1px dashed rgba(6,182,212,0.4);">Windows
-            (.exe)</a> or
-          <a href="https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Mac-0.0.4-alpha-Installer.dmg"
-            style="color: var(--color-accent); text-decoration: none; margin: 0 4px; border-bottom: 1px dashed rgba(6,182,212,0.4);">macOS
-            (.dmg)</a>
+          <a href="https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Windows-0.0.4-alpha-Setup.exe" style="color: var(--color-accent); text-decoration: none; margin: 0 4px; border-bottom: 1px dashed rgba(6,182,212,0.4);">Windows (.exe)</a> or
+          <a href="https://github.com/ViktorVeselov/SmartCursorX/releases/latest/download/SmartCursorX-Mac-0.0.4-alpha-Installer.dmg" style="color: var(--color-accent); text-decoration: none; margin: 0 4px; border-bottom: 1px dashed rgba(6,182,212,0.4);">macOS (.dmg)</a>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Main Grid Features -->
   <section class="container grid-features">
-
     <div class="feature-card">
-      <div class="feature-icon">
-        <svg viewBox="0 0 24 24">
-          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" stroke-width="2" />
-          <path d="M7 11V7a5 5 0 0 1 10 0v4" stroke-width="2" />
-        </svg>
-      </div>
+      <div class="feature-icon"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" stroke-width="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4" stroke-width="2"/></svg></div>
       <h3 class="feature-title">Zero Plaintext API Keys</h3>
-      <p class="feature-desc">All API keys and tokens are securely encrypted using OS-level credential management (DPAPI
-        on Windows via safeStorage), preventing any plaintext leakage in database tables or logs.</p>
+      <p class="feature-desc">All API keys and tokens are securely encrypted using OS-level credential management (DPAPI on Windows via safeStorage), preventing any plaintext leakage in database tables or logs.</p>
     </div>
-
     <div class="feature-card">
-      <div class="feature-icon">
-        <svg viewBox="0 0 24 24">
-          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke-width="2" />
-        </svg>
-      </div>
+      <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke-width="2"/></svg></div>
       <h3 class="feature-title">Pluggable Taxonomy Engine</h3>
-      <p class="feature-desc">Enforce cognitive steering and dynamic prompt tailors directly at model boundaries.
-        Restrict sensitive local system tools based on explicit user taxonomy domains.</p>
+      <p class="feature-desc">Enforce cognitive steering and dynamic prompt tailors directly at model boundaries. Restrict sensitive local system tools based on explicit user taxonomy domains.</p>
     </div>
-
     <div class="feature-card">
-      <div class="feature-icon">
-        <svg viewBox="0 0 24 24">
-          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" stroke-width="2" />
-        </svg>
-      </div>
+      <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" stroke-width="2"/></svg></div>
       <h3 class="feature-title">Loopback Bound API</h3>
-      <p class="feature-desc">The internal administration REST endpoint is strictly bound to local loopback (127.0.0.1)
-        and enforces strict Host header filters, neutralizing DNS rebinding attacks completely.</p>
+      <p class="feature-desc">The internal administration REST endpoint is strictly bound to local loopback (127.0.0.1) and enforces strict Host header filters, neutralizing DNS rebinding attacks completely.</p>
     </div>
-
   </section>
 
-  <!-- Hardened Security Details & Architecture Flow -->
   <section class="section-security">
     <div class="container security-layout">
-
       <div class="security-header">
         <span class="section-label">Hardened Core</span>
         <h2 class="section-title">Pre-flight Validation & Strict Containment</h2>
       </div>
-
       <div class="security-bullets">
-
         <div class="security-bullet-card">
-          <div class="bullet-label">
-            <span class="bullet-icon">✓</span>
-            100% Passed Secrets Scan
-          </div>
-          <p class="bullet-desc">Fully scrutinized codebase using deterministic regex scanners to ensure no OpenAI keys,
-            JWTs, or private keys remain inside source codes or logs.</p>
+          <div class="bullet-label"><span class="bullet-icon">✓</span>100% Passed Secrets Scan</div>
+          <p class="bullet-desc">Fully scrutinized codebase using deterministic regex scanners to ensure no OpenAI keys, JWTs, or private keys remain inside source codes or logs.</p>
         </div>
-
         <div class="security-bullet-card">
-          <div class="bullet-label">
-            <span class="bullet-icon">✓</span>
-            Preload IPC Bridge Whitelist
-          </div>
-          <p class="bullet-desc">Monaco Editor Renderer process executes inside isolated contexts, communicating only
-            via predefined, strongly whitelisted Electron IPC events.</p>
+          <div class="bullet-label"><span class="bullet-icon">✓</span>Preload IPC Bridge Whitelist</div>
+          <p class="bullet-desc">Monaco Editor Renderer process executes inside isolated contexts, communicating only via predefined, strongly whitelisted Electron IPC events.</p>
         </div>
-
         <div class="security-bullet-card">
-          <div class="bullet-label">
-            <span class="bullet-icon">✓</span>
-            Path-Traversal Defenses
-          </div>
-          <p class="bullet-desc">File edits and snapshot loops validate targets against active workspaces, aborting any
-            operation attempting relative directory traversal (../).</p>
+          <div class="bullet-label"><span class="bullet-icon">✓</span>Path-Traversal Defenses</div>
+          <p class="bullet-desc">File edits and snapshot loops validate targets against active workspaces, aborting any operation attempting relative directory traversal (../).</p>
         </div>
-
       </div>
-
-      <!-- Styled Interactive Architecture Flow -->
       <div class="arch-container">
         <svg class="arch-svg" viewBox="0 0 800 240" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <!-- Monaco Renderer Node -->
-          <rect x="20" y="70" width="160" height="80" rx="10" fill="#13131a" stroke="rgba(255,255,255,0.08)"
-            stroke-width="2" />
-          <text x="100" y="110" fill="#f3f4f6" font-family="'Outfit'" font-size="14" font-weight="600"
-            text-anchor="middle">Monaco Editor UI</text>
-          <text x="100" y="130" fill="#9ca3af" font-family="'Inter'" font-size="11" text-anchor="middle">Isolated
-            Renderer</text>
-
-          <!-- IPC Bridge Arrow -->
-          <path d="M180 110 H280" stroke="url(#cyan-grad)" stroke-width="2" stroke-dasharray="4 4" />
-          <polygon points="280,110 272,106 272,114" fill="#06b6d4" />
-          <text x="230" y="100" fill="#06b6d4" font-family="'JetBrains Mono'" font-size="10"
-            text-anchor="middle">Preload IPC</text>
-
-          <!-- Main Process Node -->
-          <rect x="290" y="50" width="220" height="120" rx="12" fill="url(#main-grad)" stroke="#4f46e5"
-            stroke-width="2" />
-          <text x="400" y="90" fill="#ffffff" font-family="'Outfit'" font-size="16" font-weight="700"
-            text-anchor="middle">Electron Main Process</text>
-          <text x="400" y="115" fill="#a5b4fc" font-family="'Inter'" font-size="11" text-anchor="middle">Bound 127.0.0.1
-            Controller</text>
-          <text x="400" y="135" fill="#a5b4fc" font-family="'Inter'" font-size="11" text-anchor="middle">SecureStore
-            Cryptography</text>
-
-          <!-- Database Arrow -->
-          <path d="M510 110 H610" stroke="url(#indigo-grad)" stroke-width="2" />
-          <polygon points="610,110 602,106 602,114" fill="#4f46e5" />
-          <text x="560" y="100" fill="#a1a1aa" font-family="'JetBrains Mono'" font-size="10" text-anchor="middle">DPAPI
-            Safe</text>
-
-          <!-- SQLite Data Node -->
-          <rect x="620" y="70" width="160" height="80" rx="10" fill="#13131a" stroke="rgba(255,255,255,0.08)"
-            stroke-width="2" />
-          <text x="700" y="110" fill="#f3f4f6" font-family="'Outfit'" font-size="14" font-weight="600"
-            text-anchor="middle">SQLite Storage</text>
-          <text x="700" y="130" fill="#10b981" font-family="'Inter'" font-size="11" text-anchor="middle">%APPDATA%
-            WAL</text>
-
+          <rect x="20" y="70" width="160" height="80" rx="10" fill="#13131a" stroke="rgba(255,255,255,0.08)" stroke-width="2"/>
+          <text x="100" y="110" fill="#f3f4f6" font-family="'Outfit'" font-size="14" font-weight="600" text-anchor="middle">Monaco Editor UI</text>
+          <text x="100" y="130" fill="#9ca3af" font-family="'Inter'" font-size="11" text-anchor="middle">Isolated Renderer</text>
+          <path d="M180 110 H280" stroke="url(#cyan-grad)" stroke-width="2" stroke-dasharray="4 4"/>
+          <polygon points="280,110 272,106 272,114" fill="#06b6d4"/>
+          <text x="230" y="100" fill="#06b6d4" font-family="'JetBrains Mono'" font-size="10" text-anchor="middle">Preload IPC</text>
+          <rect x="290" y="50" width="220" height="120" rx="12" fill="url(#main-grad)" stroke="#4f46e5" stroke-width="2"/>
+          <text x="400" y="90" fill="#ffffff" font-family="'Outfit'" font-size="16" font-weight="700" text-anchor="middle">Electron Main Process</text>
+          <text x="400" y="115" fill="#a5b4fc" font-family="'Inter'" font-size="11" text-anchor="middle">Bound 127.0.0.1 Controller</text>
+          <text x="400" y="135" fill="#a5b4fc" font-family="'Inter'" font-size="11" text-anchor="middle">SecureStore Cryptography</text>
+          <path d="M510 110 H610" stroke="url(#indigo-grad)" stroke-width="2"/>
+          <polygon points="610,110 602,106 602,114" fill="#4f46e5"/>
+          <text x="560" y="100" fill="#a1a1aa" font-family="'JetBrains Mono'" font-size="10" text-anchor="middle">DPAPI Safe</text>
+          <rect x="620" y="70" width="160" height="80" rx="10" fill="#13131a" stroke="rgba(255,255,255,0.08)" stroke-width="2"/>
+          <text x="700" y="110" fill="#f3f4f6" font-family="'Outfit'" font-size="14" font-weight="600" text-anchor="middle">SQLite Storage</text>
+          <text x="700" y="130" fill="#10b981" font-family="'Inter'" font-size="11" text-anchor="middle">%APPDATA% WAL</text>
           <defs>
             <linearGradient id="main-grad" x1="290" y1="50" x2="510" y2="170" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="#1e1b4b" />
-              <stop offset="100%" stop-color="#311042" />
+              <stop offset="0%" stop-color="#1e1b4b"/><stop offset="100%" stop-color="#311042"/>
             </linearGradient>
             <linearGradient id="cyan-grad" x1="180" y1="110" x2="280" y2="110" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="#4f46e5" />
-              <stop offset="100%" stop-color="#06b6d4" />
+              <stop offset="0%" stop-color="#4f46e5"/><stop offset="100%" stop-color="#06b6d4"/>
             </linearGradient>
             <linearGradient id="indigo-grad" x1="510" y1="110" x2="610" y2="110" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="#4f46e5" />
-              <stop offset="100%" stop-color="#10b981" />
+              <stop offset="0%" stop-color="#4f46e5"/><stop offset="100%" stop-color="#10b981"/>
             </linearGradient>
           </defs>
         </svg>
       </div>
-
     </div>
   </section>
 
-  <!-- Capabilities Section -->
   <section class="container capabilities-section">
     <div class="security-header">
-      <span class="section-label">Capabilities</span>
-      <h2 class="section-title">Functional Features & Operations</h2>
+      <span class="section-label">Documentation</span>
+      <h2 class="section-title">Explore the Docs</h2>
     </div>
     <div class="capabilities-grid">
       <div class="capability-card">
-        <div class="capability-header">
-          <span class="capability-tag">Security</span>
-          <span>Workspace Path Containment</span>
-        </div>
-        <p class="capability-text">
-          Validates and confines all code generation, search, and reading activities within the resolved active workspace directory path. Path traversal queries utilizing relative indicators (e.g., <code>../</code>) are detected and blocked at the Electron IPC execution boundary.
-        </p>
+        <div class="capability-header"><span class="capability-tag">Guide</span><span>AI Providers</span></div>
+        <p class="capability-text">Configure OpenAI, Anthropic, Gemini, OpenRouter, Ollama, LiteLLM, local models, and fine-tuned providers. API key security with DPAP storage.</p>
+        <p style="margin-top: 10px;"><a href="/SmartCursorX/guide/ai-providers.html" style="color: var(--color-accent); font-size: 13px; text-decoration: none;">Read Guide →</a></p>
       </div>
-
       <div class="capability-card">
-        <div class="capability-header">
-          <span class="capability-tag">AI Engine</span>
-          <span>Pluggable Provider Support</span>
-        </div>
-        <p class="capability-text">
-          Integrates standard cloud providers alongside local interfaces and custom OpenAI-compatible proxies:
-        </p>
-        <ul class="capability-list">
-          <li><strong>OpenAI & Anthropic</strong>: Secure key registration and streaming chat integration.</li>
-          <li><strong>Ollama (Local)</strong>: Fully local model routing (e.g., Llama 3, Mistral) without external network dependencies.</li>
-          <li><strong>OpenRouter.ai & Custom Gateways</strong>: Dynamic model discovery and proxy endpoint configuration stored in SQLite.</li>
-        </ul>
+        <div class="capability-header"><span class="capability-tag">Guide</span><span>Local LLMs</span></div>
+        <p class="capability-text">Run quantized GGUF models locally with bundled llama-server. HuggingFace search, model download, server setup, and troubleshooting.</p>
+        <p style="margin-top: 10px;"><a href="/SmartCursorX/guide/local-models.html" style="color: var(--color-accent); font-size: 13px; text-decoration: none;">Read Guide →</a></p>
       </div>
-
       <div class="capability-card">
-        <div class="capability-header">
-          <span class="capability-tag">Planning</span>
-          <span>Interactive Plan Editor</span>
-        </div>
-        <p class="capability-text">
-          Presents file-level code modifications in side-by-side split diff editors. Before modifications are written to disk, developers can review changes and choose to accept or reject individual files. It also maps class dependency trees in inline visual formats.
-        </p>
+        <div class="capability-header"><span class="capability-tag">Guide</span><span>Fine-Tuning</span></div>
+        <p class="capability-text">Train custom LoRA adapters using local hardware. Hardware detection, model recommendations, dataset preparation, micro-benchmarking, and inference.</p>
+        <p style="margin-top: 10px;"><a href="/SmartCursorX/guide/fine-tuning.html" style="color: var(--color-accent); font-size: 13px; text-decoration: none;">Read Guide →</a></p>
       </div>
-
       <div class="capability-card">
-        <div class="capability-header">
-          <span class="capability-tag">Steering</span>
-          <span>Taxonomy-Aware Steering</span>
-        </div>
-        <p class="capability-text">
-          Classifies local development contexts (language, framework, scale) to tailor system prompts. Dynamically modifies search tool parameters to guide the model towards analyzing specific schema, route, and configuration files relative to the target codebase.
-        </p>
+        <div class="capability-header"><span class="capability-tag">Reference</span><span>Agent System</span></div>
+        <p class="capability-text">Pluggable agent system with cognitive steering, taxonomy-aware context assembly, tool permissions, and plan-execute-review loop architecture.</p>
+        <p style="margin-top: 10px;"><a href="/SmartCursorX/reference/agent.html" style="color: var(--color-accent); font-size: 13px; text-decoration: none;">Read Reference →</a></p>
       </div>
-
       <div class="capability-card">
-        <div class="capability-header">
-          <span class="capability-tag">Context</span>
-          <span>Token Budget Monitoring</span>
-        </div>
-        <p class="capability-text">
-          Tracks active conversation context sizes in real time. Visual warning indicators flag potential context pollution as the token usage approaches the 200,000-token threshold, displaying detailed breakdowns of inputs, outputs, history, and active files.
-        </p>
-      </div>
-
-      <div class="capability-card">
-        <div class="capability-header">
-          <span class="capability-tag">Terminal</span>
-          <span>Multi-Profile Shell Interface</span>
-        </div>
-        <p class="capability-text">
-          Hosts terminal shell sessions directly within the UI, supporting PowerShell, CMD, Git Bash on Windows, and Zsh, Bash, and Sh on macOS/Linux. Terminal configuration handles process state cleanup on window unmount to prevent listener leakage.
-        </p>
+        <div class="capability-header"><span class="capability-tag">API</span><span>Usage & Costs</span></div>
+        <p class="capability-text">Track token usage and estimated costs across all AI providers. Token budget monitoring, model statistics, and cost estimation with configurable pricing.</p>
+        <p style="margin-top: 10px;"><a href="/SmartCursorX/api/usage.html" style="color: var(--color-accent); font-size: 13px; text-decoration: none;">Read API Docs →</a></p>
       </div>
     </div>
   </section>
 
-  <!-- Setup / Installation Steps -->
   <section class="container setup-guide">
     <div class="setup-header">
       <span class="section-label">Quickstart</span>
       <h2 class="section-title">Deployment & Execution Manual</h2>
     </div>
-
     <div class="setup-steps">
-
       <div class="step-item">
         <div class="step-num">1</div>
         <div class="step-content">
           <h3 class="step-title">Execute the Local Compilation</h3>
-          <p class="step-desc">Build and package the production installer dynamically. Run the packaging command from
-            the repository root:</p>
+          <p class="step-desc">Build and package the production installer. Run from the repository root:</p>
           <div class="codeblock-container">
             <div class="codeblock" id="cmd-build">npm run build</div>
             <button class="btn-copy" onclick="copyText('cmd-build')" aria-label="Copy code">
-              <svg viewBox="0 0 24 24">
-                <path
-                  d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z" />
-              </svg>
+              <svg viewBox="0 0 24 24"><path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z"/></svg>
             </button>
           </div>
         </div>
       </div>
-
       <div class="step-item">
         <div class="step-num">2</div>
         <div class="step-content">
           <h3 class="step-title">Locate Setup Package</h3>
-          <p class="step-desc">The secure executable or DMG package will be generated inside the local releases
-            directory depending on your build host:</p>
-
-          <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">Windows Setup
-            Path:</div>
+          <p class="step-desc">The installer is generated in the local releases directory:</p>
+          <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">Windows Setup Path:</div>
           <div class="codeblock-container" style="margin-bottom: 12px;">
-            <div class="codeblock" id="cmd-release-win">.\release\0.0.4-alpha\SmartCursorX-Windows-0.0.4-alpha-Setup.exe
-            </div>
+            <div class="codeblock" id="cmd-release-win">.\release\0.0.4-alpha\SmartCursorX-Windows-0.0.4-alpha-Setup.exe</div>
             <button class="btn-copy" onclick="copyText('cmd-release-win')" aria-label="Copy code">
-              <svg viewBox="0 0 24 24">
-                <path
-                  d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z" />
-              </svg>
+              <svg viewBox="0 0 24 24"><path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z"/></svg>
             </button>
           </div>
-
-          <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">macOS DMG
-            Path:</div>
+          <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">macOS DMG Path:</div>
           <div class="codeblock-container">
-            <div class="codeblock" id="cmd-release-mac">.\release\0.0.4-alpha\SmartCursorX-Mac-0.0.4-alpha-Installer.dmg
-            </div>
+            <div class="codeblock" id="cmd-release-mac">.\release\0.0.4-alpha\SmartCursorX-Mac-0.0.4-alpha-Installer.dmg</div>
             <button class="btn-copy" onclick="copyText('cmd-release-mac')" aria-label="Copy code">
-              <svg viewBox="0 0 24 24">
-                <path
-                  d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z" />
-              </svg>
+              <svg viewBox="0 0 24 24"><path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z"/></svg>
             </button>
           </div>
         </div>
       </div>
-
       <div class="step-item">
         <div class="step-num">3</div>
         <div class="step-content">
-          <h3 class="step-title">Publish GitHub Release & macOS Security Bypass</h3>
-          <p class="step-desc">Push your commits to GitHub and upload the generated <code>.exe</code> or
-            <code>.dmg</code> file as a release asset under tag <code>v0.0.4-alpha</code>.</p>
-          <div
-            style="background: rgba(6, 182, 212, 0.08); border: 1px solid rgba(6, 182, 212, 0.2); border-radius: var(--radius-sm); padding: 14px 18px; margin-top: 10px; font-size: 13px;">
-            <strong style="color: var(--color-accent); display: block; margin-bottom: 4px;">💡 macOS Gatekeeper
-              Quarantine Bypass:</strong>
-            Because this alpha build is self-packaged and unsigned, Gatekeeper will prevent launch on macOS. After
-            dragging the app to your <code>/Applications</code> folder, run the following command in your terminal to
-            bypass:
+          <h3 class="step-title">Publish GitHub Release</h3>
+          <p class="step-desc">Push commits and upload the installer as a release asset under tag <code>v0.0.4-alpha</code>.</p>
+          <div style="background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.2); border-radius: var(--radius-sm); padding: 14px 18px; margin-top: 10px; font-size: 13px;">
+            <strong style="color: var(--color-accent); display: block; margin-bottom: 4px;">macOS Gatekeeper Bypass:</strong>
+            Because this alpha build is unsigned, Gatekeeper prevents launch. Run this command to bypass:
             <div class="codeblock-container" style="margin-top: 8px; background: #060608; padding: 10px 14px;">
-              <div class="codeblock" id="cmd-xattr" style="color: #38bdf8;">xattr -cr /Applications/SmartCursorX.app
-              </div>
-              <button class="btn-copy" onclick="copyText('cmd-xattr')" aria-label="Copy code"
-                style="color: var(--text-muted);">
-                <svg viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                  <path
-                    d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z" />
-                </svg>
+              <div class="codeblock" id="cmd-xattr" style="color: #38bdf8;">xattr -cr /Applications/SmartCursorX.app</div>
+              <button class="btn-copy" onclick="copyText('cmd-xattr')" aria-label="Copy code" style="color: var(--text-muted);">
+                <svg viewBox="0 0 24 24" style="width: 16px; height: 16px;"><path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z"/></svg>
               </button>
             </div>
           </div>
         </div>
       </div>
-
     </div>
   </section>
 
-  <!-- Usage & Operation Section -->
-  <section class="container usage-section">
-    <div class="security-header">
-      <span class="section-label">Operator Manual</span>
-      <h2 class="section-title">How to Use SmartCursorX</h2>
-    </div>
-    <div class="usage-steps-grid">
-      <div class="usage-card">
-        <div class="usage-card-header">
-          <span class="usage-step-tag">Step 1</span>
-          <span>Workspace Setup & Cloning</span>
-        </div>
-        <p class="usage-text-content">
-          Launch the application and select a local development folder. Alternatively, use the integrated Git integration to input a remote GitHub repository URL. The application executes a secure, shell-escaped clone process and opens the directory.
-        </p>
-      </div>
-
-      <div class="usage-card">
-        <div class="usage-card-header">
-          <span class="usage-step-tag">Step 2</span>
-          <span>Provider Credentials Configuration</span>
-        </div>
-        <p class="usage-text-content">
-          Open Settings (<code>Ctrl + ,</code>). Select your preferred API provider (e.g., Anthropic, OpenAI, or local Ollama). Input your API keys. Once saved, these keys are immediately encrypted via safeStorage at the OS-level before database storage.
-        </p>
-      </div>
-
-      <div class="usage-card">
-        <div class="usage-card-header">
-          <span class="usage-step-tag">Step 3</span>
-          <span>Prompting & Action Formulation</span>
-        </div>
-        <p class="usage-text-content">
-          Enter your instructions in the AI Chat Panel. The model uses the local search, read, and list-directory capabilities to gather codebase context. All context assembly operations are restricted within the workspace path to block out-of-bounds reads.
-        </p>
-      </div>
-
-      <div class="usage-card">
-        <div class="usage-card-header">
-          <span class="usage-step-tag">Step 4</span>
-          <span>Code Planning Review</span>
-        </div>
-        <p class="usage-text-content">
-          Once the AI generates a plan, the UI shows a blueprint roadmap. Check the permanently visible <strong>Implementation Trade-offs</strong> and <strong>Failure Modes &amp; Consequences</strong> tabs to review design choices and potential risk profiles.
-        </p>
-      </div>
-
-      <div class="usage-card">
-        <div class="usage-card-header">
-          <span class="usage-step-tag">Step 5</span>
-          <span>Accepting or Rejecting Edits</span>
-        </div>
-        <p class="usage-text-content">
-          Review file-level proposed edits side-by-side inside the Diff Editor. Click "Accept" on individual file changes to commit the modifications to disk, or "Reject" to discard them. You can click any text block inside the planner view to edit the markdown text directly.
-        </p>
-      </div>
-
-      <div class="usage-card">
-        <div class="usage-card-header">
-          <span class="usage-step-tag">Step 6</span>
-          <span>Compilation & Local Test Execution</span>
-        </div>
-        <p class="usage-text-content">
-          Open the integrated terminal panel, select your shell profile, and run local test/compilation tasks (e.g., <code>npm run test</code>, <code>npm run dev</code>). Process lifecycles are monitored to prevent orphaned terminal sessions.
-        </p>
-      </div>
-    </div>
-  </section>
-
-  <!-- Footer -->
   <footer>
     <div class="container">
       <p class="footer-text">© 2026 SmartCursorX Prototype. Scrutinized and Hardened fork of Agent Development Kit.</p>
       <div class="footer-links">
-        <a href="https://github.com/ViktorVeselov/SmartCursorX/blob/main/README.md" class="footer-link" target="_blank">Documentation</a>
-        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="footer-link" target="_blank">GitHub
-          Repository</a>
-        <a href="https://github.com/ViktorVeselov/SmartCursorX/blob/main/SECURITY.md" class="footer-link" target="_blank">Security Policies</a>
-        <a href="https://github.com/ViktorVeselov/SmartCursorX/blob/main/PRIVACY.md" class="footer-link" target="_blank">Privacy Statement</a>
+        <a href="/SmartCursorX/" class="footer-link">Home</a>
+        <a href="/SmartCursorX/guide/ai-providers.html" class="footer-link">Guide</a>
+        <a href="/SmartCursorX/reference/agent.html" class="footer-link">Reference</a>
+        <a href="/SmartCursorX/api/usage.html" class="footer-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="footer-link" target="_blank">GitHub</a>
       </div>
     </div>
   </footer>
-
 </body>
-
 </html>

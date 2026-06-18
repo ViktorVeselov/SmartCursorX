@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fine-Tuning - SmartCursorX Guide</title>
+  <meta name="description" content="Train custom LoRA adapters using local hardware with SmartCursorX fine-tuning pipeline.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../styles.css">
+  <script src="../script.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="container nav-wrapper">
+      <a href="../" class="logo">
+        <div class="logo-icon">S</div>
+        SmartCursorX
+      </a>
+      <nav class="nav-doc-links">
+        <a href="../" class="nav-doc-link">Home</a>
+        <a href="ai-providers.html" class="nav-doc-link">Guide</a>
+        <a href="../reference/agent.html" class="nav-doc-link">Reference</a>
+        <a href="../api/usage.html" class="nav-doc-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="nav-doc-link" target="_blank">GitHub</a>
+      </nav>
+      <button id="sidebar-toggle" class="btn-sidebar-toggle" aria-label="Toggle navigation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="doc-layout">
+    <aside class="doc-sidebar" id="doc-sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Guide</div>
+        <a href="ai-providers.html" class="sidebar-link">AI Providers</a>
+        <a href="local-models.html" class="sidebar-link">Local LLMs</a>
+        <a href="fine-tuning.html" class="sidebar-link active">Fine-Tuning</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Reference</div>
+        <a href="../reference/agent.html" class="sidebar-link">Agent System</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">API</div>
+        <a href="../api/usage.html" class="sidebar-link">Usage & Costs</a>
+      </div>
+    </aside>
+
+    <main class="doc-content">
+      <h1>Fine-Tuning (Experimental)</h1>
+      <p>SmartCursorX includes an experimental fine-tuning pipeline that lets you train custom adapter models using local hardware. This is part of the "100% democratized IDE" vision — anyone can fine-tune models on their own machine.</p>
+
+      <h2 id="overview">Overview</h2>
+      <p>The fine-tuning pipeline supports:</p>
+      <ul>
+        <li><strong>LoRA adapters:</strong> Lightweight fine-tuning using Low-Rank Adaptation (PEFT)</li>
+        <li><strong>QLoRA:</strong> Quantized LoRA for reduced memory usage</li>
+        <li><strong>Multi-GPU:</strong> DDP, FSDP, and DeepSpeed configurations</li>
+        <li><strong>Micro-benchmarking:</strong> 10-step benchmark to estimate training time before committing</li>
+      </ul>
+
+      <h2 id="hardware-requirements">Hardware Requirements</h2>
+      <table>
+        <tr><th>Component</th><th>Minimum</th><th>Recommended</th></tr>
+        <tr><td>RAM</td><td>16 GB</td><td>32 GB</td></tr>
+        <tr><td>VRAM</td><td>4 GB</td><td>8 GB (NVIDIA)</td></tr>
+        <tr><td>Storage</td><td>10 GB free</td><td>50 GB free</td></tr>
+        <tr><td>Python</td><td>3.10+</td><td>3.12</td></tr>
+        <tr><td>PyTorch</td><td>2.0+</td><td>2.4+</td></tr>
+      </table>
+
+      <h3 id="low-vram-models">Low-VRAM Models</h3>
+      <p>For consumer GPUs with 4-6 GB VRAM:</p>
+      <table>
+        <tr><th>Model</th><th>Parameters</th><th>VRAM (4-bit)</th></tr>
+        <tr><td>Qwen2.5-Coder-1.5B</td><td>1.5B</td><td>~1.2 GB</td></tr>
+        <tr><td>DeepSeek-Coder-1.3B</td><td>1.3B</td><td>~1.0 GB</td></tr>
+        <tr><td>Stable-Code-3B</td><td>3B</td><td>~2.4 GB</td></tr>
+        <tr><td>CodeGemma-1.1B</td><td>1.1B</td><td>~0.9 GB</td></tr>
+      </table>
+
+      <h2 id="pipeline">Pipeline</h2>
+
+      <h3 id="hardware-detection">Hardware Detection</h3>
+      <p>The system detects your hardware capabilities via nvidia-smi or WMI, identifying GPU, VRAM, RAM, and CPU cores. Results are cached for 30 days with an available force refresh option.</p>
+
+      <h3 id="model-recommendation">Model Recommendation</h3>
+      <p>Based on detected hardware, the system recommends suitable base models. A primary best-fit model is shown along with alternatives categorized by use case (Python, JavaScript, General). VRAM-aware filtering removes models that exceed available memory.</p>
+
+      <h3 id="dataset-preparation">Dataset Preparation</h3>
+      <p>Training data is prepared in JSONL format with instruction/response pairs. Built-in datasets include CodeAlpaca and CodeFeedback. Custom datasets can be imported via file picker, and prepared datasets can be exported for external use.</p>
+
+      <h3 id="training">Training</h3>
+      <p>Training configuration includes 1-10 epochs (default: 3), auto-tuned learning rate, VRAM-computed batch size, LoRA rank 8-64 (default: 16), and configurable target modules (Q, K, V, O projections).</p>
+
+      <h3 id="micro-benchmark">Micro-Benchmark</h3>
+      <p>Before full training, a 10-step micro-benchmark runs to measure actual tokens/second on your hardware and estimate total training duration. Results are shown in a highlighted panel and the process takes approximately 30-60 seconds.</p>
+
+      <h3 id="registration">Registration</h3>
+      <p>After training completes, the adapter is registered in the database and becomes available in Settings → Fine-Tuned Models. It can be used for inference via the <code>finetuned</code> provider through llama.cpp or Python backends.</p>
+
+      <h2 id="troubleshooting">Troubleshooting</h2>
+      <table>
+        <tr><th>Issue</th><th>Solution</th></tr>
+        <tr><td><code>import transformers</code> timeout</td><td>First import takes ~10s — timeout is 30s</td></tr>
+        <tr><td>Out of memory</td><td>Reduce batch size, use lower rank, or try a smaller model</td></tr>
+        <tr><td>Missing PEFT</td><td>Run <code>pip install peft bitsandbytes</code></td></tr>
+        <tr><td>No GPU detected</td><td>Check nvidia-smi driver, or fall back to CPU training</td></tr>
+        <tr><td>Watchdog warning</td><td>If no progress for 60s, a warning is shown; suggest stopping at 5 min</td></tr>
+      </table>
+    </main>
+  </div>
+
+  <footer>
+    <div class="container">
+      <p class="footer-text">© 2026 SmartCursorX Prototype. Scrutinized and Hardened fork of Agent Development Kit.</p>
+      <div class="footer-links">
+        <a href="../" class="footer-link">Home</a>
+        <a href="ai-providers.html" class="footer-link">Guide</a>
+        <a href="../reference/agent.html" class="footer-link">Reference</a>
+        <a href="../api/usage.html" class="footer-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="footer-link" target="_blank">GitHub</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

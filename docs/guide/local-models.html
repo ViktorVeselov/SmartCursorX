@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local LLMs - SmartCursorX Guide</title>
+  <meta name="description" content="Run quantized GGUF models locally with SmartCursorX using bundled llama-server. Fully offline AI inference.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../styles.css">
+  <script src="../script.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="container nav-wrapper">
+      <a href="../" class="logo">
+        <div class="logo-icon">S</div>
+        SmartCursorX
+      </a>
+      <nav class="nav-doc-links">
+        <a href="../" class="nav-doc-link">Home</a>
+        <a href="ai-providers.html" class="nav-doc-link">Guide</a>
+        <a href="../reference/agent.html" class="nav-doc-link">Reference</a>
+        <a href="../api/usage.html" class="nav-doc-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="nav-doc-link" target="_blank">GitHub</a>
+      </nav>
+      <button id="sidebar-toggle" class="btn-sidebar-toggle" aria-label="Toggle navigation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="doc-layout">
+    <aside class="doc-sidebar" id="doc-sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Guide</div>
+        <a href="ai-providers.html" class="sidebar-link">AI Providers</a>
+        <a href="local-models.html" class="sidebar-link active">Local LLMs</a>
+        <a href="fine-tuning.html" class="sidebar-link">Fine-Tuning</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Reference</div>
+        <a href="../reference/agent.html" class="sidebar-link">Agent System</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">API</div>
+        <a href="../api/usage.html" class="sidebar-link">Usage & Costs</a>
+      </div>
+    </aside>
+
+    <main class="doc-content">
+      <h1>Local LLMs (Experimental)</h1>
+      <p>SmartCursorX supports running quantized GGUF models locally using a bundled <code>llama-server</code> binary. This enables fully offline AI inference with no API costs and no data leaving your machine.</p>
+
+      <h2 id="quick-start">Quick Start</h2>
+      <ol>
+        <li>Open <strong>Settings → Local LLMs (Exp)</strong></li>
+        <li>Search for a GGUF model on HuggingFace</li>
+        <li>Click <strong>Browse files</strong> on a model repo</li>
+        <li>Click <strong>Download</strong> on a GGUF file</li>
+        <li>Click <strong>Run</strong> next to the downloaded model</li>
+        <li>Chat using the <code>local</code> provider</li>
+      </ol>
+
+      <h2 id="model-search">Model Search</h2>
+      <p>The built-in HuggingFace search lets you find GGUF models:</p>
+      <ul>
+        <li>Searches <code>huggingface.co/api/models</code> with <code>?tags=gguf</code> filter</li>
+        <li>Returns up to 15 results sorted by downloads</li>
+        <li>Shows model ID, description, and download count</li>
+        <li>Click <strong>Browse files</strong> to see available GGUF variants in a repo</li>
+      </ul>
+
+      <h3 id="huggingface-token">HuggingFace Token (Experimental)</h3>
+      <p>Some models (Llama, Mistral, etc.) are gated and require authentication:</p>
+      <ol>
+        <li>Get a token at <a href="https://huggingface.co/settings/tokens" target="_blank">huggingface.co/settings/tokens</a></li>
+        <li>Enter it in the <strong>HuggingFace Token (Exp)</strong> field in the Search section</li>
+        <li>Token is stored securely via <code>secureStore</code></li>
+        <li>Automatically passed as <code>Authorization: Bearer</code> header on download</li>
+      </ol>
+
+      <h2 id="downloading-models">Downloading Models</h2>
+      <ul>
+        <li>Downloads are streamed with progress display</li>
+        <li>Files are saved to <code>%APPDATA%\smart-cursor-x\models\</code></li>
+        <li>Partial downloads are NOT automatically cleaned up on failure</li>
+        <li>Downloaded models show a green <strong>Downloaded</strong> badge in search results</li>
+      </ul>
+
+      <h2 id="server-setup">Server Setup</h2>
+      <p>The bundled <code>llama-server</code> binary powers local inference:</p>
+
+      <h3 id="binary-location">Binary Location</h3>
+      <p>The download script (<code>download-llama-server.ps1</code>) installs to:</p>
+      <pre><code>%APPDATA%\smart-cursor-x\bin\llama-srv.exe</code></pre>
+      <p>The server searches in this order:</p>
+      <ol>
+        <li><code>%APPDATA%\smart-cursor-x\bin\llama-srv.exe</code></li>
+        <li><code>%APPDATA%\smart-cursor-x\bin\llama-server.exe</code></li>
+        <li><code>resources\llama-srv.exe</code> (packaged app)</li>
+        <li><code>resources\llama-server.exe</code> (packaged app)</li>
+      </ol>
+
+      <h3 id="server-parameters">Server Parameters</h3>
+      <p>When started, the server runs with:</p>
+      <ul>
+        <li><strong>Host:</strong> <code>127.0.0.1</code> (localhost only — no external access)</li>
+        <li><strong>Port:</strong> <code>8080</code></li>
+        <li><strong>GPU layers:</strong> <code>0</code> (CPU only by default)</li>
+        <li><strong>Context:</strong> <code>2048</code> tokens</li>
+      </ul>
+
+      <h3 id="starting-stopping">Starting & Stopping</h3>
+      <ul>
+        <li>Click <strong>Run</strong> next to a downloaded model — button shows "Starting..." immediately</li>
+        <li>Server status is displayed with green indicator</li>
+        <li>Click <strong>Stop</strong> to shut down the server</li>
+        <li>Server auto-stops on app quit (via <code>will-quit</code> handler)</li>
+      </ul>
+
+      <h2 id="provider">Provider</h2>
+      <p>The <code>local</code> provider routes chat requests to <code>http://localhost:8080/v1/chat/completions</code> (OpenAI-compatible format):</p>
+      <ul>
+        <li>No API key required</li>
+        <li>Model list auto-populates from downloaded GGUF files</li>
+        <li>Zero cost for cost estimation</li>
+      </ul>
+
+      <h2 id="architecture">Architecture</h2>
+      <pre><code>User Chat → AIService.createLanguageModel('local')
+  → createOpenAICompatible({ baseURL: 'http://localhost:8080/v1' })
+    → llama-server on 127.0.0.1:8080
+      → GGUF model file</code></pre>
+
+      <h2 id="troubleshooting">Troubleshooting</h2>
+
+      <h3 id="antivirus-false-positives">Antivirus False Positives</h3>
+      <p>Norton and Windows Defender may flag <code>llama-server.exe</code> as IDP.Generic. The binary is renamed to <code>llama-srv.exe</code> to minimize this, but exclusions may still be needed.</p>
+
+      <h3 id="missing-binary">Missing Binary</h3>
+      <p>If <code>findLlamaServer()</code> returns null, the server binary may be missing or quarantined. Run <code>npm run fetch:llama</code> or check antivirus quarantine.</p>
+
+      <h3 id="server-wont-start">Server Won't Start</h3>
+      <ul>
+        <li><strong>Process exits immediately:</strong> Missing DLLs or corrupted binary — re-download</li>
+        <li><strong>Port in use:</strong> Another service on port 8080 — stop the conflicting service</li>
+        <li><strong>Access denied:</strong> Antivirus blocking — add exclusion</li>
+      </ul>
+
+      <h3 id="chat-fails">Chat Fails with ECONNREFUSED</h3>
+      <p>The server isn't running or crashed. Check if the green "Server Active" indicator is visible. If not, click Run next to your model.</p>
+    </main>
+  </div>
+
+  <footer>
+    <div class="container">
+      <p class="footer-text">© 2026 SmartCursorX Prototype. Scrutinized and Hardened fork of Agent Development Kit.</p>
+      <div class="footer-links">
+        <a href="../" class="footer-link">Home</a>
+        <a href="ai-providers.html" class="footer-link">Guide</a>
+        <a href="../reference/agent.html" class="footer-link">Reference</a>
+        <a href="../api/usage.html" class="footer-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="footer-link" target="_blank">GitHub</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent System - SmartCursorX Reference</title>
+  <meta name="description" content="SmartCursorX pluggable agent system with cognitive steering, taxonomy engine, and tool permissions.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../styles.css">
+  <script src="../script.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="container nav-wrapper">
+      <a href="../" class="logo">
+        <div class="logo-icon">S</div>
+        SmartCursorX
+      </a>
+      <nav class="nav-doc-links">
+        <a href="../" class="nav-doc-link">Home</a>
+        <a href="../guide/ai-providers.html" class="nav-doc-link">Guide</a>
+        <a href="agent.html" class="nav-doc-link">Reference</a>
+        <a href="../api/usage.html" class="nav-doc-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="nav-doc-link" target="_blank">GitHub</a>
+      </nav>
+      <button id="sidebar-toggle" class="btn-sidebar-toggle" aria-label="Toggle navigation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="doc-layout">
+    <aside class="doc-sidebar" id="doc-sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Guide</div>
+        <a href="../guide/ai-providers.html" class="sidebar-link">AI Providers</a>
+        <a href="../guide/local-models.html" class="sidebar-link">Local LLMs</a>
+        <a href="../guide/fine-tuning.html" class="sidebar-link">Fine-Tuning</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Reference</div>
+        <a href="agent.html" class="sidebar-link active">Agent System</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-heading">API</div>
+        <a href="../api/usage.html" class="sidebar-link">Usage & Costs</a>
+      </div>
+    </aside>
+
+    <main class="doc-content">
+      <h1>Agent System</h1>
+      <p>SmartCursorX features a pluggable agent system with cognitive steering, taxonomy-aware context assembly, and fine-grained tool permissions.</p>
+
+      <h2 id="architecture">Architecture</h2>
+      <p>The agent system follows a <strong>plan-execute-review</strong> loop:</p>
+      <ol>
+        <li><strong>Plan:</strong> The AI model analyzes the user request and generates a structured plan with file-level modifications</li>
+        <li><strong>Execute:</strong> Each modification is presented in a side-by-side diff editor for user review</li>
+        <li><strong>Review:</strong> Users accept or reject individual file changes before they are written to disk</li>
+      </ol>
+
+      <h2 id="cognitive-steering">Cognitive Steering</h2>
+      <p>The Taxonomy Engine classifies the development context to optimize model performance:</p>
+      <ul>
+        <li><strong>Language detection:</strong> Identifies the programming language from file extensions and project structure</li>
+        <li><strong>Framework recognition:</strong> Detects frameworks (React, Django, Spring, etc.) and adjusts system prompts accordingly</li>
+        <li><strong>Scale estimation:</strong> Determines project scale (small/medium/large) to guide search depth and context window usage</li>
+        <li><strong>Prompt tailoring:</strong> Dynamically modifies system prompts to focus the model on relevant patterns, schemas, and configuration files</li>
+      </ul>
+
+      <h3 id="steering-example">Example</h3>
+      <p>When working on a Python Django project, the steering engine:</p>
+      <ol>
+        <li>Sets the taxonomy domain to <code>python.django</code></li>
+        <li>Prioritizes <code>urls.py</code>, <code>models.py</code>, <code>views.py</code>, <code>settings.py</code> in search results</li>
+        <li>Includes Django-specific conventions in the system prompt</li>
+        <li>Restricts file operations to the project's virtual environment scope</li>
+      </ol>
+
+      <h2 id="tool-permissions">Tool Permissions</h2>
+      <p>The agent has access to a curated set of tools, each with workspace containment:</p>
+      <table>
+        <tr><th>Tool</th><th>Description</th><th>Containment</th></tr>
+        <tr><td><code>search_files</code></td><td>Regex search within workspace files</td><td>Workspace root</td></tr>
+        <tr><td><code>read_files</code></td><td>Read file contents</td><td>Workspace root</td></tr>
+        <tr><td><code>edit_file</code></td><td>Apply edits to files</td><td>Workspace root</td></tr>
+        <tr><td><code>write_file</code></td><td>Create new files</td><td>Workspace root</td></tr>
+        <tr><td><code>bash</code></td><td>Execute shell commands</td><td>Configurable</td></tr>
+      </table>
+      <p>All file operations validate paths against the active workspace to prevent directory traversal attacks.</p>
+
+      <h2 id="context-assembly">Context Assembly</h2>
+      <p>The agent assembles context through multiple channels:</p>
+      <ul>
+        <li><strong>Active file:</strong> The currently open file in the editor</li>
+        <li><strong>Search results:</strong> Files matching the user's query via regex search</li>
+        <li><strong>Dependency tree:</strong> Import/require graph of relevant modules</li>
+        <li><strong>Terminal output:</strong> Recent command execution results</li>
+      </ul>
+
+      <h2 id="terminal">Multi-Profile Terminal</h2>
+      <p>The integrated terminal supports multiple shell profiles:</p>
+      <ul>
+        <li><strong>Windows:</strong> PowerShell, CMD, Git Bash</li>
+        <li><strong>macOS/Linux:</strong> Zsh, Bash, Sh</li>
+      </ul>
+      <p>Process state is cleaned up on component unmount to prevent orphaned processes.</p>
+
+      <h2 id="abort-error-handling">Abort & Error Handling</h2>
+      <ul>
+        <li>Chat requests can be aborted via Ctrl+C or the abort button</li>
+        <li>Aborted streams stop mid-response</li>
+        <li>API errors surface as user-visible messages with retry suggestions</li>
+        <li>Network errors include specific guidance (proxy, firewall, API key)</li>
+      </ul>
+    </main>
+  </div>
+
+  <footer>
+    <div class="container">
+      <p class="footer-text">© 2026 SmartCursorX Prototype. Scrutinized and Hardened fork of Agent Development Kit.</p>
+      <div class="footer-links">
+        <a href="../" class="footer-link">Home</a>
+        <a href="../guide/ai-providers.html" class="footer-link">Guide</a>
+        <a href="agent.html" class="footer-link">Reference</a>
+        <a href="../api/usage.html" class="footer-link">API</a>
+        <a href="https://github.com/ViktorVeselov/SmartCursorX" class="footer-link" target="_blank">GitHub</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
