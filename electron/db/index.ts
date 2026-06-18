@@ -26,6 +26,9 @@ import {
     addKnowledgeChunk, searchKnowledge,
     addModelPerformance, getModelPerformanceSummary, getModelPerformanceStats, getUsageStats, clearUsageStats
 } from './settings';
+import {
+    getCachedContext, setCachedContext, logCompression, getCompressionLog
+} from './contextCache';
 
 export class DatabaseService {
     private db: any = null;
@@ -334,6 +337,20 @@ export class DatabaseService {
     }
     clearUsageStats() {
         return clearUsageStats(this.db);
+    }
+
+    // ── Context Cache ──
+    getCachedContext(modelKey: string): number | null {
+        return getCachedContext(this.db, modelKey);
+    }
+    setCachedContext(modelKey: string, contextLength: number) {
+        return setCachedContext(this.db, modelKey, contextLength);
+    }
+    logCompression(conversationId: string, model: string, tokensBefore: number, tokensAfter: number, strategy: string, details?: string) {
+        return logCompression(this.db, conversationId, model, tokensBefore, tokensAfter, strategy, details);
+    }
+    getCompressionLog(conversationId?: string) {
+        return getCompressionLog(this.db, conversationId);
     }
 }
 

@@ -23,12 +23,37 @@ interface DownloadProgress {
   percent: number;
 }
 
+export const DEFAULT_CONTEXT_SIZE = 2048;
+
+const BYTES_PER_GB = 1024 * 1024 * 1024;
+
+function clampContextByHardware(modelPath: string, requestedContext: number): number {
+  try {
+    const stat = fs.statSync(modelPath);
+    const fileSizeGB = stat.size / BYTES_PER_GB;
+    const secureStore = require('../secureStore').secureStore;
+    const hw = secureStore.getHardwareSpec();
+    const availableGB = hw?.vramGB || hw?.ramGB || 4;
+    const kvRatio = 0.12;
+    const modelMemoryGB = fileSizeGB * 1.15;
+    const kvPerTokenGB = modelMemoryGB * kvRatio / DEFAULT_CONTEXT_SIZE;
+    const overheadGB = 0.5;
+    const maxSafeContext = Math.floor((availableGB - modelMemoryGB - overheadGB) / kvPerTokenGB);
+    const clamped = Math.min(requestedContext, Math.max(512, maxSafeContext));
+    const quantized = Math.floor(clamped / 256) * 256;
+    return Math.max(512, quantized);
+  } catch {
+    return requestedContext;
+  }
+}
+
 export class LocalModelService {
   private static instance: LocalModelService;
   private serverProcess: import('child_process').ChildProcess | null = null;
   private serverPort = 8080;
   private modelsDir: string;
   private runningModel: string | null = null;
+  private serverContextSize: number = DEFAULT_CONTEXT_SIZE;
 
   private constructor() {
     this.modelsDir = path.join(app.getPath('userData'), 'models');
@@ -171,8 +196,10 @@ export class LocalModelService {
     return null;
   }
 
-  startServer(modelPath: string): Promise<number> {
+  startServer(modelPath: string, contextSize?: number): Promise<number> {
     const modelName = path.basename(modelPath);
+    const ctx = contextSize ? clampContextByHardware(modelPath, contextSize) : DEFAULT_CONTEXT_SIZE;
+    this.serverContextSize = ctx;
     if (this.serverProcess) {
       this.runningModel = modelName;
       return Promise.resolve(this.serverPort);
@@ -188,7 +215,7 @@ export class LocalModelService {
         '--host', '127.0.0.1',
         '--port', String(this.serverPort),
         '-ngl', '0',
-        '-c', '2048',
+        '-c', String(ctx),
       ], { stdio: ['ignore', 'pipe', 'pipe'] });
       this.serverProcess = proc;
       this.runningModel = modelName;
@@ -257,5 +284,9 @@ export class LocalModelService {
 
   getServerPort(): number {
     return this.serverPort;
+  }
+
+  getContextSize(): number {
+    return this.serverContextSize;
   }
 }

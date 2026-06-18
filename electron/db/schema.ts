@@ -401,6 +401,27 @@ When planning:
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     `).run();
+
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS context_cache (
+            model_key TEXT PRIMARY KEY,
+            context_length INTEGER NOT NULL,
+            cached_at INTEGER NOT NULL
+        )
+    `).run();
+
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS compression_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            compressed_at INTEGER NOT NULL,
+            tokens_before INTEGER NOT NULL,
+            tokens_after INTEGER NOT NULL,
+            strategy TEXT NOT NULL,
+            details TEXT
+        )
+    `).run();
 }
 
 export function migrateKeysToSecureStore(db: any) {

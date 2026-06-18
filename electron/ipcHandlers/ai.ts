@@ -9,6 +9,9 @@ import { LocalModelService } from '../services/LocalModelService';
 import * as path from 'path';
 import { checkArgs } from '../../src/helpers/invariant';
 import * as fs from 'fs';
+import { tool } from 'ai';
+import { z } from 'zod';
+import { executeReadFile, executeWriteFile, executeEditFile, getWorkspacePath } from '../services/tools';
 import type { IpcHandlerContext } from './index';
 
 export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandlerContext) {
@@ -58,13 +61,40 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                 aiService.initializeFromStore(targetProvider);
             }
 
+            const workspacePath = getWorkspacePath();
+            const chatTools: Record<string, any> | undefined = workspacePath && fs.existsSync(workspacePath) ? {
+                read_file: tool({
+                    description: 'Read the contents of a file in the workspace to verify code structures or signatures (truncated to 8000 chars).',
+                    inputSchema: z.object({ filePath: z.string() }),
+                    execute: async ({ filePath }: { filePath: string }) => executeReadFile(filePath, workspacePath),
+                }),
+                write_file: tool({
+                    description: 'Create or overwrite a workspace file. Creates parent directories if they do not exist. Use this to write new files or replace entire file contents.',
+                    inputSchema: z.object({
+                        filePath: z.string().describe('Relative path from workspace root'),
+                        content: z.string().describe('Full file content to write'),
+                    }),
+                    execute: async ({ filePath, content }: { filePath: string; content: string }) => executeWriteFile(filePath, content, workspacePath),
+                }),
+                edit_file: tool({
+                    description: 'Find exact text in a file and replace it. Use for surgical edits without rewriting the whole file. Returns error if the file does not exist or the text is not found.',
+                    inputSchema: z.object({
+                        filePath: z.string().describe('Relative path from workspace root'),
+                        find: z.string().describe('Exact text to find (case-sensitive)'),
+                        replace: z.string().describe('Replacement text'),
+                    }),
+                    execute: async ({ filePath, find, replace }: { filePath: string; find: string; replace: string }) => executeEditFile(filePath, find, replace, workspacePath),
+                }),
+            } : undefined;
+
             const result = await aiService.chat(messages, {
                 stream: true,
                 model: targetModel,
                 temperature: 0.7,
                 effortLevel: effortLevel as 'low' | 'medium' | 'high' | undefined,
                 thinking: thinking as boolean | undefined,
-                abortSignal: context.activeAbortController.signal
+                abortSignal: context.activeAbortController.signal,
+                tools: chatTools,
             });
             console.log('[ChatStream] aiService.chat() returned, type:', typeof result, 'has text:', 'text' in result);
 
@@ -99,10 +129,56 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                     event.sender.send('ai:chat-chunk', chunk);
                 }
                 console.log('[ChatStream] for-await loop finished, total chunks:', chunkCount);
-                const streamUsage = context.activeStreamAborted ? undefined : await result.usage;
-                if (streamUsage) {
-                    actualInputTokens = streamUsage.inputTokens;
-                    actualOutputTokens = streamUsage.outputTokens;
+
+                if (chunkCount === 0 && chatTools && !context.activeStreamAborted) {
+                    console.log('[ChatStream] Empty response with tools (model likely does not support tool calling), retrying without tools');
+                    const fallbackResult = await aiService.chat(messages, {
+                        stream: true,
+                        model: targetModel,
+                        temperature: 0.7,
+                        effortLevel: effortLevel as 'low' | 'medium' | 'high' | undefined,
+                        thinking: thinking as boolean | undefined,
+                        abortSignal: context.activeAbortController?.signal,
+                    });
+                    if ('textStream' in fallbackResult) {
+                        for await (const chunk of fallbackResult.textStream) {
+                            if (context.activeStreamAborted) break;
+                            chunkCount++;
+                            responseText += chunk;
+                            event.sender.send('ai:chat-chunk', chunk);
+                        }
+                        try {
+                            const fallbackUsage = context.activeStreamAborted ? undefined : await fallbackResult.usage;
+                            if (fallbackUsage) {
+                                actualInputTokens = fallbackUsage.inputTokens;
+                                actualOutputTokens = fallbackUsage.outputTokens;
+                            }
+                        } catch (usageErr) {
+                            console.warn('[ChatStream] Failed to get fallback stream usage:', usageErr);
+                        }
+                    }
+                    console.log('[ChatStream] Fallback without tools completed, total chunks:', chunkCount);
+                } else if (!context.activeStreamAborted) {
+                    try {
+                        const streamUsage = await result.usage;
+                        if (streamUsage) {
+                            actualInputTokens = streamUsage.inputTokens;
+                            actualOutputTokens = streamUsage.outputTokens;
+                        }
+                    } catch (usageErr) {
+                        console.warn('[ChatStream] Failed to get stream usage:', usageErr);
+                    }
+                }
+
+                if (chunkCount === 0 && !context.activeStreamAborted) {
+                    let errMsg = `⚠️ **${targetModel} returned an empty response.** `;
+                    if (chatTools) {
+                        errMsg += `This model may not support tool calling. Try a different model or disable file operations.`;
+                    } else {
+                        errMsg += `The prompt or request may exceed the model's capabilities. Try shortening the conversation or using a different model.`;
+                    }
+                    responseText = errMsg;
+                    event.sender.send('ai:chat-chunk', errMsg);
                 }
             }
 
@@ -382,37 +458,88 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
         checkArgs(typeof providerId === 'string', 'providerId must be a string');
         checkArgs(typeof modelId === 'string', 'modelId must be a string');
 
+        const modelKey = `${providerId}:${modelId}`;
+        const cached = dbService.getCachedContext(modelKey);
+        if (cached !== null) return cached;
+
+        let contextLength = 128000;
+
         switch (providerId) {
             case 'openai': {
                 const id = modelId.toLowerCase();
-                if (id.includes('gpt-4o-mini')) return 128000;
-                if (id.includes('gpt-4o')) return 128000;
-                if (id.includes('gpt-4-turbo')) return 128000;
-                if (id.includes('o1-mini')) return 128000;
-                if (id.includes('o1')) return 200000;
-                if (id.includes('gpt-4')) return 8192;
-                if (id.includes('gpt-3.5-turbo')) return 16385;
-                return 128000;
+                if (id.includes('gpt-4o-mini')) contextLength = 128000;
+                else if (id.includes('gpt-4o')) contextLength = 128000;
+                else if (id.includes('gpt-4-turbo')) contextLength = 128000;
+                else if (id.includes('o1-mini')) contextLength = 128000;
+                else if (id.includes('o1')) contextLength = 200000;
+                else if (id.includes('gpt-4')) contextLength = 8192;
+                else if (id.includes('gpt-3.5-turbo')) contextLength = 16385;
+                else contextLength = 128000;
+                break;
             }
             case 'anthropic': {
-                return 200000;
+                contextLength = 200000;
+                break;
             }
             case 'gemini': {
                 const id = modelId.toLowerCase();
-                if (id.includes('pro')) return 2000000;
-                return 1000000;
+                contextLength = id.includes('pro') ? 2000000 : 1000000;
+                break;
             }
             case 'zen': {
-                return 128000;
+                contextLength = 128000;
+                break;
             }
             case 'openrouter': {
                 const cached = aiBridge.getOpenRouterContextLength(modelId);
-                return cached || 128000;
+                contextLength = cached || 128000;
+                break;
+            }
+            case 'local': {
+                contextLength = LocalModelService.getInstance().getContextSize();
+                break;
+            }
+            case 'finetuned': {
+                try {
+                    const ftModel = dbService.getFineTunedModel(modelId);
+                    if (ftModel && ftModel.base_model_id) {
+                        const { TOP_CODING_MODELS } = require('../constants/models');
+                        const match = TOP_CODING_MODELS.find((m: any) => m.id === ftModel.base_model_id);
+                        if (match && match.contextWindow) {
+                            contextLength = match.contextWindow;
+                        }
+                    }
+                } catch {
+                    contextLength = 4096;
+                }
+                break;
+            }
+            case 'ollama': {
+                try {
+                    const res = await fetch(`http://localhost:11434/api/show`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: modelId }),
+                    });
+                    if (res.ok) {
+                        const data = await res.json() as any;
+                        contextLength = data?.model_info?.llama?.context_length
+                            || data?.model_info?.general?.context_length
+                            || 4096;
+                    }
+                } catch {
+                    contextLength = 4096;
+                }
+                break;
             }
             default: {
-                return 128000;
+                contextLength = 128000;
+                break;
             }
         }
+
+        dbService.setCachedContext(modelKey, contextLength);
+        return contextLength;
     });
 
     ipcMain.handle('rag:search', async (_event, query: string, limit?: number) => {

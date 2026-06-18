@@ -2,12 +2,13 @@ import { generateText, streamText, Output, wrapLanguageModel, type AsyncIterable
 import type { LanguageModelV3 } from '@ai-sdk/provider';
 import { createLanguageModel, resolveZenModel } from './ai/provider';
 import type { ProviderConfig } from './ai/provider';
-import { getProviderPrompt, composeSystemPrompt, extractSystemMessages } from './ai/prompts';
+import { getProviderPrompt, composeSystemPrompt, extractSystemMessages, estimateMessageTokens, truncateMessages, type TruncationResult } from './ai/prompts';
 import { createTransformMiddleware } from './ai/transform';
 import console from 'console';
 import { aiBridge } from './AIBridge';
 import { secureStore } from '../secureStore';
 import { dbService } from '../db';
+import { LocalModelService } from './LocalModelService';
 
 export const API_TIMEOUT = 120_000;
 
@@ -100,6 +101,8 @@ export interface CompletionOptions {
   /** Legacy JSON Schema for structured output (backward compat).
    *  Prefer using the typed generateObject/streamObject methods instead. */
   responseSchema?: Record<string, unknown>;
+  /** AI SDK tools for automatic tool-calling during generation. */
+  tools?: Record<string, any>;
 }
 
 export class AIService {
@@ -218,14 +221,36 @@ export class AIService {
     const model = this.getModel(modelId);
     const temperature = this.getTemperature(modelId, options?.temperature);
     const providerOptions = this.getProviderOptions(modelId, options?.effortLevel, options?.thinking);
-    const composedMessages = this.composeMessages(messages, modelId);
+    let composedMessages = this.composeMessages(messages, modelId);
+
+    const modelKey = `${providerId}:${modelId}`;
+    let contextLength = dbService.getCachedContext(modelKey);
+    if (contextLength === null) {
+      contextLength = AIService.resolveContextLengthFallback(providerId, modelId);
+      dbService.setCachedContext(modelKey, contextLength);
+    }
+    const reservedBuffer = Math.min(10000, Math.floor(contextLength * 0.08));
+    const usableInput = contextLength - reservedBuffer;
+    const estimatedInput = estimateMessageTokens(composedMessages);
+    if (estimatedInput > usableInput) {
+      const truncated: TruncationResult = truncateMessages(composedMessages, usableInput);
+      composedMessages = truncated.messages;
+      const saved = estimatedInput - estimateMessageTokens(composedMessages);
+      console.log(`[AIService] Truncated messages for ${modelId}: dropped ${truncated.droppedTurns} turns, truncated ${truncated.truncatedOutputs} outputs, ${truncated.truncatedFiles} files (saved ~${saved} tokens)`);
+      if (saved > 0 && providerId !== 'internal') {
+        composedMessages.push({
+          role: 'system',
+          content: `[Earlier conversation history was compressed to fit within the ${contextLength}-token context window. ${truncated.droppedTurns > 0 ? `${truncated.droppedTurns} old messages were removed. ` : ''}The context before these messages is no longer available in full. If you need details from the removed history, ask the user. ]`
+        });
+      }
+    }
 
     try {
       if (options?.stream) {
         let resolveUsage!: (usage: ChatUsage) => void;
         const usagePromise = new Promise<ChatUsage>((resolve) => { resolveUsage = resolve; });
 
-        console.log('[AIService:chat] Calling streamText for model:', modelId, 'provider:', providerId);
+        console.log('[AIService:chat] Calling streamText for model:', modelId, 'provider:', providerId, 'hasTools:', !!options?.tools);
         const result = await streamText({
           model,
           messages: composedMessages as any,
@@ -233,6 +258,7 @@ export class AIService {
           providerOptions,
           abortSignal: options?.abortSignal,
           timeout: API_TIMEOUT,
+          tools: options?.tools,
           onFinish: (event) => {
             resolveUsage({
               inputTokens: event.totalUsage.inputTokens ?? 0,
@@ -362,6 +388,25 @@ export class AIService {
     if (providerId === 'anthropic') return process.env.ANTHROPIC_API_KEY;
     if (providerId === 'gemini') return process.env.GEMINI_API_KEY;
     return undefined;
+  }
+
+  static resolveContextLengthFallback(providerId: string, modelId: string): number {
+    switch (providerId) {
+      case 'openai': {
+        const id = modelId.toLowerCase();
+        if (id.includes('gpt-4o-mini') || id.includes('gpt-4o') || id.includes('gpt-4-turbo')) return 128000;
+        if (id.includes('o1-mini')) return 128000;
+        if (id.includes('o1')) return 200000;
+        if (id.includes('gpt-4')) return 8192;
+        if (id.includes('gpt-3.5-turbo')) return 16385;
+        return 128000;
+      }
+      case 'anthropic': return 200000;
+      case 'gemini': return modelId.toLowerCase().includes('pro') ? 2000000 : 1000000;
+      case 'zen': return 128000;
+      case 'local': return LocalModelService.getInstance().getContextSize();
+      default: return 128000;
+    }
   }
 }
 

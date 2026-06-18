@@ -112,6 +112,7 @@ Your goal is 100% accuracy and safety. Plan all reads, analyses, modifications, 
 1. Evidence-Based: Base your plan steps on facts/code files that you have explicitly verified. No guessing.
 2. Assumption Identification: Scrutinize all assumptions (e.g., assuming a file exists, assuming a function signature).
 3. Explicit Uncertainty: If you have ANY uncertainty about imports, database tables, or function names, use your tool actions (read_file, grep_search, list_directory) to explore the workspace and verify them before outputting your final plan.
+4. Direct File Operations: When you are certain of the required change, use write_file to create/replace files and edit_file for surgical find/replace patches. These tools respect workspace containment and handle parent directory creation automatically.
 
 Task Information:
 Title: ${task.title}
@@ -229,6 +230,68 @@ For "consequences": You MUST include at least 3 entries. Think critically about 
                                     }).join('\n');
                                 } catch (err: any) {
                                     return `Error listing directory: ${err.message}`;
+                                }
+                            }
+                        }),
+                        write_file: tool({
+                            description: PlanningService.getToolDescription(
+                                'write_file',
+                                'Create or overwrite a workspace file. Creates parent directories if they do not exist. Use this to write new files or replace entire file contents.',
+                                assembled.taxonomyResult
+                            ),
+                            inputSchema: z.object({
+                                filePath: z.string().describe('Relative path from workspace root'),
+                                content: z.string().describe('Full file content to write')
+                            }),
+                            execute: async ({ filePath, content }: { filePath: string; content: string }) => {
+                                const absolutePath = PlanningService.resolveToAllowedRoot(filePath, workspacePath);
+                                if (!absolutePath) {
+                                    return `Error: Path out of bounds: ${filePath}`;
+                                }
+                                try {
+                                    const dir = path.dirname(absolutePath);
+                                    if (!fs.existsSync(dir)) {
+                                        fs.mkdirSync(dir, { recursive: true });
+                                    }
+                                    fs.writeFileSync(absolutePath, content, 'utf-8');
+                                    const lines = content.split('\n').length;
+                                    return `Successfully wrote ${filePath} (${lines} lines, ${content.length} bytes)`;
+                                } catch (err: any) {
+                                    return `Error writing file: ${err.message}`;
+                                }
+                            }
+                        }),
+                        edit_file: tool({
+                            description: PlanningService.getToolDescription(
+                                'edit_file',
+                                'Find exact text in a file and replace it. Use for surgical edits without rewriting the whole file. Returns error if the file does not exist or the text is not found.',
+                                assembled.taxonomyResult
+                            ),
+                            inputSchema: z.object({
+                                filePath: z.string().describe('Relative path from workspace root'),
+                                find: z.string().describe('Exact text to find (case-sensitive)'),
+                                replace: z.string().describe('Replacement text')
+                            }),
+                            execute: async ({ filePath, find, replace }: { filePath: string; find: string; replace: string }) => {
+                                const absolutePath = PlanningService.resolveToAllowedRoot(filePath, workspacePath);
+                                if (!absolutePath) {
+                                    return `Error: Path out of bounds: ${filePath}`;
+                                }
+                                if (!fs.existsSync(absolutePath)) {
+                                    return `Error: File not found: ${filePath}. Use write_file to create it first.`;
+                                }
+                                try {
+                                    const content = fs.readFileSync(absolutePath, 'utf-8');
+                                    if (!content.includes(find)) {
+                                        return `Error: Could not find exact match "${find.substring(0, 80)}${find.length > 80 ? '...' : ''}" in ${filePath}. The text must match exactly including whitespace.`;
+                                    }
+                                    const newContent = content.replace(find, replace);
+                                    fs.writeFileSync(absolutePath, newContent, 'utf-8');
+                                    const diff = content.split('\n').length - newContent.split('\n').length;
+                                    const diffStr = diff > 0 ? `removed ${diff} lines` : diff < 0 ? `added ${Math.abs(diff)} lines` : 'no line count change';
+                                    return `Successfully edited ${filePath} (${diffStr})`;
+                                } catch (err: any) {
+                                    return `Error editing file: ${err.message}`;
                                 }
                             }
                         })
