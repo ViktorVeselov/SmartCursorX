@@ -22,10 +22,11 @@ interface SidebarProps {
     width?: number;
     symbolSearchQuery: string;
     setSymbolSearchQuery: (q: string) => void;
+    onFileDelete?: (path: string) => void;
 }
 
 // eslint-disable-next-line complexity
-export function Sidebar({ isOpen, onToggle, activeSection, onFileSelect, onCreateFile, rootPath, onOpenFolder, onRunFlow, onOpenFlow, onOpenPlan, width = 260, symbolSearchQuery, setSymbolSearchQuery }: SidebarProps) {
+export function Sidebar({ isOpen, onToggle, activeSection, onFileSelect, onCreateFile, rootPath, onOpenFolder, onRunFlow, onOpenFlow, onOpenPlan, width = 260, symbolSearchQuery, setSymbolSearchQuery, onFileDelete }: SidebarProps) {
     const handleNavigate = async (filePath: string, line?: number) => {
         try {
             const content = await window.ipcRenderer.invoke('read-file', filePath);
@@ -63,6 +64,7 @@ export function Sidebar({ isOpen, onToggle, activeSection, onFileSelect, onCreat
                                 onOpenFolder={onOpenFolder}
                                 symbolSearchQuery={symbolSearchQuery}
                                 setSymbolSearchQuery={setSymbolSearchQuery}
+                                onFileDelete={onFileDelete}
                             />
                         )}
                         {activeSection === 'search' && (

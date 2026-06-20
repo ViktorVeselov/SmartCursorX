@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { cleanAndExtractJSONObjects, mergeExecutionPlans, unwrapPlanningText } from '../utils/jsonParser';
+import { unwrapPlanningText } from '../utils/jsonParser';
 import type { ExecutionPlan, ActiveTab } from '../helpers/planEditorTypes';
 import { useAiStream } from './useAiStream';
 
@@ -116,55 +116,16 @@ IMPORTANT: The "tradeoffs" and "consequences" you generate here are for the IMPL
             userPrompt += `\n\nUser Custom Planning Directives/Constraints to respect:\n${directives.trim()}`;
         }
 
-        let resultText = '';
-
         // eslint-disable-next-line max-lines-per-function, complexity
-        const handleEnd = async () => {
+        const handleEnd = async (payload?: { plan?: any; error?: string; aborted?: boolean }) => {
             setIsDetailedPlanningLoading(false);
 
-            const rawText = resultText.trim();
-            if (rawText) {
-                let parsedDesignDoc = '';
-                let parsedClassDeps: Record<string, unknown>[] = [];
-                let parsedTradeoffs: Record<string, unknown>[] = [];
-                let parsedConsequences: Record<string, unknown>[] = [];
-                try {
-                    let cleanText = rawText;
-                    if (cleanText.startsWith('```')) {
-                        const match = cleanText.match(/```/i);
-                        const lastMatch = cleanText.lastIndexOf('```');
-                        if (match && lastMatch !== -1) {
-                            cleanText = cleanText.substring(cleanText.indexOf('\n') + 1, lastMatch).trim();
-                        }
-                    }
-                    const parsed = JSON.parse(cleanText);
-                    if (parsed && typeof parsed === 'object') {
-                        parsedDesignDoc = unwrapPlanningText(parsed.designDoc);
-                        if (Array.isArray(parsed.classDependencies)) {
-                            parsedClassDeps = parsed.classDependencies;
-                        }
-                        if (Array.isArray(parsed.tradeoffs)) {
-                            parsedTradeoffs = parsed.tradeoffs;
-                        }
-                        if (Array.isArray(parsed.consequences)) {
-                            parsedConsequences = parsed.consequences;
-                        }
-                    }
-                } catch (e) {
-                    const parsedObjects = cleanAndExtractJSONObjects(rawText);
-                    if (parsedObjects.length > 0) {
-                        const merged = mergeExecutionPlans(parsedObjects);
-                        if (merged) {
-                            parsedDesignDoc = unwrapPlanningText(merged.designDoc);
-                            parsedClassDeps = Array.isArray(merged.classDependencies) ? (merged.classDependencies as Record<string, unknown>[]) : [];
-                            parsedTradeoffs = Array.isArray(merged.tradeoffs) ? (merged.tradeoffs as Record<string, unknown>[]) : [];
-                            parsedConsequences = Array.isArray(merged.consequences) ? (merged.consequences as Record<string, unknown>[]) : [];
-                        }
-                    } else {
-                        console.warn('Failed to parse detailed planning JSON output, falling back to raw text:', e);
-                        parsedDesignDoc = unwrapPlanningText(rawText);
-                    }
-                }
+            if (payload && payload.plan) {
+                const parsed = payload.plan;
+                let parsedDesignDoc = unwrapPlanningText(parsed.designDoc);
+                let parsedClassDeps = Array.isArray(parsed.classDependencies) ? parsed.classDependencies : [];
+                let parsedTradeoffs = Array.isArray(parsed.tradeoffs) ? parsed.tradeoffs : [];
+                let parsedConsequences = Array.isArray(parsed.consequences) ? parsed.consequences : [];
 
                 if (parsedDesignDoc) {
                     const commentsString = parsedPlanningComments.map(c => c.rawBlock).join('\n');
@@ -179,7 +140,7 @@ IMPORTANT: The "tradeoffs" and "consequences" you generate here are for the IMPL
                         ...parsedConsequences
                     ];
 
-                    savePlan({
+                    await savePlan({
                         ...plan,
                         codePlanning: finalDoc,
                         classDependencies: parsedClassDeps.length > 0 ? (parsedClassDeps as ExecutionPlan['classDependencies']) : undefined,
@@ -206,23 +167,24 @@ IMPORTANT: The "tradeoffs" and "consequences" you generate here are for the IMPL
                 window.dispatchEvent(new CustomEvent('plan:modify-ended', {
                     detail: {
                         success: false,
-                        errorMessage: 'The model did not return valid plan JSON.'
+                        errorMessage: payload?.error || 'The model did not return valid plan JSON.'
                     }
                 }));
             }
         };
 
-        registerAiStreamHandlers((_, chunk) => {
-            if (!chunk.startsWith('Error:')) {
-                resultText += chunk;
+        registerAiStreamHandlers((_, payload) => {
+            if (payload && payload.chunk) {
+                // chunk received
             }
-        }, handleEnd);
+        }, handleEnd, 'ai:detailed-plan');
 
-        window.ipcRenderer.send('ai:chat-start', {
+        window.ipcRenderer.send('ai:detailed-plan-start', {
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt }
-            ]
+            ],
+            convId: '__detailed_plan__'
         });
     };
 

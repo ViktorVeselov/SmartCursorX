@@ -134,6 +134,24 @@ export function updateCustomModelContextSize(db: any, providerId: string, modelN
         .run(contextSize, providerId, modelName);
 }
 
+export function updateCustomModelGpuConfig(
+    db: any,
+    providerId: string,
+    modelName: string,
+    gpuMode: string,
+    gpuLayers: number | null,
+    gpuTarget: string,
+    tensorSplit: string | null
+) {
+    checkArgs(typeof providerId === 'string' && providerId.length > 0, 'Provider ID must be a valid non-empty string');
+    checkArgs(typeof modelName === 'string' && modelName.length > 0, 'Model Name must be a valid non-empty string');
+    checkArgs(typeof gpuMode === 'string', 'GPU mode must be a valid string');
+    checkArgs(typeof gpuTarget === 'string', 'GPU target must be a valid string');
+    if (!db) throw new Error('DB not initialized');
+    db.prepare('UPDATE custom_models SET gpu_mode = ?, gpu_layers = ?, gpu_target = ?, tensor_split = ? WHERE provider_id = ? AND model_name = ?')
+        .run(gpuMode, gpuLayers, gpuTarget, tensorSplit, providerId, modelName);
+}
+
 export function getCustomModels(db: any, providerId?: string) {
     if (!db) return [];
     if (providerId) {

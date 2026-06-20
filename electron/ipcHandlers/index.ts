@@ -8,6 +8,7 @@ import { registerShellHandlers } from './shell';
 import { registerSettingsHandlers } from './settings';
 import { registerExecutionHandlers } from './execution';
 import { registerFinetuningHandlers } from './finetuning';
+import { registerChangesHandlers } from './changes';
 
 export interface IPty {
     pid: number;
@@ -23,8 +24,8 @@ export interface IpcHandlerContext {
     mainWindow: BrowserWindow | null;
     native: any;
     ptyProcesses: Map<string, IPty>;
-    activeStreamAborted: boolean;
-    activeAbortController?: AbortController | null;
+    activeAbortControllers: Map<string, AbortController>;
+    abortedConvIds: Set<string>;
     workspacePath: string;
 }
 
@@ -37,4 +38,5 @@ export function registerAllHandlers(context: IpcHandlerContext) {
     registerSettingsHandlers(ipcMain);
     registerExecutionHandlers(ipcMain, context);
     registerFinetuningHandlers(ipcMain);
+    registerChangesHandlers(ipcMain, context);
 }

@@ -37,15 +37,29 @@ export function registerExecutionHandlers(ipcMain: Electron.IpcMain, _context: I
 
     ipcMain.handle('execution:apply-pending', async (_event, taskId: number) => {
         console.log(`[ExecutionHandler] Applying pending modifications for task ${taskId}`);
+        const pending = PendingModificationsService.getPending(taskId);
+        const mods = pending ? [...pending.modifications] : [];
         const success = PendingModificationsService.applyModifications(taskId);
         if (success) {
             PendingModificationsService.resolvePending(taskId, true);
+            PendingModificationsService.removePending(taskId);
+            if (_event && _event.sender) {
+                for (const mod of mods) {
+                    _event.sender.send('changes:updated', { relativePath: mod.relativePath, action: 'stage' });
+                }
+                _event.sender.send('execution:pending-modifications', {
+                    taskId,
+                    modifications: []
+                });
+            }
         }
         return { success };
     });
 
     ipcMain.handle('execution:reject-pending', async (_event, taskId: number) => {
         console.log(`[ExecutionHandler] Rejecting pending modifications for task ${taskId}`);
+        const pending = PendingModificationsService.getPending(taskId);
+        const mods = pending ? [...pending.modifications] : [];
         try {
             const plan = dbService.getTaskPlan(taskId);
             if (plan) {
@@ -60,6 +74,15 @@ export function registerExecutionHandlers(ipcMain: Electron.IpcMain, _context: I
         }
         PendingModificationsService.resolvePending(taskId, false);
         PendingModificationsService.removePending(taskId);
+        if (_event && _event.sender) {
+            for (const mod of mods) {
+                _event.sender.send('changes:updated', { relativePath: mod.relativePath, action: 'discard' });
+            }
+            _event.sender.send('execution:pending-modifications', {
+                taskId,
+                modifications: []
+            });
+        }
         return { success: true };
     });
 
@@ -76,6 +99,18 @@ export function registerExecutionHandlers(ipcMain: Electron.IpcMain, _context: I
             pending.modifications = pending.modifications.filter(m => m.relativePath !== relativePath);
             if (pending.modifications.length === 0) {
                 PendingModificationsService.resolvePending(taskId, true);
+                PendingModificationsService.removePending(taskId);
+            }
+            if (_event && _event.sender) {
+                _event.sender.send('changes:updated', { relativePath, action: 'stage' });
+                _event.sender.send('execution:pending-modifications', {
+                    taskId,
+                    modifications: pending.modifications.map(m => ({
+                        relativePath: m.relativePath,
+                        addedLines: m.addedLines,
+                        removedLines: m.removedLines
+                    }))
+                });
             }
         }
         return { success };
@@ -100,8 +135,21 @@ export function registerExecutionHandlers(ipcMain: Electron.IpcMain, _context: I
         }
 
         pending.modifications = pending.modifications.filter(m => m.relativePath !== relativePath);
-        if (pending.modifications.length === 0) {
+        const isEmpty = pending.modifications.length === 0;
+        if (isEmpty) {
             PendingModificationsService.resolvePending(taskId, false);
+            PendingModificationsService.removePending(taskId);
+        }
+        if (_event && _event.sender) {
+            _event.sender.send('changes:updated', { relativePath, action: 'discard' });
+            _event.sender.send('execution:pending-modifications', {
+                taskId,
+                modifications: pending.modifications.map(m => ({
+                    relativePath: m.relativePath,
+                    addedLines: m.addedLines,
+                    removedLines: m.removedLines
+                }))
+            });
         }
         return { success: true };
     });
@@ -113,6 +161,12 @@ export function registerExecutionHandlers(ipcMain: Electron.IpcMain, _context: I
     ipcMain.handle('execution:dlq-respond', async (_event, taskId: number, guidance: string | null) => {
         console.log(`[ExecutionHandler] DLQ response for task ${taskId}: ${guidance ? 'guidance provided' : 'cancelled'}`);
         ExecutionLoopService.resolveDlq(taskId, guidance);
+        return { success: true };
+    });
+
+    ipcMain.handle('execution:stop', async (_event, taskId: number) => {
+        console.log(`[ExecutionHandler] Stopping execution for task ${taskId}`);
+        ExecutionLoopService.stopExecution(taskId);
         return { success: true };
     });
 }

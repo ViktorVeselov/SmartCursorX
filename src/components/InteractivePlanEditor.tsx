@@ -27,6 +27,15 @@ export function InteractivePlanEditor({ taskId }: InteractivePlanEditorProps) {
     const { plan, setPlan, savePlan, agents, workflows } = usePlanLoader(taskId);
     const [activeTab, setActiveTab] = useState<ActiveTab>('doc');
     const [planningSubTab, setPlanningSubTab] = useState<PlanningSubTab>('blueprints');
+    const [isExecuting, setIsExecuting] = useState(false);
+    const [executionMessage, setExecutionMessage] = useState('');
+
+    useEffect(() => {
+        const cleanup = window.ipcRenderer.on('execution:progress', (_event: any, data: { message: string }) => {
+            if (data.message) setExecutionMessage(data.message);
+        }) as unknown as () => void;
+        return () => cleanup();
+    }, []);
 
     // Details & Context states
     const [isEditingExpectedOutcome, setIsEditingExpectedOutcome] = useState(false);
@@ -181,6 +190,7 @@ export function InteractivePlanEditor({ taskId }: InteractivePlanEditorProps) {
     // Derived handlers
     const handleApprovePlan = async () => {
         if (!plan) return;
+        setIsExecuting(true);
         await savePlan({ ...plan, approved: true });
         window.dispatchEvent(new CustomEvent('plan-reloaded'));
 
@@ -191,7 +201,13 @@ export function InteractivePlanEditor({ taskId }: InteractivePlanEditorProps) {
             }
         } catch (err) {
             console.error('Failed to start execution:', err);
+        } finally {
+            setIsExecuting(false);
         }
+    };
+
+    const handleStopExecution = () => {
+        window.ipcRenderer.invoke('execution:stop', taskId);
     };
 
     const handleRevokeApproval = async () => {
@@ -416,6 +432,9 @@ export function InteractivePlanEditor({ taskId }: InteractivePlanEditorProps) {
                 plan={plan}
                 handleApprovePlan={handleApprovePlan}
                 handleRevokeApproval={handleRevokeApproval}
+                isExecuting={isExecuting}
+                onStop={handleStopExecution}
+                executionMessage={executionMessage}
             />
 
             <PlanNavigationTabs

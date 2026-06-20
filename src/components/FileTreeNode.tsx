@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { FileItem } from '../helpers/fileTree';
 
 interface FileNodeProps {
@@ -9,6 +9,7 @@ interface FileNodeProps {
     onFileClick: (item: FileItem) => void;
     loadChildren: (path: string) => Promise<FileItem[]>;
     onContextMenu: (e: React.MouseEvent, item: FileItem) => void;
+    refreshTrigger?: number;
 }
 
 // eslint-disable-next-line complexity
@@ -115,20 +116,24 @@ function getFileIcon(name: string, isDir: boolean, isExpanded: boolean): { icon:
     }
 }
 
-export function FileNode({ item, depth, expandedFolders, onToggleFolder, onFileClick, loadChildren, onContextMenu }: FileNodeProps) {
+export function FileNode({ item, depth, expandedFolders, onToggleFolder, onFileClick, loadChildren, onContextMenu, refreshTrigger = 0 }: FileNodeProps) {
     const [children, setChildren] = useState<FileItem[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const isExpanded = expandedFolders.has(item.path);
+    const lastRefreshTriggerRef = useRef(refreshTrigger);
 
     useEffect(() => {
-        if (item.isDirectory && isExpanded && children.length === 0) {
+        const triggerChanged = lastRefreshTriggerRef.current !== refreshTrigger;
+        lastRefreshTriggerRef.current = refreshTrigger;
+
+        if (item.isDirectory && isExpanded && (children.length === 0 || triggerChanged)) {
             setIsLoading(true);
             loadChildren(item.path).then((items) => {
                 setChildren(items);
                 setIsLoading(false);
             }).catch(() => setIsLoading(false));
         }
-    }, [isExpanded, item.path, item.isDirectory, loadChildren, children.length]);
+    }, [isExpanded, item.path, item.isDirectory, loadChildren, children.length, refreshTrigger]);
 
     const handleClick = () => {
         if (item.isDirectory) {
@@ -180,6 +185,7 @@ export function FileNode({ item, depth, expandedFolders, onToggleFolder, onFileC
                                 onFileClick={onFileClick}
                                 loadChildren={loadChildren}
                                 onContextMenu={onContextMenu}
+                                refreshTrigger={refreshTrigger}
                             />
                         ))
                     )}

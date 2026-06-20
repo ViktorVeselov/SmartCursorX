@@ -9,6 +9,7 @@ import { TopBar } from './components/TopBar';
 import { StatusBar } from './components/StatusBar';
 import { ActivityBar } from './components/ActivityBar';
 import { SettingsModal } from './components/SettingsModal';
+import { ChangeReviewPanel } from './components/ChangeReviewPanel';
 import './styles/theme.css';
 import './styles/layout.css';
 import './styles/components.css';
@@ -50,6 +51,9 @@ function App() {
   const [executionContext, setExecutionContext] = useState<AppExecutionContext | null>(null);
   const [settingsSavedTrigger, setSettingsSavedTrigger] = useState(0);
 
+  // Changes review tabs
+  const [activeChangesTab, setActiveChangesTab] = useState<'all' | 'accepted' | 'pending' | null>(null);
+
   // Pending review state
   const [pendingReview, setPendingReview] = useState<{
     taskId: number;
@@ -67,6 +71,24 @@ function App() {
     attemptHistory: string[];
     maxRetries: number;
   } | null>(null);
+
+  // Execution status
+  const [executionStatus, setExecutionStatus] = useState<{
+    taskId: number;
+    phase: string;
+    message: string;
+    attempt?: number;
+    totalAttempts?: number;
+  } | null>(null);
+  const executionStatusRef = useRef(executionStatus);
+  executionStatusRef.current = executionStatus;
+
+  const handleStopExecution = () => {
+    const status = executionStatusRef.current;
+    if (status) {
+      window.ipcRenderer.invoke('execution:stop', status.taskId);
+    }
+  };
 
   // Tool approval state
   const [toolApprovalRequests, setToolApprovalRequests] = useState<Array<{
@@ -214,10 +236,24 @@ function App() {
       modifications: { relativePath: string; addedLines: number; removedLines: number }[];
     }) => {
       const fileCount = data.modifications.length;
+      if (fileCount === 0) {
+        setPendingReview(null);
+        return;
+      }
       const addedLines = data.modifications.reduce((sum: number, m: any) => sum + (m.addedLines || 0), 0);
       const removedLines = data.modifications.reduce((sum: number, m: any) => sum + (m.removedLines || 0), 0);
-      setPendingReview({ taskId: data.taskId, fileCount, addedLines, removedLines });
-      openReviewTab(data.taskId, setFiles, setActiveFilePath);
+      setPendingReview(prev => {
+        if (!prev || prev.taskId !== data.taskId) {
+          setTimeout(() => {
+            openReviewTab(data.taskId, setFiles, setActiveFilePath);
+          }, 0);
+        }
+        return { taskId: data.taskId, fileCount, addedLines, removedLines };
+      });
+    };
+
+    const handleToolApprovalRequest = (_event: any, request: { id: string; toolName: string; args: Record<string, unknown>; description: string }) => {
+      setToolApprovalRequests(prev => [...prev, { ...request, timestamp: Date.now(), resolve: () => { } }]);
     };
 
     window.addEventListener('open-workspace-file', handleOpenWorkspaceFile);
@@ -233,14 +269,42 @@ function App() {
       setDlqData(data);
     };
 
+    const handleExecutionProgress = (_event: any, data: {
+      taskId: number;
+      phase: string;
+      message: string;
+      attempt?: number;
+      totalAttempts?: number;
+    }) => {
+      if (data.phase === 'completed') {
+        setExecutionStatus({ ...data, message: '✓ Completed' });
+        showNotification(`Execution completed — ${data.message}`);
+        setTimeout(() => setExecutionStatus(null), 3000);
+      } else if (data.phase === 'failed') {
+        setExecutionStatus({ ...data, message: '✗ Failed' });
+        showNotification(`Execution failed: ${data.message}`);
+        setTimeout(() => setExecutionStatus(null), 5000);
+      } else if (data.phase === 'stopped') {
+        setExecutionStatus(null);
+        setPendingReview(null);
+        showNotification('Execution stopped');
+      } else {
+        setExecutionStatus(data);
+      }
+    };
+
+    window.ipcRenderer.on('tool:approval-request', handleToolApprovalRequest);
     window.ipcRenderer.on('execution:pending-modifications', handlePendingModifications);
     window.ipcRenderer.on('execution:dlq-notify', handleDlqNotify);
+    window.ipcRenderer.on('execution:progress', handleExecutionProgress);
     return () => {
       window.removeEventListener('open-workspace-file', handleOpenWorkspaceFile);
       window.removeEventListener('accept-file-proposal', handleAcceptProposal);
       window.removeEventListener('reject-file-proposal', handleRejectProposal);
+      window.ipcRenderer.off('tool:approval-request', handleToolApprovalRequest);
       window.ipcRenderer.off('execution:pending-modifications', handlePendingModifications);
       window.ipcRenderer.off('execution:dlq-notify', handleDlqNotify);
+      window.ipcRenderer.off('execution:progress', handleExecutionProgress);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -257,12 +321,10 @@ function App() {
     const flowName = String(flow.name ?? '');
     const flowDescription = String(flow.description ?? '');
     const flowSteps = flow.steps ?? { nodes: [], edges: [] };
-    // Check if already open
     const path = `flow://${flowId}`;
     const existing = files.find(f => f.path === path);
     if (existing) {
       setActiveFilePath(path);
-      // Update data?
       return;
     }
 
@@ -377,7 +439,7 @@ function App() {
   }, [newFileDialogOpen, newFileName, newFileDir, rootPath]);
 
   const handleCreateFile = (targetDir?: string) => {
-    // Fix: Ensure targetDir is a string, as this might be called with an Event object
+    // Ensure targetDir is a string, as this might be called with an Event object
     const dir = (typeof targetDir === 'string') ? targetDir : '';
     setNewFileName('');
     setNewFileDir(dir);
@@ -399,7 +461,7 @@ function App() {
 
     // Let's stick to the "Dirty in-memory" model for consistency, but set the path correctly.
     // However, for "New File in Folder", users usually expect it to exist on disk.
-    // Let's create it as empty file on disk if we have a directory context!
+    // Empty file on disk if we have a directory context!
 
     /* 
        Actually, standard VSCode behavior:
@@ -448,18 +510,13 @@ function App() {
     setTimeout(() => setNotification(null), 3000);
   };
 
-  // Tool approval handlers
-  const requestToolApproval = (toolName: string, args: Record<string, unknown>, description: string): Promise<boolean> => {
-    return new Promise((resolve) => {
-      const id = `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      setToolApprovalRequests(prev => [...prev, { id, toolName, args, description, timestamp: Date.now(), resolve }]);
-    });
-  };
-
   const handleApproveTool = (id: string) => {
     setToolApprovalRequests(prev => {
       const request = prev.find(r => r.id === id);
-      if (request) request.resolve(true);
+      if (request) {
+        request.resolve(true);
+        window.ipcRenderer.send('tool:approval-response', { id, approved: true });
+      }
       return prev.filter(r => r.id !== id);
     });
   };
@@ -467,14 +524,20 @@ function App() {
   const handleDenyTool = (id: string) => {
     setToolApprovalRequests(prev => {
       const request = prev.find(r => r.id === id);
-      if (request) request.resolve(false);
+      if (request) {
+        request.resolve(false);
+        window.ipcRenderer.send('tool:approval-response', { id, approved: false });
+      }
       return prev.filter(r => r.id !== id);
     });
   };
 
   const handleCloseAllToolRequests = () => {
     setToolApprovalRequests(prev => {
-      prev.forEach(r => r.resolve(false));
+      prev.forEach(r => {
+        r.resolve(false);
+        window.ipcRenderer.send('tool:approval-response', { id: r.id, approved: false });
+      });
       return [];
     });
   };
@@ -497,6 +560,11 @@ function App() {
 
   const handleCloseFile = (e: React.MouseEvent, path: string) => {
     e.stopPropagation();
+    const fileToClose = files.find(f => f.path === path);
+    if (fileToClose && fileToClose.isDirty) {
+      const confirmDiscard = window.confirm(`You have unsaved changes in ${fileToClose.name}. Close anyway and discard changes?`);
+      if (!confirmDiscard) return;
+    }
     const newFiles = files.filter(f => f.path !== path);
     if (newFiles.length === 0) {
       setFiles([]);
@@ -507,6 +575,21 @@ function App() {
         setActiveFilePath(newFiles[newFiles.length - 1].path);
       }
     }
+  };
+
+  const handleFileDelete = (path: string) => {
+    setFiles(prev => {
+      const newFiles = prev.filter(f => f.path !== path);
+      if (newFiles.length === 0) {
+        setActiveFilePath('');
+      } else if (activeFilePath === path) {
+        const activeIdx = prev.findIndex(f => f.path === path);
+        const nextActiveIdx = activeIdx > 0 ? activeIdx - 1 : 0;
+        const nextActive = newFiles[nextActiveIdx];
+        setActiveFilePath(nextActive ? nextActive.path : '');
+      }
+      return newFiles;
+    });
   };
 
   const handleContentChange = (val: string | undefined) => {
@@ -633,6 +716,7 @@ function App() {
               width={sidebarWidth}
               symbolSearchQuery={symbolSearchQuery}
               setSymbolSearchQuery={setSymbolSearchQuery}
+              onFileDelete={handleFileDelete}
             />
           </div>
           {/* Resizer */}
@@ -663,12 +747,21 @@ function App() {
           vimEnabled={vimEnabled}
           setVimEnabled={setVimEnabled}
           onOpenSettings={() => setSettingsOpen(true)}
+          activeChangesTab={activeChangesTab}
+          setActiveChangesTab={setActiveChangesTab}
         />
 
         <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden', minWidth: 0 }}>
           <div className="editor-terminal-container" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
             <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-              {activeSection === 'search' ? (
+              {activeChangesTab !== null ? (
+                <div className="editor-wrapper" style={{ height: '100%', width: '100%', flex: 1 }}>
+                  <ChangeReviewPanel
+                    activeChangesTab={activeChangesTab}
+                    onComplete={() => setActiveChangesTab(null)}
+                  />
+                </div>
+              ) : activeSection === 'search' ? (
                 <div className="editor-wrapper" style={{ height: '100%', width: '100%' }}>
                   <SearchPanel />
                 </div>
@@ -720,7 +813,7 @@ function App() {
           )}
         </div>
 
-        <StatusBar vimEnabled={vimEnabled} runningLocalModel={runningLocalModel} />
+        <StatusBar vimEnabled={vimEnabled} runningLocalModel={runningLocalModel} executionStatus={executionStatus} onStopExecution={handleStopExecution} />
       </div>
 
       <NewFileDialog

@@ -84,6 +84,44 @@ var TOP_CODING_MODELS = [
     knownIssues: ["Older architecture; newer DeepSeek-Coder-V2 recommended for production"]
   },
   {
+    id: "qwen2.5-coder-1.5b",
+    name: "Qwen 2.5 Coder 1.5B",
+    description: "Ultra-light Python/JS coder. Fits on 4GB VRAM with 4-bit. Strong for its size.",
+    hfRepo: "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    parameterSize: "1.5B",
+    archParams: { numParams: 15e8, hiddenSize: 1536, numLayers: 28, numHeads: 12 },
+    recommendedVRAM: computeRecommendedVRAM(
+      { numParams: 15e8, hiddenSize: 1536, numLayers: 28, numHeads: 12 },
+      defaultVramOpts
+    ),
+    defaultQuantization: "4bit",
+    contextWindow: 32768,
+    tags: ["python", "javascript", "rust"],
+    rank: 3,
+    tier: "verified",
+    benchmarks: { humaneval: 58, liveCodeBench: 42 },
+    knownIssues: ["Limited capacity for complex multi-file tasks"]
+  },
+  {
+    id: "deepseek-coder-1.3b",
+    name: "DeepSeek Coder 1.3B",
+    description: "Tiny but strong for JavaScript/TypeScript (28.46% win rate). Excellent repo-level FIM.",
+    hfRepo: "deepseek-ai/deepseek-coder-1.3b-instruct",
+    parameterSize: "1.3B",
+    archParams: { numParams: 13e8, hiddenSize: 1536, numLayers: 24, numHeads: 12 },
+    recommendedVRAM: computeRecommendedVRAM(
+      { numParams: 13e8, hiddenSize: 1536, numLayers: 24, numHeads: 12 },
+      defaultVramOpts
+    ),
+    defaultQuantization: "4bit",
+    contextWindow: 16384,
+    tags: ["javascript", "typescript", "python", "fim"],
+    rank: 4,
+    tier: "verified",
+    benchmarks: { humaneval: 45, liveCodeBench: 38 },
+    knownIssues: ["Very small model; limited reasoning capacity"]
+  },
+  {
     id: "codellama-7b",
     name: "Code Llama 7B",
     description: "Meta \u2014 most widely tested local coder. Strong at code completion and infilling.",
@@ -97,7 +135,7 @@ var TOP_CODING_MODELS = [
     defaultQuantization: "4bit",
     contextWindow: 16384,
     tags: ["python", "javascript", "general"],
-    rank: 3,
+    rank: 5,
     tier: "community",
     benchmarks: { humaneval: 84, liveCodeBench: 48 },
     knownIssues: ["HumanEval score likely overfitted; real-world performance is lower"]
@@ -116,10 +154,29 @@ var TOP_CODING_MODELS = [
     defaultQuantization: "4bit",
     contextWindow: 32768,
     tags: ["python", "javascript", "reasoning"],
-    rank: 4,
+    rank: 6,
     tier: "community",
     benchmarks: { humaneval: 69, liveCodeBench: 35 },
     knownIssues: ["Small context-optimized training set; may struggle on niche languages"]
+  },
+  {
+    id: "stable-code-3b",
+    name: "Stable Code 3B",
+    description: "Stability AI \u2014 best JavaScript/TypeScript win rate (31.64%). Strong at code completion.",
+    hfRepo: "stabilityai/stable-code-3b",
+    parameterSize: "3B",
+    archParams: { numParams: 27e8, hiddenSize: 2560, numLayers: 32, numHeads: 20 },
+    recommendedVRAM: computeRecommendedVRAM(
+      { numParams: 27e8, hiddenSize: 2560, numLayers: 32, numHeads: 20 },
+      defaultVramOpts
+    ),
+    defaultQuantization: "4bit",
+    contextWindow: 16384,
+    tags: ["javascript", "typescript", "python", "completion"],
+    rank: 7,
+    tier: "community",
+    benchmarks: { humaneval: 52, liveCodeBench: 40 },
+    knownIssues: ["Base model fine-tuned; less instruction-following than Instruct variants"]
   },
   {
     id: "granite-3b-code",
@@ -135,10 +192,29 @@ var TOP_CODING_MODELS = [
     defaultQuantization: "4bit",
     contextWindow: 8192,
     tags: ["python", "javascript", "java", "go"],
-    rank: 5,
+    rank: 8,
     tier: "experimental",
     benchmarks: { humaneval: 61, liveCodeBench: 28 },
     knownIssues: ["Limited third-party validation; fewer community fine-tunes available"]
+  },
+  {
+    id: "codegemma-1.1b",
+    name: "CodeGemma 1.1B",
+    description: "Google \u2014 smallest viable code model. Runs on 3GB VRAM with 4-bit. Good for simple tasks.",
+    hfRepo: "google/codegemma-1.1b-it",
+    parameterSize: "1.1B",
+    archParams: { numParams: 11e8, hiddenSize: 1280, numLayers: 24, numHeads: 10 },
+    recommendedVRAM: computeRecommendedVRAM(
+      { numParams: 11e8, hiddenSize: 1280, numLayers: 24, numHeads: 10 },
+      defaultVramOpts
+    ),
+    defaultQuantization: "4bit",
+    contextWindow: 8192,
+    tags: ["python", "javascript", "general"],
+    rank: 9,
+    tier: "experimental",
+    benchmarks: { humaneval: 38, liveCodeBench: 30 },
+    knownIssues: ["Minimal capacity; only for basic completion/explanation"]
   }
 ];
 

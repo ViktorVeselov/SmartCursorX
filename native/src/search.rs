@@ -211,7 +211,8 @@ pub fn search_file_names(pattern: String, root_path: String, respect_gitignore: 
             if entry.path().is_file() {
                 let rel_path = entry.path().strip_prefix(root).unwrap_or(entry.path());
                 let file_name = rel_path.to_string_lossy();
-                if re.is_match(&file_name) {
+                let normalized_path = file_name.replace('\\', "/");
+                if re.is_match(&normalized_path) {
                     results.push(file_name.to_string());
                 }
             }

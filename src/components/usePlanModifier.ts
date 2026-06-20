@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { cleanAndExtractJSONObjects, mergeExecutionPlans } from '../utils/jsonParser';
 import type { ExecutionPlan } from '../helpers/planEditorTypes';
 import { useAiStream } from './useAiStream';
 
@@ -80,99 +79,84 @@ ${aiInstructions}
 
 Note: If the instructions ask to start from scratch, regenerate, or create a new plan, ignore the Current Plan JSON.`;
 
-        let fullResponse = '';
-
         // eslint-disable-next-line complexity
-        const handleEnd = async () => {
+        const handleEnd = async (payload?: { plan?: any; error?: string; aborted?: boolean }) => {
             setIsAiLoading(false);
             setAiInstructions('');
 
-            try {
-                const parsedObjects = cleanAndExtractJSONObjects(fullResponse);
-                const parsed = (parsedObjects.length > 0
-                    ? mergeExecutionPlans(parsedObjects)
-                    : null) as ExecutionPlan | null;
-                if (!parsed) {
-                    throw new Error('Could not extract a valid execution plan from model response.');
-                }
+            if (payload && payload.plan) {
+                try {
+                    const parsed = payload.plan;
+                    const normalizedSteps = (parsed.steps || []).map((s: any, i: number) => ({
+                        order: s.order || i + 1,
+                        action: s.action || "analyze",
+                        target: s.target || ".",
+                        rationale: s.rationale || "Review and analyze",
+                        completed: !!s.completed,
+                        notes: s.notes || undefined,
+                        agent: s.agent || undefined
+                    }));
+                    const normalizedTradeoffs = (parsed.tradeoffs || []).map((t: any) => ({
+                        task: t.task || "",
+                        considerations: t.considerations || "",
+                        decision: t.decision || ""
+                    }));
+                    const normalizedConsequences = (parsed.consequences || []).map((c: any) => ({
+                        failureMode: c.failureMode || "",
+                        consequence: c.consequence || "",
+                        harm: c.harm || "",
+                        mitigation: c.mitigation || ""
+                    }));
 
-                const normalizedSteps = (parsed.steps || []).map((s, i) => ({
-                    order: s.order || i + 1,
-                    action: s.action || "analyze",
-                    target: s.target || ".",
-                    rationale: s.rationale || "Review and analyze",
-                    completed: !!s.completed,
-                    notes: s.notes || undefined,
-                    agent: s.agent || undefined
-                }));
-                const normalizedTradeoffs = (parsed.tradeoffs || []).map(t => ({
-                    task: t.task || "",
-                    considerations: t.considerations || "",
-                    decision: t.decision || ""
-                }));
-                const normalizedConsequences = (parsed.consequences || []).map(c => ({
-                    failureMode: c.failureMode || "",
-                    consequence: c.consequence || "",
-                    harm: c.harm || "",
-                    mitigation: c.mitigation || ""
-                }));
-                const missingStepFields = normalizedSteps.filter(s => s.target === "." && s.rationale === "Review and analyze");
-                if (missingStepFields.length > 0) {
-                    console.warn(`[PlanEditor:AI] AI-generated plan has ${missingStepFields.length} step(s) using defaults`);
-                }
-                if (!parsed.expectedOutcome) {
-                    console.warn("[PlanEditor:AI] AI-generated plan missing expectedOutcome");
-                }
-                if (!parsed.verificationCriteria || parsed.verificationCriteria.length === 0) {
-                    console.warn("[PlanEditor:AI] AI-generated plan has no verificationCriteria");
-                }
-                if (normalizedTradeoffs.length > 0 && normalizedTradeoffs.every(t => !t.task && !t.considerations && !t.decision)) {
-                    console.warn("[PlanEditor:AI] AI-generated plan tradeoffs all empty");
-                }
-                if (normalizedConsequences.length > 0 && normalizedConsequences.every(c => !c.failureMode && !c.consequence && !c.harm && !c.mitigation)) {
-                    console.warn("[PlanEditor:AI] AI-generated plan consequences all empty");
-                }
+                    const updatedPlan = {
+                        ...parsed,
+                        steps: normalizedSteps,
+                        tradeoffs: normalizedTradeoffs.length > 0 ? normalizedTradeoffs : parsed.tradeoffs,
+                        consequences: normalizedConsequences.length > 0 ? normalizedConsequences : parsed.consequences,
+                        approved: !!plan?.approved
+                    };
 
-                const updatedPlan = {
-                    ...parsed,
-                    steps: normalizedSteps,
-                    tradeoffs: normalizedTradeoffs.length > 0 ? normalizedTradeoffs : parsed.tradeoffs,
-                    consequences: normalizedConsequences.length > 0 ? normalizedConsequences : parsed.consequences,
-                    approved: !!plan?.approved
-                };
+                    await savePlan(updatedPlan);
 
-                await savePlan(updatedPlan);
-
-                window.dispatchEvent(new CustomEvent('plan:modify-ended', {
-                    detail: {
-                        success: true,
-                        description: `Updated execution roadmap and design spec based on: "${currentInstructions}"`
-                    }
-                }));
-            } catch (err) {
-                console.error('Failed to parse AI modified plan:', err);
-                setInlineAiError('AI returned invalid plan JSON. Try a clearer rewrite request.');
-                setTimeout(() => setInlineAiError(null), 5000);
+                    window.dispatchEvent(new CustomEvent('plan:modify-ended', {
+                        detail: {
+                            success: true,
+                            description: `Updated execution roadmap and design spec based on: "${currentInstructions}"`
+                        }
+                    }));
+                } catch (err) {
+                    console.error('Failed to parse AI modified plan:', err);
+                    setInlineAiError('AI returned invalid plan JSON. Try a clearer rewrite request.');
+                    setTimeout(() => setInlineAiError(null), 5000);
+                    window.dispatchEvent(new CustomEvent('plan:modify-ended', {
+                        detail: {
+                            success: false,
+                            errorMessage: 'The model did not return valid plan JSON.'
+                        }
+                    }));
+                }
+            } else {
                 window.dispatchEvent(new CustomEvent('plan:modify-ended', {
                     detail: {
                         success: false,
-                        errorMessage: 'The model did not return valid plan JSON.'
+                        errorMessage: payload?.error || 'The model did not return valid plan JSON.'
                     }
                 }));
             }
         };
 
-        registerAiStreamHandlers((_, chunk) => {
-            if (!chunk.startsWith('Error:')) {
-                fullResponse += chunk;
+        registerAiStreamHandlers((_, payload) => {
+            if (payload && payload.chunk) {
+                // chunk received
             }
-        }, handleEnd);
+        }, handleEnd, 'ai:modify-plan');
 
-        window.ipcRenderer.send('ai:chat-start', {
+        window.ipcRenderer.send('ai:modify-plan-start', {
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt }
-            ]
+            ],
+            convId: '__modify_plan__'
         });
     };
 

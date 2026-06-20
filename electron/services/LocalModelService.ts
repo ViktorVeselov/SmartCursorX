@@ -238,13 +238,97 @@ export class LocalModelService {
         reject(new Error(`llama-server.exe not found. This is often caused by antivirus (Norton, Defender) falsely flagging it as "IDP.Generic" and quarantining it. Run "npm run fetch:llama" to re-download, or add ${app.getPath('userData')}\\bin to your antivirus exclusions.`));
         return;
       }
+
+      let ngl = 0;
+      let gpuTarget = 'auto';
+      let tensorSplit = null;
+      const customArgs: string[] = [];
+
+      try {
+        const secureStore = require('../secureStore').secureStore;
+        const dbService = require('../db').dbService;
+        const hw = secureStore.getHardwareSpec();
+        
+        // Fetch model GPU configuration from SQLite
+        const models = dbService.getCustomModels('local');
+        const dbModel = models.find((m: any) => m.model_name === modelName);
+        
+        const gpuMode = dbModel?.gpu_mode ?? 'auto';
+        gpuTarget = dbModel?.gpu_target ?? 'auto';
+        tensorSplit = dbModel?.tensor_split ?? null;
+
+        if (gpuMode === 'cpu') {
+          ngl = 0;
+          console.log('[LocalModelService] GPU offloading: disabled (CPU Only selected in settings).');
+        } else if (gpuMode === 'manual') {
+          ngl = dbModel?.gpu_layers ?? 0;
+          console.log(`[LocalModelService] GPU offloading: manual offload enabled (-ngl ${ngl} layers).`);
+        } else {
+          // 'auto' mode
+          if (hw && hw.gpuAvailable && hw.vramGB > 0) {
+            const stat = fs.statSync(modelPath);
+            const fileSizeGB = stat.size / BYTES_PER_GB;
+            const totalEstimatedGB = fileSizeGB * 1.15 + 0.75;
+            
+            if (hw.vramGB >= totalEstimatedGB) {
+              ngl = 999;
+              console.log(`[LocalModelService] GPU offloading: auto-offload enabled (-ngl 999). Estimated VRAM: ${totalEstimatedGB.toFixed(2)}GB, Available VRAM: ${hw.vramGB}GB`);
+            } else {
+              const modelLower = modelName.toLowerCase();
+              const matchedModel = TOP_CODING_MODELS.find((m: any) => 
+                modelLower.includes(m.id) || modelLower.includes(m.name.toLowerCase())
+              );
+              const totalLayers = matchedModel?.archParams?.numLayers || 32;
+              const availableForWeightsGB = hw.vramGB - 0.75;
+              if (availableForWeightsGB > 0) {
+                const fraction = availableForWeightsGB / (fileSizeGB * 1.15);
+                ngl = Math.max(1, Math.floor(fraction * totalLayers));
+                console.log(`[LocalModelService] GPU offloading: auto-offload partial enabled (-ngl ${ngl}/${totalLayers} layers). Estimated VRAM: ${totalEstimatedGB.toFixed(2)}GB, Available VRAM: ${hw.vramGB}GB`);
+              } else {
+                ngl = 0;
+                console.log(`[LocalModelService] GPU offloading: auto-offload disabled (insufficient VRAM for context overhead). Available VRAM: ${hw.vramGB}GB`);
+              }
+            }
+          } else {
+            console.log(`[LocalModelService] GPU offloading: auto-offload disabled (no compatible GPU detected).`);
+          }
+        }
+
+        // Apply cluster tensor split parameter if target is all and split is provided
+        if (gpuTarget === 'all' && tensorSplit) {
+          customArgs.push('-ts', tensorSplit);
+          console.log(`[LocalModelService] GPU Cluster Splitting: enabled (--tensor-split ${tensorSplit}).`);
+        }
+      } catch (err: any) {
+        console.warn('[LocalModelService] GPU offloading error:', err.message);
+        ngl = 0;
+      }
+
+      const env = { ...process.env };
+      try {
+        const secureStore = require('../secureStore').secureStore;
+        const hw = secureStore.getHardwareSpec();
+        if (gpuTarget !== 'auto' && gpuTarget !== 'all') {
+          if (hw?.isAMD) {
+            env.HIP_VISIBLE_DEVICES = gpuTarget;
+            console.log(`[LocalModelService] Target GPU: AMD GPU index ${gpuTarget} (HIP_VISIBLE_DEVICES).`);
+          } else {
+            env.CUDA_VISIBLE_DEVICES = gpuTarget;
+            console.log(`[LocalModelService] Target GPU: NVIDIA GPU index ${gpuTarget} (CUDA_VISIBLE_DEVICES).`);
+          }
+        }
+      } catch (e: any) {
+        console.warn('[LocalModelService] GPU target env setup failed:', e.message);
+      }
+
       const proc = spawn(llamaBin, [
         '-m', modelPath,
         '--host', '127.0.0.1',
         '--port', String(this.serverPort),
-        '-ngl', '0',
+        '-ngl', String(ngl),
         '-c', String(ctx),
-      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        ...customArgs
+      ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
       this.serverProcess = proc;
       this.runningModel = modelName;
       let started = false;

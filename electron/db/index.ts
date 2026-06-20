@@ -12,7 +12,7 @@ import {
     addFlow, getFlows, deleteFlow, updateFlow,
     addCustomProvider, getCustomProviders, deleteCustomProvider,
     addCustomModel, getCustomModels, toggleCustomModelThinking, deleteCustomModel,
-    updateCustomModelContextSize,
+    updateCustomModelContextSize, updateCustomModelGpuConfig,
     addFineTunedModel, getFineTunedModels, getFineTunedModel, deleteFineTunedModel
 } from './agents';
 import {
@@ -173,6 +173,9 @@ export class DatabaseService {
     }
     updateCustomModelContextSize(providerId: string, modelName: string, contextSize: number) {
         return updateCustomModelContextSize(this.db, providerId, modelName, contextSize);
+    }
+    updateCustomModelGpuConfig(providerId: string, modelName: string, gpuMode: string, gpuLayers: number | null, gpuTarget: string, tensorSplit: string | null) {
+        return updateCustomModelGpuConfig(this.db, providerId, modelName, gpuMode, gpuLayers, gpuTarget, tensorSplit);
     }
 
     // ── Fine-Tuned Models ──

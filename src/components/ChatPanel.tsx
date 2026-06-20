@@ -70,7 +70,7 @@ const getChatTokenDetails = (
                 try {
                     const metaStr = msg.content.substring(startIdx + '[CHAT_METADATA_START]'.length, endIdx);
                     const meta = JSON.parse(metaStr);
-                    
+
                     // Accumulate cost
                     const cost = typeof meta.cost === 'number' ? meta.cost : 0;
                     totalCost += cost;
@@ -149,10 +149,20 @@ function ChatFileDiffCard({ diff, onDismiss }: { diff: { filePath: string; origi
     const [collapsed, setCollapsed] = useState(true);
     const handleReject = async () => {
         try {
-            await window.ipcRenderer.invoke('write-file', diff.filePath, diff.originalContent);
+            await window.ipcRenderer.invoke('changes:discard-file', diff.filePath, 'accepted');
             onDismiss();
         } catch (e) {
             console.error('Failed to reject changes:', e);
+            onDismiss();
+        }
+    };
+    const handleAccept = async () => {
+        try {
+            await window.ipcRenderer.invoke('changes:stage-file', diff.filePath, 'accepted');
+            onDismiss();
+        } catch (e) {
+            console.error('Failed to accept changes:', e);
+            onDismiss();
         }
     };
     const ext = diff.filePath.split('.').pop()?.toLowerCase() || '';
@@ -166,7 +176,7 @@ function ChatFileDiffCard({ diff, onDismiss }: { diff: { filePath: string; origi
                 <span style={{ color: '#34d399', fontWeight: 500 }}>+{diff.addedLines}</span>
                 <span style={{ color: '#f43f5e', fontWeight: 500 }}>-{diff.removedLines}</span>
                 <span style={{ flex: 1 }} />
-                <button onClick={onDismiss} style={{ background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.3)', color: '#34d399', cursor: 'pointer', fontSize: 10, padding: '2px 8px', borderRadius: 4 }}>Accept</button>
+                <button onClick={handleAccept} style={{ background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.3)', color: '#34d399', cursor: 'pointer', fontSize: 10, padding: '2px 8px', borderRadius: 4 }}>Accept</button>
                 <button onClick={handleReject} style={{ background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.2)', color: '#f43f5e', cursor: 'pointer', fontSize: 10, padding: '2px 8px', borderRadius: 4 }}>Reject</button>
             </div>
             {!collapsed && (
@@ -192,7 +202,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
     const [showPlusMenu, setShowPlusMenu] = useState(false);
     const [showAgentSubmenu, setShowAgentSubmenu] = useState(false);
     const [showWorkflowSubmenu, setShowWorkflowSubmenu] = useState(false);
-    const [isPlanModeActive, setIsPlanModeActive] = useState(false);
+    const [chatMode, setChatMode] = useState<'write' | 'ask' | 'plan'>('write');
     const [dbAgents, setDbAgents] = useState<{ id: number; name: string; system_prompt: string }[]>([]);
     const [activeAgent, setActiveAgent] = useState<AppAgent | null>(null);
     const [activeWorkflow, setActiveWorkflow] = useState<AppFlow | null>(null);
@@ -207,35 +217,25 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
     const [showModelDropdown, setShowModelDropdown] = useState(false);
     const [inlineModelInput, setInlineModelInput] = useState('');
     const [customModels, setCustomModels] = useState<Record<string, unknown>[]>([]);
-    const [currentPlan, setCurrentPlan] = useState<Record<string, unknown>[] | null>(null);
     const [contextUsage, setContextUsage] = useState<{ estimatedInput: number; contextLength: number } | null>(null);
     const [chatFileDiffs, setChatFileDiffs] = useState<{ filePath: string; originalContent: string; proposedContent: string; addedLines: number; removedLines: number }[]>([]);
-    const [isAwaitingApproval, setIsAwaitingApproval] = useState(false);
+    const lastProgressPhaseRef = useRef<string>('');
     const [panelWidth, setPanelWidth] = useState(() => { const s = localStorage.getItem('chatPanelWidth'); return s ? parseInt(s, 10) : 400; });
     const [_flows, _setFlows] = useState<{ id: number; name: string; description: string; steps: unknown; agent_id: number }[]>([]);
 
-    const activeChunkListenerRef = useRef<((_: unknown, chunk: string) => void) | null>(null);
-    const activeEndListenerRef = useRef<((...args: unknown[]) => void) | null>(null);
-    const streamActiveRef = useRef(false);
-    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const lastMessageCountRef = useRef(messages.length);
     const resizingRef = useRef(false);
     const activeConversationIdRef = useRef<string | null>(null);
 
-    const cleanupActiveListeners = () => {
-        streamActiveRef.current = false;
-        if (activeChunkListenerRef.current) {
-            window.ipcRenderer.off('ai:chat-chunk', activeChunkListenerRef.current);
-            window.ipcRenderer.off('ai:plan-chunk', activeChunkListenerRef.current);
-            activeChunkListenerRef.current = null;
-        }
-        if (activeEndListenerRef.current) {
-            window.ipcRenderer.off('ai:chat-end', activeEndListenerRef.current);
-            window.ipcRenderer.off('ai:plan-end', activeEndListenerRef.current);
-            activeEndListenerRef.current = null;
+    const scrollToBottom = (force = false) => {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+        const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+        if (force || isNearBottom) {
+            container.scrollTop = container.scrollHeight;
         }
     };
-
-    const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     const startResize = () => { resizingRef.current = true; document.body.style.cursor = 'ew-resize'; document.body.style.userSelect = 'none'; };
     const canModelThink = (modelName: string) => modelName.startsWith('o1-') || modelName.startsWith('o3-') || modelName.includes('deepseek-r1') || modelName.includes('reasoner') || modelName.includes('gemini') || modelName.includes('claude');
     const currentModelCanThink = activeModel ? canModelThink(activeModel) || customModels.some((cm: Record<string, unknown>) => cm.model_name === activeModel && cm.has_thinking === 1) : false;
@@ -267,8 +267,6 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
         }
     };
 
-    useEffect(() => () => cleanupActiveListeners(), []);
-
     const { currentActivitiesRef } = useActivityTracking(setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, setCurrentlyReadingFiles);
     const {
         activeConversationId, setActiveConversationId, conversations, showHistoryDrawer,
@@ -278,25 +276,29 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
         handleDeleteConversation, handleStartRename, handleSaveRename,
         handleNewChat, handleConversationContextMenu, handleConversationMenuAction, handleForkConversation,
         setShowHistoryDrawer, setEditingConvId, setEditingTitle, setConversationContextMenu,
-    } = useConversations(setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, setIsLoading, setActiveProvider, setActiveModel, cleanupActiveListeners, streamActiveRef, rootPath);
+    } = useConversations(setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, setIsLoading, setActiveProvider, setActiveModel, rootPath);
     const { planStartTimeRef, timerRef } = usePlanSync(activeConversationIdRef, setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, setIsPlanModifying, setStreamElapsed, setCurrentlyReadingFiles, currentActivitiesRef as unknown as React.MutableRefObject<Record<string, unknown>[]>, refreshActiveMessages);
     useAgentHandler(activeConversationId, setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, loadConversations);
 
     const { handleSend, handleAbort, messageQueue, lastSentMessageRef } = useChatSending({
         messages, setMessages, isLoading, setIsLoading, input, setInput, attachedFile, setAttachedFile,
-        isPlanModeActive, activeModel, activeProvider, effortLevel, executionMode,
+        chatMode, activeModel, activeProvider, effortLevel, executionMode,
         activeConversationId, setActiveConversationId, conversations: conversations as unknown as Record<string, unknown>[], loadConversations, refreshActiveMessages,
         dbAgents, flows: _flows, activeAgent: activeAgent as unknown as Record<string, unknown>, activeWorkflow: activeWorkflow as unknown as Record<string, unknown>,
         planStartTimeRef, timerRef, currentActivitiesRef,
         setApiError: setApiError as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown> | null>>, setCurrentlyReadingFiles, setStreamElapsed,
         setContextUsage, setFileDiffs: setChatFileDiffs,
-        cleanupActiveListeners, streamActiveRef, activeChunkListenerRef, activeEndListenerRef, onOpenPlan,
+        onOpenPlan,
         rootPath,
     });
 
     useEffect(() => { activeConversationIdRef.current = activeConversationId; }, [activeConversationId]);
     useEffect(() => { if (onActiveTaskIdChange) onActiveTaskIdChange(activeConversationId ? getNumericTaskId(activeConversationId) : null); }, [activeConversationId, onActiveTaskIdChange]);
-    useEffect(() => { scrollToBottom(); }, [messages, messageQueue]);
+    useEffect(() => {
+        const isNewMessage = messages.length > lastMessageCountRef.current;
+        lastMessageCountRef.current = messages.length;
+        scrollToBottom(isNewMessage);
+    }, [messages, messageQueue]);
     useEffect(() => { localStorage.setItem('chatPanelWidth', panelWidth.toString()); }, [panelWidth]);
     useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, [timerRef]);
 
@@ -350,6 +352,43 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
         };
         queryModels();
     }, [settingsSavedTrigger]);
+
+    useEffect(() => {
+        const handleChangesUpdated = (_event: any, data: { relativePath: string; action: 'stage' | 'discard' }) => {
+            if (data && data.relativePath) {
+                setChatFileDiffs(prev => prev.filter(diff => {
+                    const diffNorm = diff.filePath.replace(/\\/g, '/').toLowerCase();
+                    const relNorm = data.relativePath.replace(/\\/g, '/').toLowerCase();
+                    return diffNorm !== relNorm;
+                }));
+            }
+        };
+        const cleanup = window.ipcRenderer.on('changes:updated', handleChangesUpdated) as unknown as () => void;
+        return () => cleanup();
+    }, []);
+
+    useEffect(() => {
+        const handleExecutionProgress = (_event: any, data: { taskId: number; phase: string; message: string; attempt?: number; totalAttempts?: number }) => {
+            const emoji: Record<string, string> = {
+                investigating: '🔍',
+                generating: '✏️',
+                applying: '📦',
+                verifying: '🧪',
+                completed: '✅',
+                failed: '❌',
+                stopped: '⏹',
+            };
+            const prefix = emoji[data.phase] || '•';
+            const attemptStr = data.attempt && data.totalAttempts ? ` (${data.attempt}/${data.totalAttempts})` : '';
+            const content = `${prefix} ${data.message}${attemptStr}`;
+            if (content !== lastProgressPhaseRef.current) {
+                lastProgressPhaseRef.current = content;
+                setMessages(prev => [...prev, { role: 'system', content }]);
+            }
+        };
+        const cleanup2 = window.ipcRenderer.on('execution:progress', handleExecutionProgress) as unknown as () => void;
+        return () => cleanup2();
+    }, []);
 
     useEffect(() => {
         if (showSettings) {
@@ -469,7 +508,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                     {showSettings && (
                         <ChatSettingsPanel tempApiKey={tempApiKey} setTempApiKey={setTempApiKey}
                             tempGithubToken={tempGithubToken} setTempGithubToken={setTempGithubToken}
-                            credentialStatuses={credentialStatuses}                             fetchCredentialStatuses={async () => {
+                            credentialStatuses={credentialStatuses} fetchCredentialStatuses={async () => {
                                 try { const keys = await window.ipcRenderer.invoke('secure:list-keys'); const m: Record<string, { hasKey: boolean; encryptionAvailable: boolean }> = {}; for (const k of keys as Record<string, unknown>[]) m[k.providerId as string] = k as { hasKey: boolean; encryptionAvailable: boolean }; setCredentialStatuses(m); }
                                 catch (e) { console.error('[ChatPanel] Failed to fetch credential statuses:', e); }
                             }}
@@ -478,46 +517,25 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                     <ApiErrorBanner error={apiError as unknown as ApiErrorInfo | null} onDismiss={() => setApiError(null)}
                         onRetry={() => { const lastMsg = lastSentMessageRef.current; setApiError(null); if (lastMsg) handleSend({ content: lastMsg.content, attachedFile: lastMsg.attachedFile as { name: string; path: string; content: string } | null, isPlanMode: lastMsg.isPlanMode || false, id: Date.now() }); }}
                     />
-                    <MessageList ref={messagesEndRef} messages={messages as unknown as Record<string, unknown>[]} messageQueue={messageQueue}
+                    <MessageList ref={scrollContainerRef} messages={messages as unknown as Record<string, unknown>[]} messageQueue={messageQueue}
                         streamElapsed={streamElapsed} currentlyReadingFiles={currentlyReadingFiles}
                         onApplyCode={onApplyCode} onRollback={handleRollbackConversation}
                         activeConversationId={activeConversationId} onOpenPlan={onOpenPlan}
                     />
-                    {currentPlan && currentPlan.length > 0 && (
-                        <div style={{ padding: '12px 16px', background: 'var(--bg-tertiary)', borderBottom: '1px solid var(--border-color)' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                <span style={{ fontWeight: 600, fontSize: 13 }}>🧠 Execution Plan</span>
-                                {isAwaitingApproval && (
-                                    <button onClick={async () => {
-                                        setIsAwaitingApproval(false);
-                                        setMessages(prev => [...prev, { role: 'system', content: '✅ Plan approved! Executing...' }]);
-                                        for (const step of currentPlan as Record<string, unknown>[]) {
-                                            setMessages(prev => [...prev, { role: 'system', content: `▶ ${(step as Record<string, unknown>).title as string}` }]);
-                                            await new Promise(r => setTimeout(r, 500));
-                                        }
-                                        setMessages(prev => [...prev, { role: 'system', content: '🎉 Plan completed!' }]);
-                                        setCurrentPlan(null);
-                                    }}
-                                        style={{ padding: '4px 8px', background: 'var(--accent-primary)', border: 'none', borderRadius: 4, color: 'white', fontSize: 11, cursor: 'pointer' }}
-                                    >Approve Plan</button>
-                                )}
-                            </div>
-                        </div>
-                    )}
                     {pendingReview && (
                         <ChangeReviewBanner
                             taskId={pendingReview.taskId}
                             fileCount={pendingReview.fileCount}
                             addedLines={pendingReview.addedLines}
                             removedLines={pendingReview.removedLines}
-                            onOpenReview={onOpenReview || (() => {})}
-                            onAcceptAll={onAcceptAllChanges || (() => {})}
-                            onRejectAll={onRejectAllChanges || (() => {})}
+                            onOpenReview={onOpenReview || (() => { })}
+                            onAcceptAll={onAcceptAllChanges || (() => { })}
+                            onRejectAll={onRejectAllChanges || (() => { })}
                             isApplying={pendingReviewApplying || false}
                         />
                     )}
                     <ActiveBadges attachedFile={attachedFile} onRemoveFile={() => setAttachedFile(null)}
-                        isPlanModeActive={isPlanModeActive} onTogglePlanMode={() => setIsPlanModeActive(false)}
+                        chatMode={chatMode} onChatModeChange={setChatMode}
                         activeAgent={activeAgent} onRemoveAgent={() => setActiveAgent(null)}
                         activeWorkflow={activeWorkflow} onRemoveWorkflow={() => setActiveWorkflow(null)}
                     />
@@ -555,7 +573,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                         </div>
                     )}
                     <ChatInputArea input={input} setInput={setInput}
-                        isLoading={isLoading} isPlanModifying={isPlanModifying} isPlanModeActive={isPlanModeActive}
+                        isLoading={isLoading} isPlanModifying={isPlanModifying} chatMode={chatMode}
                         attachedFile={attachedFile} activeModel={activeModel} activeProvider={activeProvider}
                         customModels={customModels} availableModels={availableModels}
                         showModelDropdown={showModelDropdown} setShowModelDropdown={setShowModelDropdown}
@@ -568,7 +586,7 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                         showAgentSubmenu={showAgentSubmenu} setShowAgentSubmenu={setShowAgentSubmenu}
                         showWorkflowSubmenu={showWorkflowSubmenu} setShowWorkflowSubmenu={setShowWorkflowSubmenu}
                         setActiveAgent={setActiveAgent as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown> | null>>} setActiveWorkflow={setActiveWorkflow as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown> | null>>}
-                        setIsPlanModeActive={setIsPlanModeActive}
+                        onChatModeChange={setChatMode}
                         handleFileUpload={handleFileUpload} handleSend={handleSend as unknown as (queuedMsg?: Record<string, unknown>) => void} handleAbort={handleAbort}
                         currentModelCanThink={currentModelCanThink}
                         tokenDetails={getChatTokenDetails(messages, input, attachedFile)}

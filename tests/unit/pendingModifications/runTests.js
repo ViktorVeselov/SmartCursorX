@@ -1,7 +1,58 @@
 // electron/services/PendingModificationsService.ts
 import * as fs from "fs";
-import * as path from "path";
+import * as path2 from "path";
 import console2 from "console";
+
+// electron/services/SessionChangesTrackerService.ts
+import * as path from "path";
+var SessionChangesTrackerService = class {
+  static accepted = /* @__PURE__ */ new Map();
+  static normalizeKey(absPath) {
+    let resolved = path.resolve(absPath);
+    if (process.platform === "win32") {
+      resolved = resolved.toLowerCase();
+    }
+    return resolved;
+  }
+  static trackAccepted(absolutePath, originalContent, status = "pending") {
+    const key = this.normalizeKey(absolutePath);
+    const existing = this.accepted.get(key);
+    if (!existing) {
+      this.accepted.set(key, {
+        originalPath: absolutePath,
+        content: originalContent ?? "",
+        status
+      });
+    } else if (status === "pending" && existing.status === "accepted") {
+      existing.content = originalContent ?? "";
+      existing.status = "pending";
+    }
+  }
+  static getOriginalContent(absolutePath) {
+    return this.accepted.get(this.normalizeKey(absolutePath))?.content;
+  }
+  static getStatus(absolutePath) {
+    return this.accepted.get(this.normalizeKey(absolutePath))?.status;
+  }
+  static accept(absolutePath) {
+    const key = this.normalizeKey(absolutePath);
+    const entry = this.accepted.get(key);
+    if (entry) {
+      entry.status = "accepted";
+    }
+  }
+  static getAccepted() {
+    return Array.from(this.accepted.values()).map((v) => v.originalPath);
+  }
+  static untrack(absolutePath) {
+    this.accepted.delete(this.normalizeKey(absolutePath));
+  }
+  static clear() {
+    this.accepted.clear();
+  }
+};
+
+// electron/services/PendingModificationsService.ts
 var PendingModificationsService = class {
   static pending = /* @__PURE__ */ new Map();
   static pendingResolvers = /* @__PURE__ */ new Map();
@@ -17,14 +68,14 @@ var PendingModificationsService = class {
   static hasPending() {
     return this.pending.size > 0;
   }
-  static getTaskIdForResolver(resolve) {
+  static getTaskIdForResolver(resolve2) {
     for (const [taskId, resolver] of this.pendingResolvers) {
-      if (resolver === resolve) return taskId;
+      if (resolver === resolve2) return taskId;
     }
     return null;
   }
-  static setResolver(taskId, resolve) {
-    this.pendingResolvers.set(taskId, resolve);
+  static setResolver(taskId, resolve2) {
+    this.pendingResolvers.set(taskId, resolve2);
   }
   static removePending(taskId) {
     this.pending.delete(taskId);
@@ -32,11 +83,12 @@ var PendingModificationsService = class {
   }
   static applySingleFile(modification) {
     try {
-      const parentDir = path.dirname(modification.absolutePath);
+      const parentDir = path2.dirname(modification.absolutePath);
       if (!fs.existsSync(parentDir)) {
         fs.mkdirSync(parentDir, { recursive: true });
       }
       fs.writeFileSync(modification.absolutePath, modification.proposedContent, "utf-8");
+      SessionChangesTrackerService.trackAccepted(modification.absolutePath, modification.originalContent, "accepted");
       console2.log(`[PendingModificationsService] Applied single file: ${modification.relativePath}`);
       return true;
     } catch (err) {

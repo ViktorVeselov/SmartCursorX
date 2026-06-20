@@ -169,6 +169,30 @@ export function createTables(db: any) {
         if (!e?.message?.includes('duplicate column')) throw e;
     }
 
+    try {
+        db.prepare('ALTER TABLE custom_models ADD COLUMN gpu_mode TEXT DEFAULT "auto"').run();
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
+    }
+
+    try {
+        db.prepare('ALTER TABLE custom_models ADD COLUMN gpu_layers INTEGER DEFAULT NULL').run();
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
+    }
+
+    try {
+        db.prepare('ALTER TABLE custom_models ADD COLUMN gpu_target TEXT DEFAULT "auto"').run();
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
+    }
+
+    try {
+        db.prepare('ALTER TABLE custom_models ADD COLUMN tensor_split TEXT DEFAULT NULL').run();
+    } catch (e: any) {
+        if (!e?.message?.includes('duplicate column')) throw e;
+    }
+
     db.prepare(`
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

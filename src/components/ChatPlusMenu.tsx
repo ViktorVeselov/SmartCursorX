@@ -8,8 +8,6 @@ export interface ChatPlusMenuProps {
     onSetShowAgentSubmenu: (v: boolean) => void;
     showWorkflowSubmenu: boolean;
     onSetShowWorkflowSubmenu: (v: boolean) => void;
-    isPlanModeActive: boolean;
-    onSetIsPlanModeActive: (v: boolean) => void;
     onSetActiveAgent: (agent: { id: number; name: string; system_prompt: string }) => void;
     onSetActiveWorkflow: (flow: { id: number; name: string; description: string; steps: unknown; agent_id: number }) => void;
     onClose: () => void;
@@ -26,8 +24,6 @@ export const ChatPlusMenu = ({
     onSetShowAgentSubmenu,
     showWorkflowSubmenu,
     onSetShowWorkflowSubmenu,
-    isPlanModeActive,
-    onSetIsPlanModeActive,
     onSetActiveAgent,
     onSetActiveWorkflow,
     onClose,
@@ -240,29 +236,6 @@ export const ChatPlusMenu = ({
                                 )}
                             </div>
                         )}
-                    </div>
-
-                    <div
-                        onClick={() => {
-                            onSetIsPlanModeActive(!isPlanModeActive);
-                            onClose();
-                        }}
-                        style={{
-                            padding: '6px 12px',
-                            fontSize: 'var(--font-xs)',
-                            cursor: 'pointer',
-                            color: isPlanModeActive ? 'var(--accent-primary)' : 'var(--text-primary)',
-                            fontWeight: isPlanModeActive ? 600 : 500,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            borderRadius: 'var(--radius-sm)'
-                        }}
-                        onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
-                        onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
-                    >
-                        <span className={`codicon ${isPlanModeActive ? 'codicon-check' : 'codicon-checklist'}`} />
-                        Plan Mode {isPlanModeActive ? '(Active)' : ''}
                     </div>
                 </div>
             )}

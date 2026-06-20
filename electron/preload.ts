@@ -28,7 +28,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'chat:delete-conv', 'chat:update-title', 'chat:truncate-from-message', 'chat:fork-conv', 'plan:get', 'plan:save', 'secure:list-keys', 'test:secure-run',
   'db:get-rules', 'db:add-rule', 'db:update-rule', 'db:delete-rule', 'db:toggle-rule',
   'execution:start', 'execution:get-pending', 'execution:apply-pending', 'execution:reject-pending',
-  'execution:apply-single', 'execution:reject-single', 'execution:has-pending', 'execution:dlq-respond',
+  'execution:apply-single', 'execution:reject-single', 'execution:has-pending', 'execution:dlq-respond', 'execution:stop',
   'finetune:detect-hardware', 'finetune:refresh-hardware', 'finetune:get-models', 'finetune:get-state', 'finetune:get-recommendation',
   'finetune:prepare-dataset', 'finetune:export-dataset', 'finetune:start', 'finetune:stop',
   'finetune:reset', 'finetune:get-adapter-path', 'finetune:get-builtin-dataset',
@@ -36,23 +36,32 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'shell:exec',
   'local:list', 'local:search-hf', 'local:hf-files', 'local:download', 'local:delete',
   'local:start-server', 'local:stop-server', 'local:redownload-llama', 'local:server-status',
-  'local:get-model-settings', 'local:set-context-size'
+  'local:get-model-settings', 'local:set-context-size',
+  'changes:is-git', 'changes:get-list', 'changes:get-file-content', 'changes:stage-file', 'changes:discard-file'
 ]);
 
 const ALLOWED_SEND_CHANNELS = new Set([
   'ai:chat-start',
   'ai:chat-abort',
   'ai:plan-start',
-  'renderer:log'
+  'ai:detailed-plan-start',
+  'ai:modify-plan-start',
+  'renderer:log',
+  'tool:approval-response'
 ]);
 
 const ALLOWED_ON_CHANNELS = new Set([
   'terminal-incoming', 'terminal-exit', 'git-clone-progress', 'ai:chat-chunk',
   'ai:chat-end', 'ai:plan-chunk', 'ai:plan-end',
+  'ai:detailed-plan-chunk', 'ai:detailed-plan-end',
+  'ai:modify-plan-chunk', 'ai:modify-plan-end',
   'openclaw:agent-stream', 'openclaw:agent-complete', 'main-process-message',
-  'execution:pending-modifications', 'execution:dlq-notify',
+  'execution:pending-modifications', 'execution:dlq-notify', 'execution:progress',
   'finetune:progress',
-  'local:download-progress'
+  'local:download-progress',
+  'tool:approval-request',
+  'workspace:files-changed',
+  'changes:updated'
 ]);
 
 // Map to track active subscription wrappers to ensure ipcRenderer.off can correctly unregister them

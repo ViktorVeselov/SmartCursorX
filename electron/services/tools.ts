@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { PathGuard } from './PathGuard';
-import { searchFiles, searchFileNames } from '../../native';
+import { SessionChangesTrackerService } from './SessionChangesTrackerService';
+
+import { native } from '../native-loader';
 
 function resolvePath(filePath: string, workspacePath: string): string | null {
   const root = path.resolve(workspacePath);
@@ -21,18 +23,26 @@ export interface SearchMatch {
   matchText: string;
 }
 
+function globToRegexPattern(pattern: string): string {
+  const normalized = pattern.replace(/\\/g, '/');
+  let rxStr = normalized.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  rxStr = rxStr
+    .replace(/\*\*/g, '___DOUBLE_STAR___')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replace(/___DOUBLE_STAR___\//g, '(?:.*/)?')
+    .replace(/___DOUBLE_STAR___/g, '.*');
+  return `^${rxStr}$`;
+}
+
 export async function executeListFiles(workspacePath: string, pattern: string = '**/*'): Promise<string[]> {
   try {
     if (!fs.existsSync(workspacePath)) {
       return [`Error: Workspace path does not exist: ${workspacePath}`];
     }
-    // Convert glob pattern to regex for search_file_names
-    // For simple glob patterns like **/*.ts, we can use regex
-    const regexPattern = pattern
-      .replace(/\./g, '\\.')
-      .replace(/\*\*/g, '.*')
-      .replace(/\*/g, '[^/]*');
-    const results = await searchFileNames(regexPattern, workspacePath, false); // respectGitignore = false
+    const regexPattern = globToRegexPattern(pattern);
+    if (!native) return [`Error: Native module not loaded`]
+    const results = await native.searchFileNames(regexPattern, workspacePath, false); // respectGitignore = false
     return results;
   } catch (err: any) {
     return [`Error listing files: ${err.message}`];
@@ -53,7 +63,8 @@ export async function executeGrep(workspacePath: string, pattern: string, includ
       includeExtensions,
       respectGitignore: false,
     };
-    const results = await searchFiles(options);
+    if (!native) return [{ filePath: '', lineNumber: 0, column: 0, lineContent: `Error: Native module not loaded`, matchText: '' }]
+    const results = await native.searchFiles(options);
     return results;
   } catch (err: any) {
     return [{ filePath: '', lineNumber: 0, column: 0, lineContent: `Error searching: ${err.message}`, matchText: '' }];
@@ -78,8 +89,10 @@ export function executeWriteFile(filePath: string, content: string, workspacePat
   if (!absPath) return `Error: Path out of bounds: ${filePath}`;
   try {
     const dir = path.dirname(absPath);
+    const original = fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(absPath, content, 'utf-8');
+    SessionChangesTrackerService.trackAccepted(absPath, original);
     const lines = content.split('\n').length;
     return `Successfully wrote ${filePath} (+${lines}/-0, ${content.length}b)`;
   } catch (err: any) {
@@ -98,6 +111,7 @@ export function executeEditFile(filePath: string, find: string, replace: string,
     }
     const newContent = content.replace(find, replace);
     fs.writeFileSync(absPath, newContent, 'utf-8');
+    SessionChangesTrackerService.trackAccepted(absPath, content);
     const oldLines = content.split('\n').length;
     const newLines = newContent.split('\n').length;
     return `Successfully edited ${filePath} (+${newLines > oldLines ? newLines - oldLines : 0}/-${oldLines > newLines ? oldLines - newLines : 0})`;

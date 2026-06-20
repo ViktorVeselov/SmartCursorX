@@ -49,6 +49,11 @@ export function SettingsLocalModels() {
   const [hfToken, setHfToken] = useState('');
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
   const [modelContextSizes, setModelContextSizes] = useState<Record<string, number>>({});
+  const [modelGpuModes, setModelGpuModes] = useState<Record<string, string>>({});
+  const [modelGpuLayers, setModelGpuLayers] = useState<Record<string, number>>({});
+  const [modelGpuTargets, setModelGpuTargets] = useState<Record<string, string>>({});
+  const [modelTensorSplits, setModelTensorSplits] = useState<Record<string, string>>({});
+  const [hardware, setHardware] = useState<any>(null);
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const loadModels = useCallback(async () => {
@@ -58,21 +63,39 @@ export function SettingsLocalModels() {
 
   const loadModelSettings = useCallback(async (modelNames: string[]) => {
     const sizes: Record<string, number> = {};
+    const modes: Record<string, string> = {};
+    const layers: Record<string, number> = {};
+    const targets: Record<string, string> = {};
+    const splits: Record<string, string> = {};
+    
     for (const name of modelNames) {
       try {
         const settings = await getIpc().invoke('local:get-model-settings', 'local', name);
-        if (settings && settings.context_size) {
-          sizes[name] = settings.context_size;
+        if (settings) {
+          sizes[name] = settings.context_size || 2048;
+          modes[name] = settings.gpu_mode || 'auto';
+          layers[name] = settings.gpu_layers || 32;
+          targets[name] = settings.gpu_target || 'auto';
+          splits[name] = settings.tensor_split || '';
         }
       } catch (e) {
         console.error('Failed to load settings for', name, e);
       }
     }
     setModelContextSizes(prev => ({ ...prev, ...sizes }));
+    setModelGpuModes(prev => ({ ...prev, ...modes }));
+    setModelGpuLayers(prev => ({ ...prev, ...layers }));
+    setModelGpuTargets(prev => ({ ...prev, ...targets }));
+    setModelTensorSplits(prev => ({ ...prev, ...splits }));
   }, []);
 
   useEffect(() => {
     loadModels();
+    
+    getIpc().invoke('finetune:detect-hardware').then(hw => {
+      setHardware(hw);
+    }).catch(e => console.error('Failed to detect hardware:', e));
+
     const checkStatus = async () => {
       try {
         const status = await getIpc().invoke('local:server-status');
@@ -114,6 +137,63 @@ export function SettingsLocalModels() {
     }
     debounceTimers.current[modelName] = setTimeout(() => {
       saveContextSize(modelName, ctx);
+    }, 500);
+  };
+
+  const saveGpuConfig = useCallback(async (modelName: string, gpuMode: string, gpuLayers: number | null, gpuTarget: string, tensorSplit: string | null) => {
+    try {
+      await getIpc().invoke('local:set-gpu-config', modelName, { gpuMode, gpuLayers, gpuTarget, tensorSplit });
+    } catch (e: any) {
+      console.error('Failed to save GPU config:', e);
+    }
+  }, []);
+
+  const handleGpuModeChange = (modelName: string, mode: string) => {
+    setModelGpuModes(prev => ({ ...prev, [modelName]: mode }));
+    saveGpuConfig(
+      modelName,
+      mode,
+      modelGpuLayers[modelName] ?? null,
+      modelGpuTargets[modelName] ?? 'auto',
+      modelTensorSplits[modelName] ?? null
+    );
+  };
+
+  const handleGpuLayersChange = (modelName: string, layersVal: number) => {
+    setModelGpuLayers(prev => ({ ...prev, [modelName]: layersVal }));
+    saveGpuConfig(
+      modelName,
+      modelGpuModes[modelName] ?? 'auto',
+      layersVal,
+      modelGpuTargets[modelName] ?? 'auto',
+      modelTensorSplits[modelName] ?? null
+    );
+  };
+
+  const handleGpuTargetChange = (modelName: string, target: string) => {
+    setModelGpuTargets(prev => ({ ...prev, [modelName]: target }));
+    saveGpuConfig(
+      modelName,
+      modelGpuModes[modelName] ?? 'auto',
+      modelGpuLayers[modelName] ?? null,
+      target,
+      modelTensorSplits[modelName] ?? null
+    );
+  };
+
+  const handleTensorSplitChange = (modelName: string, split: string) => {
+    setModelTensorSplits(prev => ({ ...prev, [modelName]: split }));
+    if (debounceTimers.current[modelName + '_split']) {
+      clearTimeout(debounceTimers.current[modelName + '_split']);
+    }
+    debounceTimers.current[modelName + '_split'] = setTimeout(() => {
+      saveGpuConfig(
+        modelName,
+        modelGpuModes[modelName] ?? 'auto',
+        modelGpuLayers[modelName] ?? null,
+        modelGpuTargets[modelName] ?? 'auto',
+        split || null
+      );
     }, 500);
   };
 
@@ -273,44 +353,130 @@ export function SettingsLocalModels() {
                 </div>
                 {expandedModel === m.name && (
                   <div style={{
-                    marginTop: 4, padding: '10px 12px 10px 36px',
+                    marginTop: 4, padding: '12px 14px 12px 36px',
                     background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)',
                     border: '1px solid var(--border-subtle)',
+                    display: 'flex', flexDirection: 'column', gap: 14
                   }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Context Size</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                      <input
-                        type="range"
-                        min={CTX_MIN}
-                        max={CTX_MAX}
-                        step={CTX_STEP}
-                        value={modelContextSizes[m.name] ?? CTX_MIN}
-                        onChange={e => handleContextSizeChange(m.name, parseInt(e.target.value, 10))}
-                        style={{ flex: 1, accentColor: 'var(--accent-primary)' }}
-                      />
-                      <input
-                        type="number"
-                        min={CTX_MIN}
-                        max={CTX_MAX}
-                        step={CTX_STEP}
-                        value={modelContextSizes[m.name] ?? CTX_MIN}
-                        onChange={e => {
-                          const v = Math.min(CTX_MAX, Math.max(CTX_MIN, parseInt(e.target.value, 10) || CTX_MIN));
-                          handleContextSizeChange(m.name, v);
-                        }}
-                        style={{
-                          width: 70, padding: '3px 6px', fontSize: 11,
-                          background: 'var(--bg-input)', border: '1px solid var(--border-subtle)',
-                          color: 'var(--text-primary)', borderRadius: '3px', outline: 'none', textAlign: 'center',
-                        }}
-                      />
+                    {/* Context Size Section */}
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Context Size</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <input
+                          type="range"
+                          min={CTX_MIN}
+                          max={CTX_MAX}
+                          step={CTX_STEP}
+                          value={modelContextSizes[m.name] ?? CTX_MIN}
+                          onChange={e => handleContextSizeChange(m.name, parseInt(e.target.value, 10))}
+                          style={{ flex: 1, accentColor: 'var(--accent-primary)' }}
+                        />
+                        <input
+                          type="number"
+                          min={CTX_MIN}
+                          max={CTX_MAX}
+                          step={CTX_STEP}
+                          value={modelContextSizes[m.name] ?? CTX_MIN}
+                          onChange={e => {
+                            const v = Math.min(CTX_MAX, Math.max(CTX_MIN, parseInt(e.target.value, 10) || CTX_MIN));
+                            handleContextSizeChange(m.name, v);
+                          }}
+                          style={{
+                            width: 70, padding: '3px 6px', fontSize: 11,
+                            background: 'var(--bg-input)', border: '1px solid var(--border-subtle)',
+                            color: 'var(--text-primary)', borderRadius: '3px', outline: 'none', textAlign: 'center',
+                          }}
+                        />
+                      </div>
+                      <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 4 }}>
+                        Range: {CTX_MIN} – {CTX_MAX} | Step: {CTX_STEP}
+                      </div>
                     </div>
-                    <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 6 }}>
-                      Range: {CTX_MIN} – {CTX_MAX} | Step: {CTX_STEP}
-                      {serverRunning && serverModel === m.name ? (
-                        <span style={{ marginLeft: 8, color: '#eab308', fontWeight: 500 }}>● Live — changing restarts server</span>
-                      ) : null}
+
+                    {/* GPU Configurations Section */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+                      {/* GPU Mode selection */}
+                      <div style={{ flex: 1, minWidth: 160 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>GPU Offload Mode</div>
+                        <select
+                          value={modelGpuModes[m.name] ?? 'auto'}
+                          onChange={e => handleGpuModeChange(m.name, e.target.value)}
+                          style={{ width: '100%', padding: '5px 8px', fontSize: 11, background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', borderRadius: '3px', outline: 'none' }}
+                        >
+                          <option value="auto">Auto-detect (Recommended)</option>
+                          <option value="cpu">CPU Only (No GPU)</option>
+                          <option value="manual">Manual Layer Offload</option>
+                        </select>
+                      </div>
+
+                      {/* Manual Layer input (only if manual offload selected) */}
+                      {(modelGpuModes[m.name] === 'manual') && (
+                        <div style={{ width: 100 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>GPU Layers</div>
+                          <input
+                            type="number"
+                            min={0}
+                            max={128}
+                            value={modelGpuLayers[m.name] ?? 32}
+                            onChange={e => handleGpuLayersChange(m.name, Math.max(0, parseInt(e.target.value, 10) || 0))}
+                            style={{ width: '100%', padding: '4px 6px', fontSize: 11, background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', borderRadius: '3px', outline: 'none', textAlign: 'center' }}
+                          />
+                        </div>
+                      )}
+
+                      {/* GPU selection dropdown */}
+                      <div style={{ flex: 1.5, minWidth: 180 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>Target GPU</div>
+                        <select
+                          value={modelGpuTargets[m.name] ?? 'auto'}
+                          onChange={e => handleGpuTargetChange(m.name, e.target.value)}
+                          style={{ width: '100%', padding: '5px 8px', fontSize: 11, background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', borderRadius: '3px', outline: 'none' }}
+                        >
+                          <option value="auto">Auto (Choose best GPU)</option>
+                          {(() => {
+                            const list = [];
+                            if (hardware && hardware.gpuAvailable) {
+                              const numGPUs = hardware.numGPUs || 1;
+                              const isAMD = hardware.isAMD || false;
+                              const prefix = isAMD ? 'AMD GPU' : 'NVIDIA GPU';
+                              const name = hardware.gpuName || 'GPU';
+                              
+                              if (numGPUs > 1) {
+                                for (let i = 0; i < numGPUs; i++) {
+                                  list.push(<option key={i} value={String(i)}>{`${prefix} ${i}: ${name}`}</option>);
+                                }
+                                list.push(<option key="all" value="all">Multi-GPU / Split (Cluster)</option>);
+                              } else {
+                                list.push(<option key="0" value="0">{`GPU 0: ${name}`}</option>);
+                              }
+                            } else {
+                              list.push(<option key="0" value="0" disabled>No dedicated GPU detected</option>);
+                            }
+                            return list;
+                          })()}
+                        </select>
+                      </div>
+
+                      {/* Tensor Split Config (Only if target is all) */}
+                      {(modelGpuTargets[m.name] === 'all') && (
+                        <div style={{ flex: 1, minWidth: 140 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>Tensor Split Ratios</div>
+                          <input
+                            type="text"
+                            placeholder="e.g. 0.5,0.5"
+                            value={modelTensorSplits[m.name] ?? ''}
+                            onChange={e => handleTensorSplitChange(m.name, e.target.value)}
+                            style={{ width: '100%', padding: '4px 6px', fontSize: 11, background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', borderRadius: '3px', outline: 'none' }}
+                          />
+                        </div>
+                      )}
                     </div>
+
+                    {serverRunning && serverModel === m.name ? (
+                      <div style={{ fontSize: 10, color: '#eab308', fontWeight: 500, marginTop: 2 }}>
+                        ● Live change — modifying any setting restarts the server automatically
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>

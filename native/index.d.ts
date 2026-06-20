@@ -42,7 +42,7 @@ export declare function searchFiles(options: SearchOptions): Array<SearchMatch>
  * Quick search that returns just file paths matching a pattern.
  * Useful for "find file" use cases.
  */
-export declare function searchFileNames(pattern: string, rootPath: string, respectGitignore?: boolean): Array<string>
+export declare function searchFileNames(pattern: string, rootPath: string, respectGitignore?: boolean | undefined | null): Array<string>
 /** Health check function to verify native module is loaded */
 export declare function nativeHealthCheck(): string
 /** Get version of the native module */

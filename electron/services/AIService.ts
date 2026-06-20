@@ -276,13 +276,14 @@ export class AIService {
           abortSignal: options?.abortSignal,
           timeout: API_TIMEOUT,
           tools: options?.tools,
-          onFinish: (event) => {
+          maxSteps: options?.tools ? 10 : undefined,
+          onFinish: (event: any) => {
             resolveUsage({
               inputTokens: event.totalUsage.inputTokens ?? 0,
               outputTokens: event.totalUsage.outputTokens ?? 0,
             });
           },
-        });
+        } as any);
         console.log('[AIService:chat] streamText returned, textStream type:', typeof result.textStream);
         return { textStream: result.textStream, usage: usagePromise, estimatedInput, contextLength };
       }

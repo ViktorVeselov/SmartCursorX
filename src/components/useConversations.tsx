@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { getNumericTaskId } from '../utils/taskId';
 import { cleanAndExtractJSONObjects, mergeExecutionPlans } from '../utils/jsonParser';
 import { rLog, rWarn, rError } from '../utils/rendererLog';
@@ -14,8 +14,6 @@ export function useConversations(
     setIsLoading: React.Dispatch<React.SetStateAction<boolean>>,
     setActiveProvider: React.Dispatch<React.SetStateAction<string>>,
     setActiveModel: React.Dispatch<React.SetStateAction<string>>,
-    cleanupActiveListeners: () => void,
-    streamActiveRef: React.MutableRefObject<boolean>,
     rootPath: string
 ) {
     const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -24,6 +22,7 @@ export function useConversations(
     const [editingConvId, setEditingConvId] = useState<string | null>(null);
     const [editingTitle, setEditingTitle] = useState('');
     const [conversationContextMenu, setConversationContextMenu] = useState<{ x: number; y: number; conv: Record<string, unknown> } | null>(null);
+    const selectingRef = useRef(false);
 
     const getMsg = (msg: Record<string, unknown>): ConvMessage => msg as unknown as ConvMessage;
 
@@ -166,19 +165,13 @@ export function useConversations(
     };
 
     const handleSelectConversation = async (convId: string) => {
-        rLog('[ChatPanel:conv] handleSelectConversation called, convId:', convId, 'currentConvId:', activeConversationId);
-        if (streamActiveRef.current) {
-            rLog('[ChatPanel:conv] Active stream in progress, aborting before switch');
-            try {
-                window.ipcRenderer.send('ai:chat-abort');
-            } catch (e) {
-                rError('[ChatPanel:conv] Failed to send abort', e);
-            }
-            cleanupActiveListeners();
-            setIsLoading(false);
+        if (selectingRef.current) {
+            rLog('[ChatPanel:conv] handleSelectConversation re-entrant, dropping convId:', convId);
+            return;
         }
+        selectingRef.current = true;
+        rLog('[ChatPanel:conv] handleSelectConversation called, convId:', convId);
         try {
-            setActiveConversationId(convId);
             await refreshActiveMessages(convId);
 
             const conv = conversations.find(c => c.id === convId);
@@ -186,8 +179,11 @@ export function useConversations(
                 setActiveProvider(typeof conv.provider === 'string' ? conv.provider : '');
                 setActiveModel(typeof conv.model === 'string' ? conv.model : '');
             }
+            setActiveConversationId(convId);
         } catch (err) {
             console.error('Failed to load conversation messages:', err);
+        } finally {
+            selectingRef.current = false;
         }
     };
 

@@ -13,7 +13,7 @@ import {
   BYTES_PER_GB,
   STOP_TIMEOUT_MS,
   commandExists,
-  runCommand,
+  detectGpuHardware,
 } from './BaseFinetuneBackend'
 
 export class LlamaCppBackend implements FinetuneBackend {
@@ -48,43 +48,11 @@ export class LlamaCppBackend implements FinetuneBackend {
   }
 
   async detectHardware(): Promise<HardwareSpec> {
-    const spec: HardwareSpec = {
-      gpuAvailable: false,
-      gpuName: 'CPU',
-      vramGB: 0,
-      cudaCores: 0,
-      cpuCores: require('os').cpus().length,
-      ramGB: Math.round(require('os').totalmem() / BYTES_PER_GB),
-      backendType: 'llamacpp',
-      numGPUs: 1,
-      isAMD: false,
-    }
-
-    const nvidiaResult = await runCommand('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader')
-    if (nvidiaResult.ok) {
-      const parts = nvidiaResult.stdout.split(', ')
-      if (parts.length >= 2) {
-        spec.gpuAvailable = true
-        spec.gpuName = parts[0]
-        const vramMatch = parts[1].match(/(\d+)/)
-        if (vramMatch) spec.vramGB = parseInt(vramMatch[1]) / 1024
-        spec.backendType = 'llamacpp'
-      }
-    }
-
-    if (process.platform === 'darwin') {
-      const memResult = await runCommand('sysctl -n hw.memsize')
-      if (memResult.ok) {
-        spec.ramGB = Math.round(parseInt(memResult.stdout) / BYTES_PER_GB)
-        if (spec.ramGB >= 8) {
-          spec.gpuAvailable = true
-          spec.gpuName = 'Apple Silicon (Unified Memory)'
-          spec.vramGB = spec.ramGB
-          spec.backendType = 'llamacpp'
-        }
-      }
-    }
-
+    const os = require('os')
+    const cpuCores = os.cpus().length
+    const ramGB = Math.round(os.totalmem() / BYTES_PER_GB)
+    const spec = await detectGpuHardware(cpuCores, ramGB)
+    spec.backendType = 'llamacpp'
     return spec
   }
 

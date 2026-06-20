@@ -1,7 +1,7 @@
 import { aiService, ApiTimeoutError, ApiAuthError, ApiRateLimitError, ApiNetworkError } from '../services/AIService';
 import { aiBridge } from '../services/AIBridge';
 import { CostEstimatorService } from '../services/CostEstimatorService';
-import { ExecutionPlanSchema, getZenModelsInfo } from '../services/ai';
+import { ExecutionPlanSchema, CodePlanningResultSchema, getZenModelsInfo } from '../services/ai';
 import { secureStore } from '../secureStore';
 import { dbService } from '../db';
 import { EmbeddingService } from '../services/EmbeddingService';
@@ -15,6 +15,8 @@ import { executeReadFile, executeWriteFile, executeEditFile, getWorkspacePath, e
 import { PathGuard } from '../services/PathGuard';
 import { diffLines } from 'diff';
 import type { IpcHandlerContext } from './index';
+import { ipcMain } from 'electron';
+import { SessionChangesTrackerService } from '../services/SessionChangesTrackerService';
 
 type ToolPermission = 'allow' | 'deny' | 'ask';
 
@@ -64,7 +66,7 @@ async function requestToolApproval(
 
 function getToolPermissions(): ToolPermissions {
   try {
-    const settings = secureStore.getToolPermissions?.();
+    const settings = (secureStore as any).getToolPermissions?.();
     return settings ? { ...DEFAULT_TOOL_PERMISSIONS, ...settings } : DEFAULT_TOOL_PERMISSIONS;
   } catch {
     return DEFAULT_TOOL_PERMISSIONS;
@@ -85,7 +87,7 @@ function createToolWithPermission<T extends Record<string, unknown>>(
   if (permission === 'ask') {
     return tool({
       description,
-      inputSchema: schema,
+      parameters: schema,
       execute: async (args: T) => {
         const approved = await requestToolApproval(event, toolName, args as Record<string, unknown>, description);
         if (!approved) {
@@ -93,13 +95,13 @@ function createToolWithPermission<T extends Record<string, unknown>>(
         }
         return executeFn(args);
       },
-    });
+    } as any);
   }
   return tool({
     description,
-    inputSchema: schema,
+    parameters: schema,
     execute: executeFn,
-  });
+  } as any);
 }
 
 interface FileDiff {
@@ -142,13 +144,22 @@ function parseCodeBlocks(text: string): { filePath: string; content: string }[] 
 }
 
 export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandlerContext) {
-    ipcMain.on('ai:chat-abort', () => {
-        console.log('[IpcManager] Received ai:chat-abort signal, setting activeStreamAborted=true');
-        context.activeStreamAborted = true;
-        if (context.activeAbortController) {
-            console.log('[IpcManager] Aborting active AI abort controller');
-            context.activeAbortController.abort();
-            context.activeAbortController = null;
+    ipcMain.on('ai:chat-abort', (_event, convId?: string) => {
+        console.log('[IpcManager] Received ai:chat-abort signal, convId:', convId);
+        if (convId) {
+            context.abortedConvIds.add(convId);
+            const controller = context.activeAbortControllers.get(convId);
+            if (controller) {
+                console.log('[IpcManager] Aborting controller for convId:', convId);
+                controller.abort();
+                context.activeAbortControllers.delete(convId);
+            }
+        } else {
+            for (const [id, controller] of context.activeAbortControllers) {
+                context.abortedConvIds.add(id);
+                controller.abort();
+            }
+            context.activeAbortControllers.clear();
         }
     });
 
@@ -156,15 +167,15 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
         console.log('[AI] Tool approval response received:', response);
     });
 
-    ipcMain.on('ai:chat-start', async (event, { messages, providerId, model, effortLevel, thinking, rootPath }) => {
+    ipcMain.on('ai:chat-start', async (event, { messages, providerId, model, effortLevel, thinking, rootPath, chatMode, convId }) => {
         checkArgs(Array.isArray(messages), 'messages must be a valid array');
-        console.log('[ChatStream] ai:chat-start received, model:', model, 'provider:', providerId, 'thinking:', thinking);
-        if (context.activeAbortController) {
-            context.activeAbortController.abort();
-        }
-        context.activeAbortController = new AbortController();
-        context.activeStreamAborted = false;
+        const streamConvId = convId || `conv_${Date.now()}`;
+        console.log('[ChatStream] ai:chat-start received, convId:', streamConvId, 'model:', model, 'provider:', providerId, 'thinking:', thinking, 'chatMode:', chatMode);
+        context.activeAbortControllers.set(streamConvId, new AbortController());
+        context.abortedConvIds.delete(streamConvId);
         const startTime = Date.now();
+        const isAborted = () => context.abortedConvIds.has(streamConvId);
+        const getSignal = () => context.activeAbortControllers.get(streamConvId)?.signal;
         try {
             const targetProvider = providerId || secureStore.getActiveProvider();
             const targetModel = model || secureStore.getSelectedModel();
@@ -205,59 +216,6 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                   async ({ filePath }: { filePath: string }) => executeReadFile(filePath, workspacePath),
                   event
                 ),
-                write_file: createToolWithPermission('write_file',
-                  'Create or overwrite a workspace file. Creates parent directories if they do not exist. Use this to write new files or replace entire file contents.',
-                  z.object({
-                    filePath: z.string().describe('Relative path from workspace root'),
-                    content: z.string().describe('Full file content to write'),
-                  }),
-                  async ({ filePath, content }: { filePath: string; content: string }) => {
-                    const absPath = (() => {
-                      const root = path.resolve(workspacePath);
-                      const rp = path.isAbsolute(filePath) ? filePath : path.resolve(root, filePath);
-                      const normRoot = root.toLowerCase();
-                      const normResolved = rp.toLowerCase();
-                      const rel = path.relative(normRoot, normResolved);
-                      return (rel === '' || (rel && !rel.startsWith('..') && !path.isAbsolute(rel))) ? rp : null;
-                    })();
-                    const originalContent = absPath && fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
-                    const result = executeWriteFile(filePath, content, workspacePath);
-                    if (result.startsWith('Successfully')) {
-                      const proposedContent = content;
-                      const { addedLines, removedLines } = computeLineStats(originalContent, proposedContent);
-                      chatFileDiffs.push({ filePath, originalContent, proposedContent, addedLines, removedLines });
-                    }
-                    return result;
-                  },
-                  event
-                ),
-                edit_file: createToolWithPermission('edit_file',
-                  'Find exact text in a file and replace it. Use for surgical edits without rewriting the whole file. Returns error if the file does not exist or the text is not found.',
-                  z.object({
-                    filePath: z.string().describe('Relative path from workspace root'),
-                    find: z.string().describe('Exact text to find (case-sensitive)'),
-                    replace: z.string().describe('Replacement text'),
-                  }),
-                  async ({ filePath, find, replace }: { filePath: string; find: string; replace: string }) => {
-                    const absPath = (() => {
-                      const root = path.resolve(workspacePath);
-                      const rp = path.isAbsolute(filePath) ? filePath : path.resolve(root, filePath);
-                      const normRoot = root.toLowerCase();
-                      const normResolved = rp.toLowerCase();
-                            const rel = path.relative(normRoot, normResolved);
-                            return (rel === '' || (rel && !rel.startsWith('..') && !path.isAbsolute(rel))) ? rp : null;
-                        })();
-                        const originalContent = absPath && fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
-                        const result = executeEditFile(filePath, find, replace, workspacePath);
-                        if (result.startsWith('Successfully')) {
-                            const proposedContent = absPath && fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
-                            const { addedLines, removedLines } = computeLineStats(originalContent, proposedContent);
-                            chatFileDiffs.push({ filePath, originalContent, proposedContent, addedLines, removedLines });
-                        }
-                        return result;
-                    },
-                    event
-                ),
                 list_files: createToolWithPermission('list_files',
                     'List files in the workspace matching a glob pattern (e.g., "**/*.ts", "src/**"). Returns relative paths.',
                     z.object({ pattern: z.string().default('**/*') }),
@@ -279,13 +237,79 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                             return matches[0]?.lineContent || 'No matches found';
                         }
                         return matches.map((m: SearchMatch) => `${m.filePath}:${m.lineNumber}:${m.column} - ${m.lineContent.trim()}`).join('\n');
-                    }
+                    },
+                    event
                 ),
+                ...(chatMode !== 'ask' ? {
+                    write_file: createToolWithPermission('write_file',
+                      'Create or overwrite a workspace file. Creates parent directories if they do not exist. Use this to write new files or replace entire file contents.',
+                      z.object({
+                        filePath: z.string().describe('Relative path from workspace root'),
+                        content: z.string().describe('Full file content to write'),
+                      }),
+                      async ({ filePath, content }: { filePath: string; content: string }) => {
+                        const absPath = (() => {
+                          const root = path.resolve(workspacePath);
+                          const rp = path.isAbsolute(filePath) ? filePath : path.resolve(root, filePath);
+                          const normRoot = root.toLowerCase();
+                          const normResolved = rp.toLowerCase();
+                          const rel = path.relative(normRoot, normResolved);
+                          return (rel === '' || (rel && !rel.startsWith('..') && !path.isAbsolute(rel))) ? rp : null;
+                        })();
+                        const originalContent = absPath && fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
+                        const result = executeWriteFile(filePath, content, workspacePath);
+                        if (result.startsWith('Successfully')) {
+                          const proposedContent = content;
+                          const normOriginal = originalContent.replace(/\r\n/g, '\n');
+                          const normProposed = proposedContent.replace(/\r\n/g, '\n');
+                          const { addedLines, removedLines } = computeLineStats(normOriginal, normProposed);
+                          chatFileDiffs.push({ filePath, originalContent: normOriginal, proposedContent: normProposed, addedLines, removedLines });
+                        }
+                        return result;
+                      },
+                      event
+                    ),
+                    edit_file: createToolWithPermission('edit_file',
+                      'Find exact text in a file and replace it. Use for surgical edits without rewriting the whole file. Returns error if the file does not exist or the text is not found.',
+                      z.object({
+                        filePath: z.string().describe('Relative path from workspace root'),
+                        find: z.string().describe('Exact text to find (case-sensitive)'),
+                        replace: z.string().describe('Replacement text'),
+                      }),
+                      async ({ filePath, find, replace }: { filePath: string; find: string; replace: string }) => {
+                        const absPath = (() => {
+                          const root = path.resolve(workspacePath);
+                          const rp = path.isAbsolute(filePath) ? filePath : path.resolve(root, filePath);
+                          const normRoot = root.toLowerCase();
+                          const normResolved = rp.toLowerCase();
+                          const rel = path.relative(normRoot, normResolved);
+                          return (rel === '' || (rel && !rel.startsWith('..') && !path.isAbsolute(rel))) ? rp : null;
+                        })();
+                        const originalContent = absPath && fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
+                        const result = executeEditFile(filePath, find, replace, workspacePath);
+                        if (result.startsWith('Successfully')) {
+                            const proposedContent = absPath && fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
+                            const normOriginal = originalContent.replace(/\r\n/g, '\n');
+                            const normProposed = proposedContent.replace(/\r\n/g, '\n');
+                            const { addedLines, removedLines } = computeLineStats(normOriginal, normProposed);
+                            chatFileDiffs.push({ filePath, originalContent: normOriginal, proposedContent: normProposed, addedLines, removedLines });
+                        }
+                        return result;
+                      },
+                      event
+                    )
+                } : {})
             } : undefined;
 
-            const chatMessages = chatTools
+            const chatSystemPrompt = chatTools
+                ? (chatMode === 'ask'
+                    ? 'You are in Ask Mode (Read-Only). You can query the workspace using read_file, list_files, and grep tools to answer questions and explore code, but you CANNOT write or edit files. If you want to propose code changes or show snippets, you SHOULD output them as markdown code blocks in your response. Do not attempt to use write_file or edit_file tools.'
+                    : 'The workspace is open and you have `read_file`, `write_file`, `edit_file`, `list_files`, and `grep` tools available. You MUST use them for EVERY code change and file query — never output code blocks or guess file contents. If you output a code block instead of calling a tool, you have failed at your task.')
+                : undefined;
+
+            const chatMessages = chatSystemPrompt
                 ? [
-                    { role: 'system', content: 'The workspace is open and you have `read_file`, `write_file`, `edit_file`, `list_files`, and `grep` tools available. You MUST use them for EVERY code change and file query — never output code blocks or guess file contents. If you output a code block instead of calling a tool, you have failed at your task.' },
+                    { role: 'system', content: chatSystemPrompt },
                     ...messages,
                   ]
                 : messages;
@@ -296,14 +320,14 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                 temperature: 0.7,
                 effortLevel: effortLevel as 'low' | 'medium' | 'high' | undefined,
                 thinking: thinking as boolean | undefined,
-                abortSignal: context.activeAbortController.signal,
+                abortSignal: getSignal(),
                 tools: chatTools,
             });
             console.log('[ChatStream] aiService.chat() returned, type:', typeof result, 'has text:', 'text' in result);
 
-            if (context.activeStreamAborted) {
+            if (isAborted()) {
                 console.log('[ChatStream] Stream request cancelled before start, sending ai:chat-end');
-                event.sender.send('ai:chat-end');
+                event.sender.send('ai:chat-end', { convId: streamConvId });
                 return;
             }
 
@@ -312,31 +336,35 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
             let actualOutputTokens: number | undefined;
             let contextUsage: { estimatedInput?: number; contextLength?: number } = {};
 
+            const sendChunk = (chunk: string) => {
+                event.sender.send('ai:chat-chunk', { convId: streamConvId, chunk });
+            };
+
             if (typeof result === 'string') {
                 responseText = result;
-                event.sender.send('ai:chat-chunk', result);
+                sendChunk(result);
             } else if ('text' in result) {
                 responseText = result.text;
                 actualInputTokens = result.usage.inputTokens;
                 actualOutputTokens = result.usage.outputTokens;
                 contextUsage = { estimatedInput: (result as any).estimatedInput, contextLength: (result as any).contextLength };
-                event.sender.send('ai:chat-chunk', result.text);
+                sendChunk(result.text);
             } else if ('textStream' in result) {
                 contextUsage = { estimatedInput: (result as any).estimatedInput, contextLength: (result as any).contextLength };
                 console.log('[ChatStream] Starting for-await loop for text stream');
                 let chunkCount = 0;
                 for await (const chunk of result.textStream) {
-                    if (context.activeStreamAborted) {
+                    if (isAborted()) {
                         console.log('[ChatStream] Stream iteration aborted by user at chunk', chunkCount);
                         break;
                     }
                     chunkCount++;
                     responseText += chunk;
-                    event.sender.send('ai:chat-chunk', chunk);
+                    sendChunk(chunk);
                 }
                 console.log('[ChatStream] for-await loop finished, total chunks:', chunkCount);
 
-                if (chunkCount === 0 && chatTools && !context.activeStreamAborted) {
+                if (chunkCount === 0 && chatTools && !isAborted()) {
                     console.log('[ChatStream] Empty response with tools (model likely does not support tool calling), retrying with workspace context');
                     let fileListContext = '';
                     try {
@@ -345,8 +373,11 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                     } catch (e) {
                         fileListContext = 'Could not load workspace file list.';
                     }
+                    const fallbackPrompt = chatMode === 'ask'
+                        ? `You are in Ask Mode (Read-Only) with access to a workspace. Here is the current file structure:\n\n${fileListContext}\n\nAnswer questions about the workspace using this context. You cannot use tools in this mode.`
+                        : `You are a coding assistant with access to a workspace. Here is the current file structure:\n\n${fileListContext}\n\nYou cannot use tools directly in this mode. However, if you need to create or modify files, you can output file contents as markdown code blocks where the first line specifies the relative path in the format: \`\`\`language:relative/path/to/file.ext\n[file content]\n\`\`\`. The system will automatically detect this format and write the changes to disk. Make sure to specify the path exactly in that format.`;
                     const fallbackMessages = [
-                        { role: 'system', content: `You are a coding assistant with access to a workspace. Here is the current file structure:\n\n${fileListContext}\n\nAnswer questions about the workspace using this context. You cannot use tools in this mode.` },
+                        { role: 'system', content: fallbackPrompt },
                         ...messages,
                     ];
                     const fallbackResult = await aiService.chat(fallbackMessages, {
@@ -355,17 +386,17 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                         temperature: 0.7,
                         effortLevel: effortLevel as 'low' | 'medium' | 'high' | undefined,
                         thinking: thinking as boolean | undefined,
-                        abortSignal: context.activeAbortController?.signal,
+                        abortSignal: getSignal(),
                     });
                     if ('textStream' in fallbackResult) {
                         for await (const chunk of fallbackResult.textStream) {
-                            if (context.activeStreamAborted) break;
+                            if (isAborted()) break;
                             chunkCount++;
                             responseText += chunk;
-                            event.sender.send('ai:chat-chunk', chunk);
+                            sendChunk(chunk);
                         }
                         try {
-                            const fallbackUsage = context.activeStreamAborted ? undefined : await fallbackResult.usage;
+                            const fallbackUsage = isAborted() ? undefined : await fallbackResult.usage;
                             if (fallbackUsage) {
                                 actualInputTokens = fallbackUsage.inputTokens;
                                 actualOutputTokens = fallbackUsage.outputTokens;
@@ -375,7 +406,7 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                         }
                     }
                     console.log('[ChatStream] Fallback without tools completed, total chunks:', chunkCount);
-                } else if (!context.activeStreamAborted) {
+                } else if (!isAborted()) {
                     try {
                         const streamUsage = await result.usage;
                         if (streamUsage) {
@@ -387,20 +418,22 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                     }
                 }
 
-                if (chunkCount === 0 && !context.activeStreamAborted) {
+                if (chunkCount === 0 && !isAborted()) {
                     let errMsg = `⚠️ **${targetModel} returned an empty response.** `;
                     if (chatTools) {
-                        errMsg += `This model may not support tool calling. Try a different model or disable file operations.`;
+                        errMsg += chatMode === 'ask'
+                            ? `This model may not support tool calling. Try a different model or ask a direct question.`
+                            : `This model may not support tool calling. Try a different model or disable file operations.`;
                     } else {
                         errMsg += `The prompt or request may exceed the model's capabilities. Try shortening the conversation or using a different model.`;
                     }
                     responseText = errMsg;
-                    event.sender.send('ai:chat-chunk', errMsg);
+                    sendChunk(errMsg);
                 }
             }
 
-            // Post-process: if no tool diffs captured but response has code blocks, extract and write them
-            if (chatFileDiffs.length === 0 && chatTools) {
+            // Post-process: if no tool diffs captured but response has code blocks, extract and write them (gate if Ask mode)
+            if (chatFileDiffs.length === 0 && chatTools && chatMode !== 'ask') {
                 const codeBlocks = parseCodeBlocks(responseText);
                 for (const block of codeBlocks) {
                     const absPath = (() => {
@@ -416,8 +449,11 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                     const dir = path.dirname(absPath);
                     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
                     fs.writeFileSync(absPath, block.content, 'utf-8');
-                    const { addedLines, removedLines } = computeLineStats(originalContent, block.content);
-                    chatFileDiffs.push({ filePath: block.filePath, originalContent, proposedContent: block.content, addedLines, removedLines });
+                    SessionChangesTrackerService.trackAccepted(absPath, originalContent);
+                    const normOriginal = originalContent.replace(/\r\n/g, '\n');
+                    const normProposed = block.content.replace(/\r\n/g, '\n');
+                    const { addedLines, removedLines } = computeLineStats(normOriginal, normProposed);
+                    chatFileDiffs.push({ filePath: block.filePath, originalContent: normOriginal, proposedContent: normProposed, addedLines, removedLines });
                     console.log(`[ChatStream] Applied code block to ${block.filePath} (+${addedLines}/-${removedLines})`);
                 }
             }
@@ -447,14 +483,13 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
             const chatCost = CostEstimatorService.estimateCost(targetModel, finalInputTokens, outputTokens, targetProvider);
 
             console.log('[ChatStream] Sending ai:chat-end, response length:', responseText.length, 'tokens:', { input: finalInputTokens, output: outputTokens, cost: chatCost, fileChanges: chatFileDiffs.length });
-            event.sender.send('ai:chat-end', { inputTokens: finalInputTokens, output: outputTokens, outputTokens: outputTokens, cost: chatCost, ...contextUsage, fileDiffs: chatFileDiffs });
+            event.sender.send('ai:chat-end', { convId: streamConvId, inputTokens: finalInputTokens, output: outputTokens, outputTokens: outputTokens, cost: chatCost, ...contextUsage, fileDiffs: chatFileDiffs });
 
         } catch (error: unknown) {
             const errMsg = error instanceof Error ? error.message : String(error);
-            // Don't report abort as a failure error to the user interface
-            if (context.activeStreamAborted || (error instanceof Error && error.name === 'AbortError')) {
+            if (isAborted() || (error instanceof Error && error.name === 'AbortError')) {
                 console.log('[ChatStream] Request aborted cleanly');
-                event.sender.send('ai:chat-end', { error: false, aborted: true });
+                event.sender.send('ai:chat-end', { convId: streamConvId, error: false, aborted: true });
                 return;
             }
             console.error('[ChatStream] ERROR:', errMsg, 'model:', model, 'provider:', providerId);
@@ -465,23 +500,36 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
             else if (error instanceof ApiRateLimitError) errorType = 'RATE_LIMIT';
             else if (error instanceof ApiNetworkError) errorType = 'NETWORK';
 
-            event.sender.send('ai:chat-chunk', `Error:${errorType}:${errMsg}`);
+            event.sender.send('ai:chat-chunk', { convId: streamConvId, chunk: `Error:${errorType}:${errMsg}` });
             console.log('[ChatStream] Sending ai:chat-end after error');
-            event.sender.send('ai:chat-end', { error: true, errorType, errorMessage: errMsg });
+            event.sender.send('ai:chat-end', { convId: streamConvId, error: true, errorType, errorMessage: errMsg });
         } finally {
-            context.activeAbortController = null;
+            context.activeAbortControllers.delete(streamConvId);
+            context.abortedConvIds.delete(streamConvId);
         }
     });
 
-    ipcMain.on('ai:plan-start', async (event, { messages, providerId, model, effortLevel, thinking }) => {
+async function handleStructuredPlanStart(
+        event: Electron.IpcMainEvent,
+        channelPrefix: string,
+        schema: any,
+        { messages, providerId, model, effortLevel, thinking, convId }: any
+    ) {
         checkArgs(Array.isArray(messages), 'messages must be a valid array');
-        console.log('[PlanStream] ai:plan-start received, model:', model, 'provider:', providerId, 'thinking:', thinking);
-        if (context.activeAbortController) {
-            context.activeAbortController.abort();
+        const PLAN_CONV_ID = convId || `__plan_${channelPrefix}__`;
+        console.log(`[PlanStream:${channelPrefix}] Start received, model:`, model, 'provider:', providerId, 'thinking:', thinking, 'convId:', convId);
+        
+        const existingPlanController = context.activeAbortControllers.get(PLAN_CONV_ID);
+        if (existingPlanController) {
+            existingPlanController.abort();
+            context.activeAbortControllers.delete(PLAN_CONV_ID);
         }
-        context.activeAbortController = new AbortController();
-        context.activeStreamAborted = false;
+        context.abortedConvIds.delete(PLAN_CONV_ID);
+        
+        const planAbortController = new AbortController();
+        context.activeAbortControllers.set(PLAN_CONV_ID, planAbortController);
         const startTime = Date.now();
+        
         try {
             const targetProvider = providerId || secureStore.getActiveProvider();
             const targetModel = model || secureStore.getSelectedModel();
@@ -491,7 +539,7 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                 if (!localService.isServerRunning() || localService.getRunningModel() !== targetModel) {
                     const modelPath = path.join(localService.getModelsDir(), targetModel);
                     if (fs.existsSync(modelPath)) {
-                        console.log(`[PlanStream] Auto-starting local server for model: ${targetModel}`);
+                        console.log(`[PlanStream:${channelPrefix}] Auto-starting local server for model: ${targetModel}`);
                         await localService.startServer(modelPath);
                         try {
                             dbService.addCustomModel('local', targetModel, 0);
@@ -505,44 +553,42 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
             }
 
             if (!aiService.isActive() || aiService.providerId !== targetProvider) {
-                console.log(`[PlanStream] Dynamic initialization of AIService for provider: ${targetProvider}`);
+                console.log(`[PlanStream:${channelPrefix}] Dynamic initialization of AIService for provider: ${targetProvider}`);
                 aiService.initializeFromStore(targetProvider);
             }
 
             const partialStream = await aiService.streamObject(
-                ExecutionPlanSchema,
+                schema,
                 messages,
-                { model: targetModel, temperature: 0.1, effortLevel, thinking, abortSignal: context.activeAbortController.signal }
+                { model: targetModel, temperature: 0.1, effortLevel, thinking, abortSignal: planAbortController.signal }
             );
-            console.log('[PlanStream] streamObject returned, type:', typeof partialStream);
+            console.log(`[PlanStream:${channelPrefix}] streamObject returned, type:`, typeof partialStream);
 
-            if (context.activeStreamAborted) {
-                console.log('[PlanStream] Plan stream request cancelled before start, sending ai:plan-end');
-                event.sender.send('ai:plan-end');
+            if (context.abortedConvIds.has(PLAN_CONV_ID)) {
+                console.log(`[PlanStream:${channelPrefix}] Plan stream request cancelled before start`);
+                event.sender.send(`${channelPrefix}-end`, { convId: PLAN_CONV_ID });
                 return;
             }
 
             let chunkCount = 0;
             let finalPlan: any = null;
-            console.log('[PlanStream] Starting for-await loop for plan stream');
             for await (const partial of partialStream.partialOutputStream) {
                 chunkCount++;
-                if (context.activeStreamAborted) {
-                    console.log('[PlanStream] Plan stream iteration aborted by user at chunk', chunkCount);
+                if (context.abortedConvIds.has(PLAN_CONV_ID)) {
+                    console.log(`[PlanStream:${channelPrefix}] Plan stream iteration aborted at chunk`, chunkCount);
                     break;
                 }
                 finalPlan = partial;
                 const chunkJson = JSON.stringify(partial);
-                console.log('[PlanStream] Chunk', chunkCount, 'received, length:', chunkJson?.length, 'preview:', chunkJson?.substring(0, 150));
-                event.sender.send('ai:plan-chunk', chunkJson);
+                event.sender.send(`${channelPrefix}-chunk`, { convId: PLAN_CONV_ID, chunk: chunkJson });
             }
-            console.log('[PlanStream] for-await loop finished, total chunks:', chunkCount, 'finalPlan exists:', !!finalPlan);
+            console.log(`[PlanStream:${channelPrefix}] for-await loop finished, total chunks:`, chunkCount, 'finalPlan exists:', !!finalPlan);
 
             const latency = Date.now() - startTime;
 
             let actualInputTokens = messages.map((m: any) => m.content || '').join('\n').length / 4;
             let actualOutputTokens = 0;
-            if (!context.activeStreamAborted) {
+            if (!context.abortedConvIds.has(PLAN_CONV_ID)) {
                 try {
                     const streamUsage = await partialStream.usage;
                     if (streamUsage) {
@@ -550,7 +596,7 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                         actualOutputTokens = streamUsage.outputTokens || actualOutputTokens;
                     }
                 } catch (usageErr) {
-                    console.warn('[PlanStream] Failed to get stream usage:', usageErr);
+                    console.warn(`[PlanStream:${channelPrefix}] Failed to get stream usage:`, usageErr);
                 }
             }
             if (actualOutputTokens === 0) {
@@ -575,28 +621,44 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
             }
 
             const planCost = CostEstimatorService.estimateCost(targetModel, actualInputTokens, actualOutputTokens, targetProvider);
-            console.log('[PlanStream] Sending ai:plan-end, final plan exists:', !!finalPlan, 'tokens:', { input: actualInputTokens, output: actualOutputTokens, cost: planCost });
-            event.sender.send('ai:plan-end', finalPlan, { inputTokens: actualInputTokens, outputTokens: actualOutputTokens, cost: planCost });
+            console.log(`[PlanStream:${channelPrefix}] Sending end, tokens:`, { input: actualInputTokens, output: actualOutputTokens, cost: planCost });
+            event.sender.send(`${channelPrefix}-end`, {
+                convId: PLAN_CONV_ID,
+                plan: finalPlan,
+                usage: { inputTokens: actualInputTokens, outputTokens: actualOutputTokens, cost: planCost }
+            });
 
         } catch (error: unknown) {
-            if (context.activeStreamAborted || (error instanceof Error && error.name === 'AbortError')) {
-                console.log('[PlanStream] Request aborted cleanly');
-                event.sender.send('ai:plan-end', null, { aborted: true });
+            if (context.abortedConvIds.has(PLAN_CONV_ID) || (error instanceof Error && error.name === 'AbortError')) {
+                console.log(`[PlanStream:${channelPrefix}] Request aborted cleanly`);
+                event.sender.send(`${channelPrefix}-end`, { convId: PLAN_CONV_ID, aborted: true });
                 return;
             }
             const errMsg = error instanceof Error ? error.message : String(error);
-            console.error('[PlanStream] ERROR:', errMsg, 'model:', model, 'provider:', providerId);
+            console.error(`[PlanStream:${channelPrefix}] ERROR:`, errMsg, 'model:', model, 'provider:', providerId);
             let errorType = 'UNKNOWN';
             if (error instanceof ApiTimeoutError) errorType = 'TIMEOUT';
             else if (error instanceof ApiAuthError) errorType = 'AUTH';
             else if (error instanceof ApiRateLimitError) errorType = 'RATE_LIMIT';
             else if (error instanceof ApiNetworkError) errorType = 'NETWORK';
-            event.sender.send('ai:plan-chunk', { error: errMsg, errorType });
-            console.log('[PlanStream] Sending ai:plan-end after error');
-            event.sender.send('ai:plan-end');
+            event.sender.send(`${channelPrefix}-chunk`, { convId: PLAN_CONV_ID, error: errMsg, errorType });
+            event.sender.send(`${channelPrefix}-end`, { convId: PLAN_CONV_ID });
         } finally {
-            context.activeAbortController = null;
+            context.activeAbortControllers.delete(PLAN_CONV_ID);
+            context.abortedConvIds.delete(PLAN_CONV_ID);
         }
+    }
+
+    ipcMain.on('ai:plan-start', (event, args) => {
+        handleStructuredPlanStart(event, 'ai:plan', ExecutionPlanSchema, args);
+    });
+
+    ipcMain.on('ai:detailed-plan-start', (event, args) => {
+        handleStructuredPlanStart(event, 'ai:detailed-plan', CodePlanningResultSchema, args);
+    });
+
+    ipcMain.on('ai:modify-plan-start', (event, args) => {
+        handleStructuredPlanStart(event, 'ai:modify-plan', ExecutionPlanSchema, args);
     });
 
     ipcMain.handle('ai:test-connection', async (_event, baseUrl: string) => {
@@ -880,7 +942,13 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
         checkArgs(typeof modelName === 'string', 'modelName must be a string');
         const models = dbService.getCustomModels(providerId);
         const match = models.find((m: any) => m.model_name === modelName);
-        return match ? { context_size: match.context_size ?? null } : null;
+        return match ? { 
+            context_size: match.context_size ?? null,
+            gpu_mode: match.gpu_mode ?? 'auto',
+            gpu_layers: match.gpu_layers ?? null,
+            gpu_target: match.gpu_target ?? 'auto',
+            tensor_split: match.tensor_split ?? null
+        } : null;
     });
 
     ipcMain.handle('local:set-context-size', async (_event, modelName: string, contextSize: number) => {
@@ -891,6 +959,26 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
         const instance = LocalModelService.getInstance();
         if (instance.isServerRunning() && instance.getRunningModel() === modelName) {
             await instance.restartServer(contextSize);
+        }
+        return true;
+    });
+
+    ipcMain.handle('local:set-gpu-config', async (_event, modelName: string, config: { gpuMode: string; gpuLayers: number | null; gpuTarget: string; tensorSplit: string | null }) => {
+        checkArgs(typeof modelName === 'string', 'modelName must be a string');
+        checkArgs(config && typeof config.gpuMode === 'string', 'gpuMode must be a string');
+        checkArgs(typeof config.gpuTarget === 'string', 'gpuTarget must be a string');
+        dbService.updateCustomModelGpuConfig(
+            'local',
+            modelName,
+            config.gpuMode,
+            config.gpuLayers,
+            config.gpuTarget,
+            config.tensorSplit
+        );
+        const instance = LocalModelService.getInstance();
+        if (instance.isServerRunning() && instance.getRunningModel() === modelName) {
+            const cachedCtx = dbService.getCachedContext('local:' + modelName) || 2048;
+            await instance.restartServer(cachedCtx);
         }
         return true;
     });

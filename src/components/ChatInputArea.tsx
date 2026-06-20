@@ -3,13 +3,14 @@ import { ChatPlusMenu } from './ChatPlusMenu';
 import { ModelDropdown } from './ModelDropdown';
 import { DollarIcon } from './DollarIcon';
 import { EffortLevelSelector } from './EffortLevelSelector';
+import { ChatModeSelector, type ChatMode } from './ChatModeSelector';
 
 export interface ChatInputAreaProps {
     input: string;
     setInput: React.Dispatch<React.SetStateAction<string>>;
     isLoading: boolean;
     isPlanModifying: boolean;
-    isPlanModeActive: boolean;
+    chatMode: ChatMode;
     attachedFile: { name: string; path: string; content: string } | null;
     activeModel: string;
     activeProvider: string;
@@ -36,7 +37,7 @@ export interface ChatInputAreaProps {
     setShowWorkflowSubmenu: React.Dispatch<React.SetStateAction<boolean>>;
     setActiveAgent: React.Dispatch<React.SetStateAction<Record<string, unknown> | null>>;
     setActiveWorkflow: React.Dispatch<React.SetStateAction<Record<string, unknown> | null>>;
-    setIsPlanModeActive: React.Dispatch<React.SetStateAction<boolean>>;
+    onChatModeChange: (mode: ChatMode) => void;
     handleFileUpload: () => Promise<void>;
     handleSend: (queuedMsg?: Record<string, unknown>) => void;
     handleAbort: () => void;
@@ -118,7 +119,7 @@ export function ChatInputArea(props: ChatInputAreaProps) {
                             (e.target as HTMLTextAreaElement).style.height = '0';
                         }
                     }}
-                    placeholder={props.isLoading ? 'Type a message to queue...' : (props.isPlanModeActive ? 'Describe the feature to plan...' : 'Ask anything... (type / for flows)')}
+                    placeholder={props.isLoading ? 'Type a message to queue...' : (props.chatMode === 'plan' ? 'Describe the feature to plan...' : (props.chatMode === 'ask' ? 'Ask a question about the workspace... (Read-Only)' : 'Ask anything... (type / for flows)'))}
                     style={{
                         minHeight: 48,
                         maxHeight: '250px',
@@ -150,8 +151,6 @@ export function ChatInputArea(props: ChatInputAreaProps) {
                             onSetShowAgentSubmenu={props.setShowAgentSubmenu}
                             showWorkflowSubmenu={props.showWorkflowSubmenu}
                             onSetShowWorkflowSubmenu={props.setShowWorkflowSubmenu}
-                            isPlanModeActive={props.isPlanModeActive}
-                            onSetIsPlanModeActive={props.setIsPlanModeActive}
                             onSetActiveAgent={props.setActiveAgent}
                             onSetActiveWorkflow={props.setActiveWorkflow}
                             onClose={() => { props.togglePlusMenu(); }}
@@ -172,6 +171,11 @@ export function ChatInputArea(props: ChatInputAreaProps) {
                             activeProvider={props.activeProvider}
                             executionMode={props.executionMode}
                             onSetExecutionMode={props.setExecutionMode}
+                        />
+
+                        <ChatModeSelector
+                            chatMode={props.chatMode}
+                            onChatModeChange={props.onChatModeChange}
                         />
 
                         <div
@@ -441,7 +445,7 @@ export function ChatInputArea(props: ChatInputAreaProps) {
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             {(props.isLoading || props.isPlanModifying) && (
                                 <button
-                                    onClick={props.handleAbort}
+                                    onClick={() => props.handleAbort()}
                                     style={{
                                         background: '#ef4444',
                                         color: 'white',

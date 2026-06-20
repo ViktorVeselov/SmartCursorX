@@ -33,6 +33,24 @@ interface DlqEntry {
 
 export class ExecutionLoopService {
     private static dlqEntries = new Map<number, DlqEntry>();
+    private static abortControllers = new Map<number, AbortController>();
+
+    private static sendProgress(taskId: number, phase: string, message: string, attempt?: number, totalAttempts?: number): void {
+        const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
+        if (mainWindow) {
+            mainWindow.webContents.send('execution:progress', { taskId, phase, message, attempt, totalAttempts });
+        }
+    }
+
+    static stopExecution(taskId: number): void {
+        const controller = this.abortControllers.get(taskId);
+        if (controller) {
+            controller.abort();
+            this.abortControllers.delete(taskId);
+        }
+        this.sendProgress(taskId, 'stopped', 'Execution stopped by user');
+        PendingModificationsService.removePending(taskId);
+    }
 
     static setDlqResolver(taskId: number, resolve: (guidance: string | null) => void, failureFeedback: string, attemptHistory: string[]): void {
         this.dlqEntries.set(taskId, { resolve, taskId, failureFeedback, attemptHistory });
@@ -80,13 +98,22 @@ export class ExecutionLoopService {
         console.assert(activeTask !== null, 'Active task must exist in DB');
         const modelUsed = secureStore.getSelectedModel();
 
+        const abortController = new AbortController();
+        this.abortControllers.set(taskId, abortController);
+        const checkAborted = () => {
+            if (abortController.signal.aborted) throw new Error('EXECUTION_STOPPED');
+        };
+
+        this.sendProgress(taskId, 'investigating', 'Analyzing dependencies and assumptions...');
         let investText = '';
         investText = await this.performInvestigation(taskId, activeTask, modelUsed, startTime);
+        checkAborted();
 
         // ==========================================================
         // Modification and Compiler-Audited Self-Healing Loops
         // ==========================================================
         while (attempt <= config.maxRetries) {
+            checkAborted();
             console.log(`[ExecutionLoopService] Starting Execution Attempt ${attempt}/${config.maxRetries}...`);
             
             try {
@@ -124,6 +151,8 @@ export class ExecutionLoopService {
                 const tempWithEscalation = config.baseTemperature + (attempt - 1) * 0.1;
                 let responseContent = '';
 
+                this.sendProgress(taskId, 'generating', 'Generating code changes...', attempt, config.maxRetries);
+
                 if (aiService.isActive()) {
                     const prompt = `Task Title: ${activeTask.title}
 Task Details: ${activeTask.description || ''}
@@ -143,6 +172,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                 } else {
                     throw new Error('AI Service is inactive. Code generation impossible.');
                 }
+                checkAborted();
 
                 // Generate preview patches (does NOT write to disk)
                 const previewPatches = ASTPatchingService.generatePreviewPatches(responseContent);
@@ -190,23 +220,39 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                     });
                 }
 
-                // BLOCK execution until user accepts or rejects
-                const userAccepted = await new Promise<boolean>((resolve) => {
-                    PendingModificationsService.setResolver(taskId, resolve);
-                });
+                checkAborted();
+
+                let userAccepted: boolean;
+                if (plan.approved) {
+                    // Plan mode: auto-apply changes immediately (plan IS the approval)
+                    console.log(`[ExecutionLoopService] Plan is approved. Auto-applying modifications...`);
+                    this.sendProgress(taskId, 'applying', 'Applying changes...', attempt, config.maxRetries);
+                    const applied = PendingModificationsService.applyModifications(taskId);
+                    if (!applied) {
+                        throw new Error('Failed to auto-apply modifications to disk.');
+                    }
+                    userAccepted = true;
+                } else {
+                    // BLOCK execution until user accepts or rejects
+                    userAccepted = await new Promise<boolean>((resolve) => {
+                        PendingModificationsService.setResolver(taskId, resolve);
+                    });
+                }
 
                 if (!userAccepted) {
                     throw new Error('User rejected the proposed modifications.');
                 }
 
-                console.log(`[ExecutionLoopService] User accepted modifications. Applying patches to disk...`);
-                // Now apply the patches to disk (using original method)
-                parseSuccess = ASTPatchingService.applyJSONPatch(responseContent);
-                if (!parseSuccess) {
-                    // Fallback: apply full-file blocks
-                    parseSuccess = this.applyFileEdits(responseContent);
+                if (!plan.approved) {
+                    console.log(`[ExecutionLoopService] User accepted modifications. Applying patches to disk...`);
+                    // Now apply the patches to disk (using original method)
+                    parseSuccess = ASTPatchingService.applyJSONPatch(responseContent);
                     if (!parseSuccess) {
-                        throw new Error('Failed to write accepted modifications to disk.');
+                        // Fallback: apply full-file blocks
+                        parseSuccess = this.applyFileEdits(responseContent);
+                        if (!parseSuccess) {
+                            throw new Error('Failed to write accepted modifications to disk.');
+                        }
                     }
                 }
 
@@ -220,6 +266,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                     aiService.isActive() ? aiService.providerId : 'fallback'
                 );
 
+                this.sendProgress(taskId, 'verifying', 'Running verification checks...', attempt, config.maxRetries);
                 finalOutputStatus = await VerificationService.verifyOutput(outputId, assembled.taxonomyResult);
 
                 dbService.addExecutionAttempt(
@@ -270,13 +317,26 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                     }
 
                     console.warn(`[ExecutionLoopService] Attempt ${attempt} failed verification. Details:\n${failureFeedback}`);
+                    if (attempt < config.maxRetries) {
+                        this.sendProgress(taskId, 'generating', `Verification failed, retrying (${attempt}/${config.maxRetries})...`, attempt, config.maxRetries);
+                    }
                 }
 
             } catch (err: any) {
+                if (err.message === 'EXECUTION_STOPPED') {
+                    console.log(`[ExecutionLoopService] Task ${taskId} stopped by user.`);
+                    dbService.updateTaskStatus(taskId, 'stopped');
+                    success = false;
+                    break;
+                }
+
                 console.error(`[ExecutionLoopService] Exception on attempt ${attempt}:`, err);
                 const attemptFeedback = `Attempt ${attempt}/${config.maxRetries} failed: ${err.message || err}`;
                 failureFeedback = attemptFeedback;
                 attemptHistory.push(attemptFeedback);
+                if (attempt < config.maxRetries) {
+                    this.sendProgress(taskId, 'generating', `Attempt ${attempt}/${config.maxRetries} failed, retrying...`, attempt, config.maxRetries);
+                }
 
                 // Store failure in RAG for future reference
                 try {
@@ -309,10 +369,23 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                 console.error('[ExecutionLoopService] LearningService capture failed:', err);
             });
 
+            this.abortControllers.delete(taskId);
+            this.sendProgress(taskId, 'completed', 'Execution completed successfully', attempt - 1, config.maxRetries);
             return 'passed';
         }
 
+        // === Not stopped by user ===
+        const taskStatus = dbService.getTask(taskId);
+        if (taskStatus && taskStatus.status === 'stopped') {
+            this.abortControllers.delete(taskId);
+            this.sendProgress(taskId, 'stopped', 'Execution stopped by user');
+            dbService.updateTaskStatus(taskId, 'stopped');
+            return 'failed';
+        }
+
         // === DLQ Escalation: All retries exhausted, ask user for guidance ===
+        this.abortControllers.delete(taskId);
+        this.sendProgress(taskId, 'failed', 'All retries exhausted', config.maxRetries, config.maxRetries);
         console.error(`[ExecutionLoopService] Task ID ${taskId} failed after exhausting ${config.maxRetries} attempts. Escalating to user...`);
 
         console.log('[ExecutionLoopService] Restoring workspace to pristine pre-execution snapshot.');
@@ -344,11 +417,14 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                 console.error('[ExecutionLoopService] LearningService capture failed on cancel:', err);
             });
 
+            this.abortControllers.delete(taskId);
+            this.sendProgress(taskId, 'failed', 'Execution cancelled by user');
             throw new Error(`[ExecutionLoopService] User cancelled task ${taskId} after ${config.maxRetries} failed attempts.`);
         }
 
         // Retry with user guidance — reset attempt counter for guided retry
         console.log(`[ExecutionLoopService] User provided guidance. Retrying task ${taskId} with injected guidance...`);
+        this.abortControllers.delete(taskId);
         attempt = 1;
         config = { ...config, maxRetries: 3, userGuidance };
 

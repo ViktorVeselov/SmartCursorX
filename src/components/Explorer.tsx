@@ -11,11 +11,13 @@ interface ExplorerProps {
     onOpenFolder?: (path?: string) => void;
     symbolSearchQuery: string;
     setSymbolSearchQuery: (q: string) => void;
+    onFileDelete?: (path: string) => void;
 }
 
-export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFolder, symbolSearchQuery, setSymbolSearchQuery }: ExplorerProps) {
+export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFolder, symbolSearchQuery, setSymbolSearchQuery, onFileDelete }: ExplorerProps) {
     const [rootItems, setRootItems] = useState<FileItem[]>([]);
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+    const [refreshTrigger, setRefreshTrigger] = useState(0);
 
     // Symbol Search and Outline State
     const [workspaceOutline, setWorkspaceOutline] = useState<Array<{ filePath: string; outline: Record<string, unknown> }>>([]);
@@ -128,6 +130,20 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
         };
     }, []);
 
+    // Listen for workspace file changes to auto-refresh the file tree
+    useEffect(() => {
+        if (!rootPath) return;
+        const handler = (_event: unknown) => {
+            console.log('[Explorer] Workspace files changed, reloading tree...');
+            loadDir(rootPath).then(setRootItems);
+            setRefreshTrigger(prev => prev + 1);
+        };
+        window.ipcRenderer.on('workspace:files-changed', handler);
+        return () => {
+            window.ipcRenderer.off('workspace:files-changed', handler);
+        };
+    }, [rootPath]);
+
     const handleToggleFolder = useCallback((path: string) => {
         setExpandedFolders((prev) => {
             const next = new Set(prev);
@@ -166,7 +182,6 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
         // But safer:
         const oldPath = itemToRename.path;
         const newPath = parentPath + newName.trim();
-
         try {
             await window.ipcRenderer.invoke('rename-path', oldPath, newPath);
             setRenameDialogOpen(false);
@@ -175,6 +190,7 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
             // Refresh
             const files = await loadDir(rootPath || '.');
             setRootItems(files);
+            setRefreshTrigger(prev => prev + 1);
         } catch (err) {
             console.error('Failed to rename:', err);
             alert('Failed to rename file');
@@ -215,6 +231,8 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
                         // Refresh root or just reload the whole tree for now to be safe
                         const files = await loadDir(rootPath || '.');
                         setRootItems(files);
+                        onFileDelete?.(item.path);
+                        setRefreshTrigger(prev => prev + 1);
                     } catch (err) {
                         console.error('Failed to delete:', err);
                         alert('Failed to delete file/folder');
@@ -470,6 +488,7 @@ export function Explorer({ onFileSelect, onCreateFile, rootPath = '', onOpenFold
                                     onFileClick={handleFileClick}
                                     loadChildren={loadDir}
                                     onContextMenu={handleContextMenu}
+                                    refreshTrigger={refreshTrigger}
                                 />
                             ))}
                             {rootItems.length === 0 && <div className="empty-msg">No files found</div>}

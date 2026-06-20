@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { ContextMenu } from './ContextMenu';
 import { OpenFile } from '../types/appTypes';
 
+type ChangesTab = 'all' | 'accepted' | 'pending';
+
 interface TopBarProps {
     activeSection: string;
     files: OpenFile[];
@@ -18,6 +20,8 @@ interface TopBarProps {
     vimEnabled: boolean;
     setVimEnabled: (enabled: boolean) => void;
     onOpenSettings: () => void;
+    activeChangesTab: ChangesTab | null;
+    setActiveChangesTab: (tab: ChangesTab | null) => void;
 }
 
 export function TopBar({
@@ -35,7 +39,9 @@ export function TopBar({
     setTerminalOpen,
     vimEnabled,
     setVimEnabled,
-    onOpenSettings
+    onOpenSettings,
+    activeChangesTab,
+    setActiveChangesTab
 }: TopBarProps) {
     const [contextMenu, setContextMenu] = useState<{ x: number, y: number, file: OpenFile } | null>(null);
 
@@ -92,6 +98,29 @@ export function TopBar({
                 <button className="new-file-btn" onClick={handleCreateFile} title="New File">
                     <span className="codicon codicon-add" />
                 </button>
+                <div className="changes-tab-group">
+                    <button
+                        className={`changes-tab-btn ${activeChangesTab === 'all' ? 'active' : ''}`}
+                        onClick={() => setActiveChangesTab(activeChangesTab === 'all' ? null : 'all')}
+                        title="All Changes"
+                    >
+                        <span className="codicon codicon-diff" />
+                    </button>
+                    <button
+                        className={`changes-tab-btn ${activeChangesTab === 'accepted' ? 'active' : ''}`}
+                        onClick={() => setActiveChangesTab(activeChangesTab === 'accepted' ? null : 'accepted')}
+                        title="Accepted (Staged) Changes"
+                    >
+                        <span className="codicon codicon-check" />
+                    </button>
+                    <button
+                        className={`changes-tab-btn ${activeChangesTab === 'pending' ? 'active' : ''}`}
+                        onClick={() => setActiveChangesTab(activeChangesTab === 'pending' ? null : 'pending')}
+                        title="Pending AI Changes"
+                    >
+                        <span className="codicon codicon-history" />
+                    </button>
+                </div>
             </div>
 
             <div className="top-bar-actions">

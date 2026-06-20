@@ -28,10 +28,10 @@ export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(function
     onRollback,
     activeConversationId,
     onOpenPlan,
-}, messagesEndRef) {
+}, scrollContainerRef) {
     const filteredMsgs = messages.filter((m) => (m as Record<string, unknown>).role !== 'system');
     return (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div ref={scrollContainerRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
             {filteredMsgs.map((msg, i: number) => (
                 <ChatMessageCard
                     key={i}
@@ -71,7 +71,6 @@ export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(function
                     </div>
                 </div>
             ))}
-            <div ref={messagesEndRef} />
         </div>
     );
 });

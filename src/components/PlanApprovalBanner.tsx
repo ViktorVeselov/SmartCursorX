@@ -4,9 +4,12 @@ interface PlanApprovalBannerProps {
     plan: ExecutionPlan;
     handleApprovePlan: () => Promise<void>;
     handleRevokeApproval: () => void;
+    isExecuting?: boolean;
+    onStop?: () => void;
+    executionMessage?: string;
 }
 
-export function PlanApprovalBanner({ plan, handleApprovePlan, handleRevokeApproval }: PlanApprovalBannerProps) {
+export function PlanApprovalBanner({ plan, handleApprovePlan, handleRevokeApproval, isExecuting, onStop, executionMessage }: PlanApprovalBannerProps) {
     return (
         <div style={{
             padding: '12px 24px',
@@ -23,14 +26,40 @@ export function PlanApprovalBanner({ plan, handleApprovePlan, handleRevokeApprov
             flexShrink: 0
         }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'white' }}>
-                <span className={`codicon ${plan.approved ? 'codicon-pass-filled' : 'codicon-info'}`} style={{ color: plan.approved ? '#34d399' : '#818cf8', fontSize: '15px' }} />
+                {isExecuting ? (
+                    <span className="codicon codicon-loading codicon-modifier-spin" style={{ color: '#34d399', fontSize: '15px' }} />
+                ) : (
+                    <span className={`codicon ${plan.approved ? 'codicon-pass-filled' : 'codicon-info'}`} style={{ color: plan.approved ? '#34d399' : '#818cf8', fontSize: '15px' }} />
+                )}
                 <span>
-                    {plan.approved
-                        ? 'Plan Approved & Active. Executing roadmap steps...'
-                        : 'Review Draft Plan: You can modify steps inline or ask AI to refine the details, then approve when ready.'}
+                    {isExecuting
+                        ? (executionMessage || 'Executing roadmap steps...')
+                        : plan.approved
+                            ? 'Ready to build.'
+                            : 'Review Draft Plan: You can modify steps inline or ask AI to refine the details, then approve when ready.'}
                 </span>
             </div>
-            {plan.approved ? (
+            {isExecuting ? (
+                <button
+                    onClick={onStop}
+                    style={{
+                        padding: '4px 12px',
+                        background: 'rgba(239, 68, 68, 0.15)',
+                        border: '1px solid rgba(239, 68, 68, 0.4)',
+                        borderRadius: '4px',
+                        color: '#ef4444',
+                        cursor: 'pointer',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        transition: 'all 0.2s'
+                    }}
+                >
+                    <span className="codicon codicon-stop" /> Stop
+                </button>
+            ) : plan.approved ? (
                 <button
                     onClick={handleRevokeApproval}
                     style={{
@@ -53,6 +82,7 @@ export function PlanApprovalBanner({ plan, handleApprovePlan, handleRevokeApprov
             ) : (
                 <button
                     onClick={handleApprovePlan}
+                    disabled={isExecuting}
                     style={{
                         padding: '6px 14px',
                         background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
@@ -68,7 +98,8 @@ export function PlanApprovalBanner({ plan, handleApprovePlan, handleRevokeApprov
                         boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)'
                     }}
                 >
-                    <span className="codicon codicon-rocket" /> Approve Plan
+                    <span className="codicon codicon-play" />
+                    Build
                 </button>
             )}
         </div>

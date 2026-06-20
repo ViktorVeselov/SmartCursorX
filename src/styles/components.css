@@ -293,6 +293,54 @@
   color: var(--text-primary);
 }
 
+.changes-tab-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 12px;
+    padding-left: 12px;
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+    height: 24px;
+}
+
+.changes-tab-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.4);
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+    font-size: 13px;
+}
+
+.changes-tab-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.changes-tab-btn.active {
+    background: rgba(99, 102, 241, 0.2);
+    color: #818cf8;
+    box-shadow: 0 0 8px rgba(99, 102, 241, 0.15);
+}
+
+.changes-tab-btn.active[title="Accepted (Staged) Changes"] {
+    background: rgba(52, 211, 153, 0.15);
+    color: #34d399;
+    box-shadow: 0 0 8px rgba(52, 211, 153, 0.15);
+}
+
+.changes-tab-btn.active[title="Pending AI Changes"] {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.15);
+}
+
 .top-bar-actions {
   margin-left: auto;
   display: flex;

@@ -108,6 +108,37 @@ export class ASTPatchingService {
         }
     }
 
+    private static extractJson(text: string): string {
+        let cleaned = text.trim();
+        
+        // Find markdown code blocks (e.g. ```json ... ``` or ``` ... ```)
+        const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/i;
+        const match = cleaned.match(codeBlockRegex);
+        if (match && match[1]) {
+            return match[1].trim();
+        }
+        
+        // Fallback: Find the first '[' or '{' and the last ']' or '}'
+        const firstBracket = cleaned.indexOf('[');
+        const firstBrace = cleaned.indexOf('{');
+        let start = -1;
+        let end = -1;
+        
+        if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
+            start = firstBracket;
+            end = cleaned.lastIndexOf(']');
+        } else if (firstBrace !== -1) {
+            start = firstBrace;
+            end = cleaned.lastIndexOf('}');
+        }
+        
+        if (start !== -1 && end !== -1 && end > start) {
+            return cleaned.substring(start, end + 1).trim();
+        }
+        
+        return cleaned;
+    }
+
     /**
      * Parses JSON AST patches and returns preview data without writing to disk.
      * Used by the Change Review system to show users pending modifications before applying.
@@ -116,15 +147,7 @@ export class ASTPatchingService {
         if (!patchJson) return [];
 
         try {
-            let cleaned = patchJson.trim();
-            if (cleaned.startsWith('```')) {
-                const firstLine = cleaned.indexOf('\n');
-                const lastFence = cleaned.lastIndexOf('```');
-                if (firstLine !== -1 && lastFence !== -1 && lastFence > firstLine) {
-                    cleaned = cleaned.substring(firstLine, lastFence).trim();
-                }
-            }
-
+            const cleaned = this.extractJson(patchJson);
             const patches = JSON.parse(cleaned) as FilePatch[];
             if (!Array.isArray(patches)) {
                 throw new Error("JSON Patch payload is not a valid array.");
@@ -196,16 +219,7 @@ export class ASTPatchingService {
         if (!patchJson) return false;
 
         try {
-            // Extract clean JSON block if model wrapped it in markdown code fences
-            let cleaned = patchJson.trim();
-            if (cleaned.startsWith('```')) {
-                const firstLine = cleaned.indexOf('\n');
-                const lastFence = cleaned.lastIndexOf('```');
-                if (firstLine !== -1 && lastFence !== -1 && lastFence > firstLine) {
-                    cleaned = cleaned.substring(firstLine, lastFence).trim();
-                }
-            }
-
+            const cleaned = this.extractJson(patchJson);
             const patches = JSON.parse(cleaned) as FilePatch[];
             if (!Array.isArray(patches)) {
                 throw new Error("JSON Patch payload is not a valid array.");

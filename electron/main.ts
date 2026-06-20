@@ -10,6 +10,7 @@ import { adminApiService } from './services/AdminApiService'
 import { checkCommandLineTests } from './testRunner'
 import { aiService } from './services/AIService'
 import { PathGuard } from './services/PathGuard'
+import { WorkspaceWatcherService } from './services/WorkspaceWatcherService'
 
 console.log(' [Main] Starting Electron Main Process...');
 
@@ -84,10 +85,15 @@ function createWindow() {
 
 app.on('window-all-closed', () => {
   adminApiService.stop();
+  WorkspaceWatcherService.getInstance().stop();
   if (process.platform !== 'darwin') {
     app.quit()
     win = null
   }
+})
+
+app.on('before-quit', () => {
+  WorkspaceWatcherService.getInstance().stop();
 })
 
 function createDefaultMenu() {
@@ -183,6 +189,7 @@ app.whenReady().then(async () => {
     if (activeWorkspacePath) {
       PathGuard.configure(activeWorkspacePath);
       console.log(' [Main] PathGuard configured with workspace:', activeWorkspacePath);
+      WorkspaceWatcherService.getInstance().watch(activeWorkspacePath);
     }
 
     // Decoupled CLI integration test suite runner
@@ -193,7 +200,7 @@ app.whenReady().then(async () => {
     adminApiService.start();
 
     // Initialize IPC Handlers
-    const ipcContext: IpcHandlerContext = { mainWindow: null, native, ptyProcesses: new Map(), activeStreamAborted: false, activeAbortController: null, workspacePath: activeWorkspacePath || '' };
+    const ipcContext: IpcHandlerContext = { mainWindow: null, native, ptyProcesses: new Map(), activeAbortControllers: new Map(), abortedConvIds: new Set(), workspacePath: activeWorkspacePath || '' };
     registerAllHandlers(ipcContext);
     console.log(' [Main] Handlers Registered');
 
@@ -202,6 +209,7 @@ app.whenReady().then(async () => {
 
     if (win) {
       ipcContext.mainWindow = win;
+      WorkspaceWatcherService.getInstance().setMainWindow(win);
     }
   } catch (err) {
     console.error(' [Main] Error during startup:', err);

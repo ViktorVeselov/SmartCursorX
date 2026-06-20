@@ -1,4 +1,4 @@
-import { FinetuneBackend, FinetuneOptions, TrainingEvent, TrainingProgress, HardwareSpec, DEFAULT_FINETUNE_OPTIONS, BackendCapability, BackendAvailability, BYTES_PER_GB, CACHE_TTL_DAYS, TIER_SCORES, runCommand } from './backends/BaseFinetuneBackend'
+import { FinetuneBackend, FinetuneOptions, TrainingEvent, TrainingProgress, HardwareSpec, DEFAULT_FINETUNE_OPTIONS, BackendCapability, BackendAvailability, BYTES_PER_GB, CACHE_TTL_DAYS, TIER_SCORES, detectGpuHardware } from './backends/BaseFinetuneBackend'
 import { LlamaCppBackend } from './backends/LlamaCppBackend'
 import { PythonBackend } from './backends/PythonBackend'
 import { datasetService, DatasetManifest } from './DatasetService'
@@ -95,51 +95,6 @@ export class FinetuningService {
     })
   }
 
-  private async detectNvidiaGpu(fallback: HardwareSpec): Promise<void> {
-    const result = await runCommand('nvidia-smi --query-gpu=name,memory.total,count --format=csv,noheader')
-    if (!result.ok) {
-      console.log('[Hardware] nvidia-smi not available:', result.stderr.slice(0, 200))
-      return
-    }
-    const lines = result.stdout.split('\n')
-    const first = lines[0]?.split(', ')
-    if (first && first.length >= 2) {
-      fallback.gpuAvailable = true
-      fallback.gpuName = first[0]
-      fallback.numGPUs = lines.length
-      const vramMatch = first[1].match(/(\d+)/)
-      if (vramMatch) fallback.vramGB = Math.round(parseInt(vramMatch[1]) / 1024)
-      fallback.backendType = 'python_cuda'
-      fallback.isAMD = false
-    }
-  }
-
-  private async detectWmiGpu(fallback: HardwareSpec): Promise<void> {
-    if (process.platform !== 'win32') return
-    const result = await runCommand(
-      'powershell -Command "Get-WmiObject Win32_VideoController | Select-Object Name,AdapterRAM | ConvertTo-Json"'
-    )
-    if (!result.ok) {
-      console.log('[Hardware] WMI detection failed:', result.stderr.slice(0, 200))
-      return
-    }
-    try {
-      const parsed = JSON.parse(result.stdout)
-      const entries = Array.isArray(parsed) ? parsed : [parsed]
-      const dedicated = entries.find((e: any) => e.AdapterRAM && parseInt(e.AdapterRAM) > 0)
-      if (dedicated) {
-        fallback.gpuAvailable = true
-        fallback.gpuName = dedicated.Name
-        fallback.numGPUs = entries.filter((e: any) => e.AdapterRAM && parseInt(e.AdapterRAM) > 0).length
-        fallback.vramGB = Math.round(parseInt(dedicated.AdapterRAM) / BYTES_PER_GB)
-        fallback.isAMD = /amd|radeon/i.test(dedicated.Name)
-        fallback.backendType = fallback.isAMD ? 'python_rocm' : 'python_cuda'
-      }
-    } catch (e) {
-      console.log('[Hardware] Failed to parse WMI output:', result.stdout.slice(0, 200))
-    }
-  }
-
   private async probeBackends(fallback: HardwareSpec): Promise<HardwareSpec> {
     let best: HardwareSpec = { ...fallback }
     for (const backend of this.backends) {
@@ -164,20 +119,9 @@ export class FinetuningService {
     }
 
     const os = require('os')
-    const fallback: HardwareSpec = {
-      gpuAvailable: false,
-      gpuName: 'CPU',
-      vramGB: 0,
-      cudaCores: 0,
-      cpuCores: os.cpus().length,
-      ramGB: Math.round(os.totalmem() / BYTES_PER_GB),
-      backendType: 'python_cpu',
-      numGPUs: 0,
-      isAMD: false,
-    }
-
-    await this.detectNvidiaGpu(fallback)
-    await this.detectWmiGpu(fallback)
+    const cpuCores = os.cpus().length
+    const ramGB = Math.round(os.totalmem() / BYTES_PER_GB)
+    const fallback = await detectGpuHardware(cpuCores, ramGB)
     const best = await this.probeBackends(fallback)
 
     this.cacheHardware(best)

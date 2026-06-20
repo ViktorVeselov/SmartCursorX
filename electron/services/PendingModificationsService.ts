@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import console from 'console';
+import { SessionChangesTrackerService } from './SessionChangesTrackerService';
 import type { PendingFileModification, PendingTaskModifications } from '../../src/types/appTypes';
 
 export class PendingModificationsService {
@@ -46,6 +47,7 @@ export class PendingModificationsService {
                 fs.mkdirSync(parentDir, { recursive: true });
             }
             fs.writeFileSync(modification.absolutePath, modification.proposedContent, 'utf-8');
+            SessionChangesTrackerService.trackAccepted(modification.absolutePath, modification.originalContent, 'accepted');
             console.log(`[PendingModificationsService] Applied single file: ${modification.relativePath}`);
             return true;
         } catch (err) {

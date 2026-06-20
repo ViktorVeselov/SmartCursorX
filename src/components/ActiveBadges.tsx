@@ -3,8 +3,8 @@ import type { AppAgent, AppFlow } from './ChatPanel';
 export interface ActiveBadgesProps {
     attachedFile: { name: string; path: string; content: string } | null;
     onRemoveFile: () => void;
-    isPlanModeActive: boolean;
-    onTogglePlanMode: () => void;
+    chatMode: 'write' | 'ask' | 'plan';
+    onChatModeChange: (mode: 'write' | 'ask' | 'plan') => void;
     activeAgent: AppAgent | null;
     onRemoveAgent: () => void;
     activeWorkflow: AppFlow | null;
@@ -14,8 +14,8 @@ export interface ActiveBadgesProps {
 export const ActiveBadges = ({
     attachedFile,
     onRemoveFile,
-    isPlanModeActive,
-    onTogglePlanMode,
+    chatMode,
+    onChatModeChange,
     activeAgent,
     onRemoveAgent,
     activeWorkflow,
@@ -34,14 +34,25 @@ export const ActiveBadges = ({
                     />
                 </div>
             )}
-            {isPlanModeActive && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', background: 'rgba(0, 122, 204, 0.1)', border: '1px solid rgba(0, 122, 204, 0.2)', borderRadius: 4 }}>
-                    <span className="codicon codicon-checklist" style={{ fontSize: 12, color: 'var(--accent-primary)' }} />
-                    <span style={{ fontSize: 11, color: 'var(--accent-primary)', fontWeight: 600 }}>Plan Mode Active</span>
+            {chatMode === 'plan' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', background: 'rgba(167, 139, 250, 0.1)', border: '1px solid rgba(167, 139, 250, 0.2)', borderRadius: 4 }}>
+                    <span className="codicon codicon-checklist" style={{ fontSize: 12, color: '#a78bfa' }} />
+                    <span style={{ fontSize: 11, color: '#a78bfa', fontWeight: 600 }}>Plan Mode Active</span>
                     <span
                         className="codicon codicon-close"
-                        style={{ fontSize: 10, cursor: 'pointer', marginLeft: 4, color: 'var(--accent-primary)' }}
-                        onClick={onTogglePlanMode}
+                        style={{ fontSize: 10, cursor: 'pointer', marginLeft: 4, color: '#a78bfa' }}
+                        onClick={() => onChatModeChange('write')}
+                    />
+                </div>
+            )}
+            {chatMode === 'ask' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', background: 'rgba(6, 182, 212, 0.1)', border: '1px solid rgba(6, 182, 212, 0.2)', borderRadius: 4 }}>
+                    <span className="codicon codicon-question" style={{ fontSize: 12, color: '#06b6d4' }} />
+                    <span style={{ fontSize: 11, color: '#06b6d4', fontWeight: 600 }}>Ask Mode Active</span>
+                    <span
+                        className="codicon codicon-close"
+                        style={{ fontSize: 10, cursor: 'pointer', marginLeft: 4, color: '#06b6d4' }}
+                        onClick={() => onChatModeChange('write')}
                     />
                 </div>
             )}

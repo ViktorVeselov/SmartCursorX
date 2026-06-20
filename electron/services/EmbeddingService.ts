@@ -24,7 +24,7 @@ export class EmbeddingService {
         const estimatedTokens = Math.ceil(text.length / 4);
 
         const activeProvider = secureStore.getActiveProvider();
-        const activeModel = activeProvider === 'gemini' ? 'text-embedding-004' : 'text-embedding-3-small';
+        const activeModel = activeProvider === 'gemini' ? 'gemini-embedding-001' : 'text-embedding-3-small';
 
         try {
             const embedding = await aiBridge.getEmbedding(activeProvider, activeModel, text);

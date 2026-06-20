@@ -1,6 +1,7 @@
 import { secureStore } from '../secureStore';
 import { PathGuard } from '../services/PathGuard';
 import { checkArgs } from '../../src/helpers/invariant';
+import { WorkspaceWatcherService } from '../services/WorkspaceWatcherService';
 
 export function registerSettingsHandlers(ipcMain: Electron.IpcMain) {
     ipcMain.handle('get-api-key', () => secureStore.getApiKey('openai'));
@@ -89,6 +90,7 @@ export function registerSettingsHandlers(ipcMain: Electron.IpcMain) {
             if (settings.activeWorkspacePath.trim().length > 0) {
                 PathGuard.setWorkspacePath(settings.activeWorkspacePath);
             }
+            WorkspaceWatcherService.getInstance().watch(settings.activeWorkspacePath);
         }
 
         return true;
