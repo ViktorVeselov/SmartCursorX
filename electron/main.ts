@@ -184,13 +184,16 @@ app.whenReady().then(async () => {
     aiService.initializeFromStore();
     console.log(' [Main] AI Service Initialized');
 
-    // Configure PathGuard with workspace root
-    const activeWorkspacePath = (await import('./secureStore')).secureStore.getActiveWorkspacePath();
-    if (activeWorkspacePath) {
-      PathGuard.configure(activeWorkspacePath);
-      console.log(' [Main] PathGuard configured with workspace:', activeWorkspacePath);
-      WorkspaceWatcherService.getInstance().watch(activeWorkspacePath);
+    // Configure PathGuard with workspace root — prioritize previously opened workspace from secureStore
+    const secureStore = (await import('./secureStore')).secureStore;
+    const previouslyOpened = secureStore.getActiveWorkspacePath();
+    const workspacePath = previouslyOpened || process.cwd();
+    PathGuard.configure(workspacePath);
+    if (!previouslyOpened) {
+        secureStore.setActiveWorkspacePath(workspacePath);
     }
+    console.log(' [Main] PathGuard configured with workspace:', workspacePath);
+    WorkspaceWatcherService.getInstance().watch(workspacePath);
 
     // Decoupled CLI integration test suite runner
     await checkCommandLineTests();
@@ -200,7 +203,7 @@ app.whenReady().then(async () => {
     adminApiService.start();
 
     // Initialize IPC Handlers
-    const ipcContext: IpcHandlerContext = { mainWindow: null, native, ptyProcesses: new Map(), activeAbortControllers: new Map(), abortedConvIds: new Set(), workspacePath: activeWorkspacePath || '' };
+    const ipcContext: IpcHandlerContext = { mainWindow: null, native, ptyProcesses: new Map(), activeAbortControllers: new Map(), abortedConvIds: new Set(), workspacePath };
     registerAllHandlers(ipcContext);
     console.log(' [Main] Handlers Registered');
 

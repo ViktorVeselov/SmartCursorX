@@ -29,6 +29,8 @@ interface ChatPanelProps {
     executionContext?: AppExecutionContext | null; settingsSavedTrigger?: number;
     onOpenPlan?: (taskId: number, taskTitle: string) => void;
     onActiveTaskIdChange?: (taskId: number | null) => void;
+    onActiveConvIdChange?: (convId: string | null) => void;
+    executionRefreshTrigger?: number;
     rootPath?: string;
     pendingReview?: { taskId: number; fileCount: number; addedLines: number; removedLines: number } | null;
     pendingReviewApplying?: boolean;
@@ -188,13 +190,14 @@ function ChatFileDiffCard({ diff, onDismiss }: { diff: { filePath: string; origi
     );
 }
 
-export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, settingsSavedTrigger, onOpenPlan, onActiveTaskIdChange, rootPath = '', pendingReview, pendingReviewApplying, onOpenReview, onAcceptAllChanges, onRejectAllChanges }: ChatPanelProps) {
+export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, settingsSavedTrigger, onOpenPlan, onActiveTaskIdChange, onActiveConvIdChange, executionRefreshTrigger, rootPath = '', pendingReview, pendingReviewApplying, onOpenReview, onAcceptAllChanges, onRejectAllChanges }: ChatPanelProps) {
     const [messages, setMessages] = useState<Message[]>([{ role: 'system', content: 'You are a helpful coding assistant.' }]);
     const [apiError, setApiError] = useState<{ type: string; message: string; timestamp: number; provider?: string; model?: string } | null>(null);
     const [streamElapsed, setStreamElapsed] = useState(0);
     const [currentlyReadingFiles, setCurrentlyReadingFiles] = useState<{ path: string; timestamp: number }[]>([]);
     const [isPlanModifying, setIsPlanModifying] = useState(false);
-    const [isLoading, setIsLoading] = useState(false);
+    const [loadingConversations, setLoadingConversations] = useState<Set<string>>(new Set());
+    const activeStreamIdsRef = useRef<Set<string>>(new Set());
     const [input, setInput] = useState('');
     const [attachedFile, setAttachedFile] = useState<{ name: string; path: string; content: string } | null>(null);
     const [executionMode, setExecutionMode] = useState<'fast' | 'think'>('fast');
@@ -219,7 +222,6 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
     const [customModels, setCustomModels] = useState<Record<string, unknown>[]>([]);
     const [contextUsage, setContextUsage] = useState<{ estimatedInput: number; contextLength: number } | null>(null);
     const [chatFileDiffs, setChatFileDiffs] = useState<{ filePath: string; originalContent: string; proposedContent: string; addedLines: number; removedLines: number }[]>([]);
-    const lastProgressPhaseRef = useRef<string>('');
     const [panelWidth, setPanelWidth] = useState(() => { const s = localStorage.getItem('chatPanelWidth'); return s ? parseInt(s, 10) : 400; });
     const [_flows, _setFlows] = useState<{ id: number; name: string; description: string; steps: unknown; agent_id: number }[]>([]);
 
@@ -276,12 +278,14 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
         handleDeleteConversation, handleStartRename, handleSaveRename,
         handleNewChat, handleConversationContextMenu, handleConversationMenuAction, handleForkConversation,
         setShowHistoryDrawer, setEditingConvId, setEditingTitle, setConversationContextMenu,
-    } = useConversations(setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, setIsLoading, setActiveProvider, setActiveModel, rootPath);
+    } = useConversations(setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, setLoadingConversations, setActiveProvider, setActiveModel, rootPath, activeStreamIdsRef);
     const { planStartTimeRef, timerRef } = usePlanSync(activeConversationIdRef, setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, setIsPlanModifying, setStreamElapsed, setCurrentlyReadingFiles, currentActivitiesRef as unknown as React.MutableRefObject<Record<string, unknown>[]>, refreshActiveMessages);
     useAgentHandler(activeConversationId, setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, loadConversations);
 
+    const isLoading = activeConversationId ? loadingConversations.has(activeConversationId) : false;
+
     const { handleSend, handleAbort, messageQueue, lastSentMessageRef } = useChatSending({
-        messages, setMessages, isLoading, setIsLoading, input, setInput, attachedFile, setAttachedFile,
+        messages, setMessages, isLoading, setLoadingConversations, activeStreamIdsRef, input, setInput, attachedFile, setAttachedFile,
         chatMode, activeModel, activeProvider, effortLevel, executionMode,
         activeConversationId, setActiveConversationId, conversations: conversations as unknown as Record<string, unknown>[], loadConversations, refreshActiveMessages,
         dbAgents, flows: _flows, activeAgent: activeAgent as unknown as Record<string, unknown>, activeWorkflow: activeWorkflow as unknown as Record<string, unknown>,
@@ -294,6 +298,13 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
 
     useEffect(() => { activeConversationIdRef.current = activeConversationId; }, [activeConversationId]);
     useEffect(() => { if (onActiveTaskIdChange) onActiveTaskIdChange(activeConversationId ? getNumericTaskId(activeConversationId) : null); }, [activeConversationId, onActiveTaskIdChange]);
+    useEffect(() => { if (onActiveConvIdChange) onActiveConvIdChange(activeConversationId); }, [activeConversationId, onActiveConvIdChange]);
+    useEffect(() => {
+        if (executionRefreshTrigger && activeConversationId) {
+            console.log('[ChatPanel] executionRefreshTrigger fired, refreshing messages for conv:', activeConversationId);
+            refreshActiveMessages(activeConversationId);
+        }
+    }, [executionRefreshTrigger]);
     useEffect(() => {
         const isNewMessage = messages.length > lastMessageCountRef.current;
         lastMessageCountRef.current = messages.length;
@@ -368,29 +379,6 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
     }, []);
 
     useEffect(() => {
-        const handleExecutionProgress = (_event: any, data: { taskId: number; phase: string; message: string; attempt?: number; totalAttempts?: number }) => {
-            const emoji: Record<string, string> = {
-                investigating: '🔍',
-                generating: '✏️',
-                applying: '📦',
-                verifying: '🧪',
-                completed: '✅',
-                failed: '❌',
-                stopped: '⏹',
-            };
-            const prefix = emoji[data.phase] || '•';
-            const attemptStr = data.attempt && data.totalAttempts ? ` (${data.attempt}/${data.totalAttempts})` : '';
-            const content = `${prefix} ${data.message}${attemptStr}`;
-            if (content !== lastProgressPhaseRef.current) {
-                lastProgressPhaseRef.current = content;
-                setMessages(prev => [...prev, { role: 'system', content }]);
-            }
-        };
-        const cleanup2 = window.ipcRenderer.on('execution:progress', handleExecutionProgress) as unknown as () => void;
-        return () => cleanup2();
-    }, []);
-
-    useEffect(() => {
         if (showSettings) {
             const fetchStatuses = async () => {
                 try {
@@ -436,7 +424,17 @@ export function ChatPanel({ isOpen, onClose, onApplyCode, executionContext, sett
                 { role: 'system', content: (agent.system_prompt as string) || 'You are a helpful coding assistant.' },
                 { role: 'system', content: `Starting Visual Workflow: ${flow.name}` },
             ]);
-            runGraphWorkflow(steps.nodes as unknown[], steps.edges as unknown[], agent as unknown as Record<string, unknown>, setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, setIsLoading);
+            runGraphWorkflow(steps.nodes as unknown[], steps.edges as unknown[], agent as unknown as Record<string, unknown>, setMessages as unknown as React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>, ((action: React.SetStateAction<boolean>) => {
+                const loading = typeof action === 'function' ? (action as (prevState: boolean) => boolean)(false) : action;
+                if (activeConversationId) {
+                    setLoadingConversations(prev => {
+                        const next = new Set(prev);
+                        if (loading) next.add(activeConversationId);
+                        else next.delete(activeConversationId);
+                        return next;
+                    });
+                }
+            }) as React.Dispatch<React.SetStateAction<boolean>>);
         } else {
             const stepsList = Array.isArray(flow.steps) ? (flow.steps as unknown[]) : [];
             const flowContext = `Wait! You are now executing a defined flow.\n\nFLOW: ${flow.name}\nDESCRIPTION: ${flow.description}\n\nSTEPS TO EXECUTE:\n${stepsList.map((s, i: number) => `${i + 1}. ${String(s)}`).join('\n')}\n\nPlease execute the steps one by one or as appropriate.`;

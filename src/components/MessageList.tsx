@@ -29,7 +29,14 @@ export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(function
     activeConversationId,
     onOpenPlan,
 }, scrollContainerRef) {
-    const filteredMsgs = messages.filter((m) => (m as Record<string, unknown>).role !== 'system');
+    const filteredMsgs = messages.filter((m) => {
+        const role = (m as Record<string, unknown>).role;
+        const content = (m as Record<string, unknown>).content as string;
+        if (role === 'system') {
+            return content && content !== 'You are a helpful coding assistant.';
+        }
+        return true;
+    });
     return (
         <div ref={scrollContainerRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
             {filteredMsgs.map((msg, i: number) => (

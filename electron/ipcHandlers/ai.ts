@@ -18,6 +18,16 @@ import type { IpcHandlerContext } from './index';
 import { ipcMain } from 'electron';
 import { SessionChangesTrackerService } from '../services/SessionChangesTrackerService';
 
+async function withUsageTimeout<T>(promise: Promise<T>, timeoutMs = 1500): Promise<T | undefined> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<undefined>((resolve) => {
+    timeoutId = setTimeout(() => resolve(undefined), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+  }) as Promise<T | undefined>;
+}
+
 type ToolPermission = 'allow' | 'deny' | 'ask';
 
 interface ToolPermissions {
@@ -396,7 +406,7 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                             sendChunk(chunk);
                         }
                         try {
-                            const fallbackUsage = isAborted() ? undefined : await fallbackResult.usage;
+                            const fallbackUsage = isAborted() ? undefined : await withUsageTimeout(fallbackResult.usage);
                             if (fallbackUsage) {
                                 actualInputTokens = fallbackUsage.inputTokens;
                                 actualOutputTokens = fallbackUsage.outputTokens;
@@ -408,7 +418,7 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                     console.log('[ChatStream] Fallback without tools completed, total chunks:', chunkCount);
                 } else if (!isAborted()) {
                     try {
-                        const streamUsage = await result.usage;
+                        const streamUsage = await withUsageTimeout(result.usage);
                         if (streamUsage) {
                             actualInputTokens = streamUsage.inputTokens;
                             actualOutputTokens = streamUsage.outputTokens;
@@ -590,7 +600,7 @@ async function handleStructuredPlanStart(
             let actualOutputTokens = 0;
             if (!context.abortedConvIds.has(PLAN_CONV_ID)) {
                 try {
-                    const streamUsage = await partialStream.usage;
+                    const streamUsage = await withUsageTimeout(partialStream.usage);
                     if (streamUsage) {
                         actualInputTokens = streamUsage.inputTokens || actualInputTokens;
                         actualOutputTokens = streamUsage.outputTokens || actualOutputTokens;

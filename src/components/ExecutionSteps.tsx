@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import type { PlanStep } from '../helpers/planEditorTypes';
 
 interface VerificationResult {
     id: number;
@@ -22,17 +23,20 @@ interface ExecutionAttempt {
 interface PlanData {
     filesRead?: string[];
     filesToModify?: string[];
+    steps?: PlanStep[];
 }
 
 interface ExecutionStepsProps {
     taskId: number;
 }
 
+// eslint-disable-next-line complexity
 export function ExecutionSteps({ taskId }: ExecutionStepsProps) {
     const [attempts, setAttempts] = useState<ExecutionAttempt[]>([]);
     const [plan, setPlan] = useState<PlanData | null>(null);
     const [expandedAttempts, setExpandedAttempts] = useState<Record<number, boolean>>({});
     const [isExploredExpanded, setIsExploredExpanded] = useState(false);
+    const [isRoadmapExpanded, setIsRoadmapExpanded] = useState(false);
     const [loading, setLoading] = useState(false);
 
     const loadData = useCallback(async () => {
@@ -91,6 +95,55 @@ export function ExecutionSteps({ taskId }: ExecutionStepsProps) {
                 <span className="codicon codicon-history" style={{ marginRight: '6px' }} />
                 Execution Step Trace
             </div>
+            {/* Roadmap Steps Checklist */}
+            {plan && plan.steps && plan.steps.length > 0 && (
+                <div style={{ marginBottom: '10px' }}>
+                    <div 
+                        onClick={() => setIsRoadmapExpanded(!isRoadmapExpanded)}
+                        style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', userSelect: 'none', padding: '2px 0' }}
+                    >
+                        <span className={`codicon ${isRoadmapExpanded ? 'codicon-chevron-down' : 'codicon-chevron-right'}`} style={{ marginRight: '6px', fontSize: '12px' }} />
+                        <span>Roadmap ({plan.steps.filter(s => s.completed).length}/{plan.steps.length} completed)</span>
+                    </div>
+
+                    {isRoadmapExpanded && (
+                        <div style={{ paddingLeft: '20px', borderLeft: '1px dashed #444', marginLeft: '6px', marginTop: '4px' }}>
+                            {plan.steps.map((step, i) => {
+                                const actionEmoji: Record<string, string> = {
+                                    read: '📖',
+                                    analyze: '🔍',
+                                    modify: '✏️',
+                                    create: '🆕',
+                                    delete: '🗑️',
+                                    run_command: '⚡'
+                                };
+                                const emoji = actionEmoji[step.action] || '•';
+                                return (
+                                    <div key={i} style={{ padding: '4px 0', display: 'flex', alignItems: 'flex-start', opacity: step.completed ? 0.65 : 1 }}>
+                                        <span className={`codicon ${step.completed ? 'codicon-pass' : 'codicon-circle-outline'}`} style={{ 
+                                            marginRight: '8px', 
+                                            marginTop: '2px',
+                                            fontSize: '13px', 
+                                            color: step.completed ? '#4ec9b0' : '#818cf8',
+                                            flexShrink: 0
+                                        }} />
+                                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                            <div style={{ fontWeight: 500, color: step.completed ? 'var(--vscode-editor-foreground, #cccccc)' : '#fff' }}>
+                                                {emoji} Step {step.order}: {step.action} <span style={{ color: 'var(--vscode-textLink-activeForeground, #3794ff)' }}>{step.target}</span>
+                                            </div>
+                                            {step.rationale && (
+                                                <div style={{ fontSize: '11px', opacity: 0.6, marginTop: '2px' }}>
+                                                    {step.rationale}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Explored Files Section */}
             {plan && (

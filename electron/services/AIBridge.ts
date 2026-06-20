@@ -59,6 +59,7 @@ class AIBridge {
             'HTTP-Referer': 'https://github.com/anomalyco/opencode',
             'X-Title': 'SmartCursor-X',
           },
+          supportsStructuredOutputs: true,
         }).languageModel(modelId) as unknown as LanguageModel;
       }
       case 'finetuned': {
@@ -71,6 +72,7 @@ class AIBridge {
             name: providerConfig.name || provider,
             apiKey: apiKey,
             baseURL: providerConfig.base_url,
+            supportsStructuredOutputs: true,
           }).languageModel(modelId) as unknown as LanguageModel;
         }
         throw new Error(`Unsupported provider: ${provider}`);
@@ -104,6 +106,7 @@ class AIBridge {
         name: `finetuned-${model.name}`,
         baseURL: 'http://localhost:8080/v1', // Default llama.cpp server port
         apiKey: 'not-needed',
+        supportsStructuredOutputs: true,
       }).languageModel('finetuned-model') as unknown as LanguageModel;
     } else {
       // For Python backend, we need a Python inference server
@@ -112,6 +115,7 @@ class AIBridge {
         name: `finetuned-${model.name}`,
         baseURL: 'http://localhost:8081/v1', // Default Python inference server port
         apiKey: 'not-needed',
+        supportsStructuredOutputs: true,
       }).languageModel('finetuned-model') as unknown as LanguageModel;
     }
   }

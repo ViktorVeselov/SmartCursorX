@@ -30,7 +30,8 @@ export interface ChatSendingParams {
     messages: Message[];
     setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
     isLoading: boolean;
-    setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
+    setLoadingConversations: React.Dispatch<React.SetStateAction<Set<string>>>;
+    activeStreamIdsRef: React.MutableRefObject<Set<string>>;
     input: string;
     setInput: React.Dispatch<React.SetStateAction<string>>;
     attachedFile: { name: string; path: string; content: string } | null;
@@ -70,7 +71,6 @@ export function useChatSending(params: ChatSendingParams) {
     const messageQueueRef = useRef<QueuedMessage[]>([]);
     messageQueueRef.current = messageQueue;
 
-    const activeStreamIdsRef = useRef<Set<string>>(new Set());
     const activeStreamsRef = useRef<Map<string, {
         handleChunk: (chunk: any) => void;
         handleEnd: (...args: any[]) => void;
@@ -121,31 +121,31 @@ export function useChatSending(params: ChatSendingParams) {
 
     const handleAbort = useCallback(async (convId?: string | unknown) => {
         const p = paramsRef.current;
-        const targetConvId = typeof convId === 'string' ? convId : undefined;
+        const targetConvId = typeof convId === 'string' ? convId : (p.activeConversationId || undefined);
         rLog('[ChatPanel:abort] handleAbort called' + (targetConvId ? ' convId:' + targetConvId : ' (all)'));
 
         if (targetConvId) {
-            activeStreamsRef.current.delete(targetConvId);
-            activeStreamIdsRef.current.delete(targetConvId);
+            p.setLoadingConversations(prev => {
+                const next = new Set(prev);
+                next.delete(targetConvId);
+                return next;
+            });
             try {
                 window.ipcRenderer.send('ai:chat-abort', targetConvId);
             } catch (e) {
                 rError('[ChatPanel:abort] Failed to send abort command', e);
             }
             if (p.activeConversationId === targetConvId) {
-                p.setIsLoading(false);
                 p.setMessages(prev => prev.map(m => m.isStreaming ? { ...m, isStreaming: false } : m));
                 p.setCurrentlyReadingFiles([]);
             }
         } else {
-            activeStreamsRef.current.clear();
-            activeStreamIdsRef.current.clear();
+            p.setLoadingConversations(new Set());
             try {
                 window.ipcRenderer.send('ai:chat-abort');
             } catch (e) {
                 rError('[ChatPanel:abort] Failed to send abort command', e);
             }
-            p.setIsLoading(false);
             p.setMessages(prev => prev.map(m => m.isStreaming ? { ...m, isStreaming: false } : m));
             p.setCurrentlyReadingFiles([]);
         }
@@ -160,7 +160,7 @@ export function useChatSending(params: ChatSendingParams) {
     const handleSend = useCallback(async (queuedMsg?: QueuedMessage) => {
         const p = paramsRef.current;
         const {
-            messages, setMessages, isLoading, setIsLoading,
+            messages, setMessages, isLoading, setLoadingConversations, activeStreamIdsRef,
             input, setInput, attachedFile, setAttachedFile,
             chatMode, activeModel, activeProvider,
             effortLevel, executionMode, activeConversationId,
@@ -211,8 +211,6 @@ export function useChatSending(params: ChatSendingParams) {
 
         if (!queuedMsg) setInput('');
         setCurrentlyReadingFiles([]);
-        setIsLoading(true);
-
         planStartTimeRef.current = Date.now();
         setStreamElapsed(0);
         if (timerRef.current) clearInterval(timerRef.current);
@@ -230,6 +228,13 @@ export function useChatSending(params: ChatSendingParams) {
             currentConvId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
             streamConvId = currentConvId;
         }
+
+        p.setLoadingConversations(prev => {
+            const next = new Set(prev);
+            next.add(streamConvId);
+            return next;
+        });
+        activeStreamIdsRef.current.add(streamConvId);
 
         const handleChunk = (chunk: any) => {
             const cp = paramsRef.current;
@@ -259,12 +264,14 @@ export function useChatSending(params: ChatSendingParams) {
                 cp.setApiError({ type: errorType, message: errorMsg, timestamp: Date.now(), provider: cp.activeProvider, model: cp.activeModel });
                 const fullErrorMsg = `⚠️ **AI ${errorType === 'TIMEOUT' ? 'Request Timeout' : errorType === 'AUTH' ? 'Auth Error' : errorType === 'RATE_LIMIT' ? 'Rate Limited' : errorType === 'NETWORK' ? 'Network Error' : 'Stream Error'}:** ${errorMsg}`;
                 if (isActiveConv) {
-                    cp.setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: fullErrorMsg, isPlanMode: sendPlanModeActive, isStreaming: false, activities: lm.activities || [] }]; return prev; });
+                    cp.setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: fullErrorMsg, isPlanMode: sendPlanModeActive, isStreaming: false, activities: lm.activities || [] }]; return [...prev, { role: 'assistant', content: fullErrorMsg, isPlanMode: sendPlanModeActive, isStreaming: false, activities: [] }]; });
                 }
                 activeStreamIdsRef.current.delete(streamConvId);
-                if (activeStreamIdsRef.current.size === 0) {
-                    cp.setIsLoading(false);
-                }
+                cp.setLoadingConversations(prev => {
+                    const next = new Set(prev);
+                    next.delete(streamConvId);
+                    return next;
+                });
                 activeStreamsRef.current.delete(streamConvId);
                 if (timerRef.current && activeStreamIdsRef.current.size === 0) { clearInterval(timerRef.current); timerRef.current = null; }
                 if (currentConvId) cp.setCurrentlyReadingFiles([]);
@@ -291,7 +298,7 @@ export function useChatSending(params: ChatSendingParams) {
                                 }
                             }
                             if (activitiesUpdated) {
-                                cp.setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { ...lm, isStreaming: true, isPlanMode: true, activities: currentActivitiesRef.current }]; return prev; });
+                                cp.setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { ...lm, isStreaming: true, isPlanMode: true, activities: currentActivitiesRef.current }]; return [...prev, { role: 'assistant', content: '', isStreaming: true, isPlanMode: true, activities: currentActivitiesRef.current }]; });
                             }
                         }
                     }
@@ -338,8 +345,13 @@ export function useChatSending(params: ChatSendingParams) {
             activeStreamsRef.current.delete(streamConvId);
             activeStreamIdsRef.current.delete(streamConvId);
 
+            cp.setLoadingConversations(prev => {
+                const next = new Set(prev);
+                next.delete(streamConvId);
+                return next;
+            });
+
             if (activeStreamIdsRef.current.size === 0) {
-                cp.setIsLoading(false);
                 if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
             }
 
@@ -366,14 +378,14 @@ export function useChatSending(params: ChatSendingParams) {
                     const stepsCount = Array.isArray(parsed.steps) ? parsed.steps.length : 0;
                     responseToSave = `[ARCHITECTURAL_THINKING_START]${thinkingMeta}[ARCHITECTURAL_THINKING_END]**Implementation Plan Generated Successfully**\n\nA detailed roadmap with ${stepsCount} steps has been drafted for this task.\n\n[Click to Open Interactive Plan](plan://${activeTaskId})\n\n[CHAT_METADATA_START]${JSON.stringify({ duration: finalDuration, filesRead: parsed.filesRead || [], filesEdited: [], thoughts: '', activities: currentActivitiesRef.current, inputTokens: usageData?.inputTokens || 0, outputTokens: usageData?.outputTokens || 0, cost: usageData?.cost || 0 })}[CHAT_METADATA_END]`;
                     if (isActiveConv) {
-                        cp.setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: responseToSave, isPlanMode: false, isStreaming: false, filesRead: (Array.isArray(parsed.filesRead) ? parsed.filesRead : []) as string[], planSteps: (Array.isArray(parsed.steps) ? parsed.steps : []) as unknown[], activities: currentActivitiesRef.current }]; return prev; });
+                        cp.setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: responseToSave, isPlanMode: false, isStreaming: false, filesRead: (Array.isArray(parsed.filesRead) ? parsed.filesRead : []) as string[], planSteps: (Array.isArray(parsed.steps) ? parsed.steps : []) as unknown[], activities: currentActivitiesRef.current }]; return [...prev, { role: 'assistant', content: responseToSave, isPlanMode: false, isStreaming: false, filesRead: (Array.isArray(parsed.filesRead) ? parsed.filesRead : []) as string[], planSteps: (Array.isArray(parsed.steps) ? parsed.steps : []) as unknown[], activities: currentActivitiesRef.current }]; });
                     }
                     if (isActiveConv && onOpenPlan) onOpenPlan(activeTaskId, `Task #${activeTaskId}`);
                 } catch (err) {
                     const activeTaskId = getNumericTaskId(currentConvId || '');
                     responseToSave = buildPlanDisplayMessage(activeTaskId, null, false) + `\n\n⚠️ Plan JSON could not be parsed automatically.`;
                     if (isActiveConv) {
-                        cp.setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: responseToSave, isPlanMode: false, isStreaming: false }]; return prev; });
+                        cp.setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: responseToSave, isPlanMode: false, isStreaming: false }]; return [...prev, { role: 'assistant', content: responseToSave, isPlanMode: false, isStreaming: false }]; });
                     }
                 }
             } else {
@@ -384,7 +396,7 @@ export function useChatSending(params: ChatSendingParams) {
                 const allFiles = extractFiles(fullResponse), edited = extractEditedFiles(fullResponse), viewed = allFiles.filter((f: string) => !edited.includes(f));
                 responseToSave = `${fullResponse}\n\n[CHAT_METADATA_START]${JSON.stringify({ duration: finalDuration, filesRead: viewed, filesEdited: edited, thoughts: thinkingContent || '', activities: currentActivitiesRef.current, inputTokens: usageData?.inputTokens || 0, outputTokens: usageData?.outputTokens || 0, cost: usageData?.cost || 0 })}[CHAT_METADATA_END]`;
                 if (isActiveConv) {
-                    cp.setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: responseToSave, isPlanMode: false, isStreaming: false, filesRead: viewed, planSteps: [] }]; return prev; });
+                    cp.setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: responseToSave, isPlanMode: false, isStreaming: false, filesRead: viewed, planSteps: [] }]; return [...prev, { role: 'assistant', content: responseToSave, isPlanMode: false, isStreaming: false, filesRead: viewed, planSteps: [] }]; });
                 }
             }
             if (currentConvId) {
@@ -461,9 +473,15 @@ export function useChatSending(params: ChatSendingParams) {
             const errorMsg = error instanceof Error ? error.message : String(error);
             setApiError({ type: 'UNKNOWN', message: errorMsg, timestamp: Date.now(), provider: activeProvider, model: activeModel });
             const fullErrorMsg = `⚠️ **Error sending message:** ${errorMsg}`;
-            setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: fullErrorMsg, isStreaming: false }]; return prev; });
+            setMessages(prev => { const lm = prev[prev.length - 1]; if (lm?.role === 'assistant') return [...prev.slice(0, -1), { role: 'assistant', content: fullErrorMsg, isStreaming: false }]; return [...prev, { role: 'assistant', content: fullErrorMsg, isStreaming: false }]; });
+            if (streamConvId) {
+                setLoadingConversations(prev => {
+                    const next = new Set(prev);
+                    next.delete(streamConvId);
+                    return next;
+                });
+            }
             if (activeStreamIdsRef.current.size === 0) {
-                setIsLoading(false);
                 if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
             }
             if (currentConvId) window.ipcRenderer.invoke('chat:add-message', currentConvId, 'assistant', fullErrorMsg).then(() => loadConversations()).catch(() => { });

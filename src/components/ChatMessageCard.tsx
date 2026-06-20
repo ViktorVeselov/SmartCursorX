@@ -1,4 +1,4 @@
-﻿import { useState } from 'react';
+import { useState } from 'react';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ExecutionSteps } from './ExecutionSteps';
 import { getNumericTaskId } from '../utils/taskId';
@@ -51,14 +51,15 @@ export function ChatMessageCard({
     };
 
     const isUser = msg.role === 'user';
+    const isSystem = msg.role === 'system';
 
     return (
         <div 
             onMouseEnter={() => setIsHovered(true)}
             onMouseLeave={() => setIsHovered(false)}
             style={{ 
-                alignSelf: isUser ? 'flex-end' : 'flex-start', 
-                maxWidth: isUser ? '85%' : '100%',
+                alignSelf: isUser ? 'flex-end' : (isSystem ? 'center' : 'flex-start'), 
+                maxWidth: isUser ? '85%' : (isSystem ? '95%' : '100%'),
                 width: isUser ? 'auto' : '100%',
                 position: 'relative',
                 display: 'flex',
@@ -130,7 +131,7 @@ export function ChatMessageCard({
             <div style={{
                 background: isUser ? 'var(--accent-primary)' : 'transparent',
                 color: isUser ? 'white' : 'var(--text-primary)',
-                padding: isUser ? '8px 12px' : '8px 0',
+                padding: isUser ? '8px 12px' : (isSystem ? '0px' : '8px 0'),
                 borderRadius: isUser ? 'var(--radius-md)' : '0px',
                 fontSize: 'var(--font-base)',
                 minWidth: isUser ? '80px' : '100%',
@@ -141,6 +142,23 @@ export function ChatMessageCard({
                     /^[🔧⚙✅❌]/u.test(msg.content) || msg.content.includes('**Plan Modification Request**')
                         ? <MarkdownRenderer content={msg.content} onApplyCode={onApplyCode} />
                         : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                ) : isSystem ? (
+                    <div style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        background: 'rgba(255, 255, 255, 0.02)',
+                        border: '1px solid rgba(255, 255, 255, 0.06)',
+                        padding: '6px 12px',
+                        borderRadius: '16px',
+                        fontSize: '11px',
+                        color: 'rgba(255, 255, 255, 0.65)',
+                        margin: '4px auto',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                        fontFamily: 'JetBrains Mono, SFMono-Regular, Consolas, monospace'
+                    }}>
+                        <span>{msg.content}</span>
+                    </div>
                 ) : planAction ? (
                     <div style={{
                         display: 'flex',

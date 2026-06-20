@@ -20,7 +20,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'term-input', 'term-resize', 'term-close', 'vc-create-snapshot',
   'vc-get-snapshots', 'vc-restore-snapshot', 'git-status', 'git-branch',
   'git-clone', 'git-diff', 'ai:save-config', 'ai:save-provider-key', 'ai:get-config', 'ai:get-models', 'ai:get-zen-models-info', 'ai:get-model-context-length',
-  'get-general-settings', 'save-general-settings', 'openclaw:check-installed',
+  'get-general-settings', 'save-general-settings', 'set-workspace-path', 'openclaw:check-installed',
   'openclaw:get-status', 'openclaw:start-gateway', 'openclaw:stop-gateway',
   'openclaw:run-doctor', 'openclaw:approve-pairing', 'openclaw:run-agent',
   'openclaw:get-logs', 'ai:get-usage-stats', 'ai:clear-usage-stats', 'ai:get-model-stats',

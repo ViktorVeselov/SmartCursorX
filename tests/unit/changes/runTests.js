@@ -2255,6 +2255,7 @@ import console4 from "console";
 var SnapshotService = class {
   /**
    * Captures a full snapshot of the specified files across allowed roots and saves them to the DB as version control blobs.
+   * @returns { snapshotId, skippedFiles } where skippedFiles are paths that didn't exist at capture time (new files).
    */
   static captureSnapshot(taskId, filePaths, name) {
     console4.assert(typeof taskId === "number", "taskId must be a valid number");
@@ -2264,6 +2265,7 @@ var SnapshotService = class {
     const snapshotIdRaw = dbService.createSnapshot(`${name}_task_${taskId}`);
     const snapshotId = Number(snapshotIdRaw);
     console4.assert(snapshotId > 0, "Snapshot ID must be a positive integer");
+    const skippedFiles = [];
     for (const file of filePaths) {
       const absolutePath = PathGuard.resolve(file);
       if (absolutePath && fs2.existsSync(absolutePath)) {
@@ -2278,39 +2280,69 @@ var SnapshotService = class {
         }
       } else {
         console4.warn(`[SnapshotService] Target file ${file} does not exist or is out of bounds. Skipping blob generation.`);
+        skippedFiles.push(file);
       }
     }
-    return snapshotId;
+    return { snapshotId, skippedFiles };
   }
   /**
    * Restores the workspace files precisely back to the captured state of a given snapshot ID, strictly enforcing allowed root containment boundaries.
+   * Also deletes any files in `filesToDelete` that were created during execution (new files not in the original snapshot).
    */
-  static rollbackToSnapshot(snapshotId) {
+  static rollbackToSnapshot(snapshotId, filesToDelete) {
     console4.assert(typeof snapshotId === "number" && snapshotId > 0, "snapshotId must be a positive number");
     console4.log(`[SnapshotService] Performing safe rollback to snapshot ID ${snapshotId}...`);
     const files = dbService.getSnapshotFiles(snapshotId);
     if (!files || files.length === 0) {
-      console4.warn(`[SnapshotService] Snapshot ID ${snapshotId} has no files archived. Rollback aborted.`);
-      return;
-    }
-    for (const f of files) {
-      const absolutePath = f.file_path;
-      const content = f.content;
-      const resolvedPath = PathGuard.resolve(absolutePath);
-      if (!resolvedPath) {
-        console4.error(`[SnapshotService] Safety Block: Out-of-bounds rollback attempt rejected for path: ${absolutePath}`);
-        throw new Error(`Rollback safety violation on path: ${absolutePath}`);
-      }
-      try {
-        const parentDir = path6.dirname(resolvedPath);
-        if (!fs2.existsSync(parentDir)) {
-          fs2.mkdirSync(parentDir, { recursive: true });
+      console4.warn(`[SnapshotService] Snapshot ID ${snapshotId} has no files archived.`);
+    } else {
+      for (const f of files) {
+        const absolutePath = f.file_path;
+        const content = f.content;
+        const resolvedPath = PathGuard.resolve(absolutePath);
+        if (!resolvedPath) {
+          console4.error(`[SnapshotService] Safety Block: Out-of-bounds rollback attempt rejected for path: ${absolutePath}`);
+          throw new Error(`Rollback safety violation on path: ${absolutePath}`);
         }
-        fs2.writeFileSync(resolvedPath, content, "utf-8");
-        console4.log(`[SnapshotService] Restored file: ${resolvedPath}`);
-      } catch (err) {
-        console4.error(`[SnapshotService] Failed restoring file ${resolvedPath} during rollback:`, err);
-        throw new Error(`Rollback failed on file ${resolvedPath}: ${err}`);
+        try {
+          const parentDir = path6.dirname(resolvedPath);
+          if (!fs2.existsSync(parentDir)) {
+            fs2.mkdirSync(parentDir, { recursive: true });
+          }
+          fs2.writeFileSync(resolvedPath, content, "utf-8");
+          console4.log(`[SnapshotService] Restored file: ${resolvedPath}`);
+        } catch (err) {
+          console4.error(`[SnapshotService] Failed restoring file ${resolvedPath} during rollback:`, err);
+          throw new Error(`Rollback failed on file ${resolvedPath}: ${err}`);
+        }
+      }
+    }
+    if (filesToDelete && filesToDelete.length > 0) {
+      for (const file of filesToDelete) {
+        const absolutePath = PathGuard.resolve(file);
+        if (absolutePath && fs2.existsSync(absolutePath)) {
+          try {
+            fs2.unlinkSync(absolutePath);
+            console4.log(`[SnapshotService] Deleted new file created during execution: ${file}`);
+            let dir = path6.dirname(absolutePath);
+            while (dir !== path6.dirname(dir)) {
+              try {
+                const entries = fs2.readdirSync(dir);
+                if (entries.length === 0) {
+                  fs2.rmdirSync(dir);
+                  console4.log(`[SnapshotService] Removed empty directory: ${dir}`);
+                  dir = path6.dirname(dir);
+                } else {
+                  break;
+                }
+              } catch {
+                break;
+              }
+            }
+          } catch (err) {
+            console4.error(`[SnapshotService] Failed deleting new file ${file}:`, err);
+          }
+        }
       }
     }
     console4.log("[SnapshotService] Rollback completed successfully.");

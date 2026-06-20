@@ -82,12 +82,20 @@ function App() {
   } | null>(null);
   const executionStatusRef = useRef(executionStatus);
   executionStatusRef.current = executionStatus;
+  const activeConvIdRef = useRef<string | null>(null);
+  const lastProgressPhaseRef = useRef<string>('');
+  const lastProgressStepRef = useRef<number>(-1);
+  const [executionRefreshCount, setExecutionRefreshCount] = useState(0);
 
   const handleStopExecution = () => {
     const status = executionStatusRef.current;
     if (status) {
       window.ipcRenderer.invoke('execution:stop', status.taskId);
     }
+  };
+
+  const handleActiveConvIdChange = (convId: string | null) => {
+    activeConvIdRef.current = convId;
   };
 
   // Tool approval state
@@ -276,6 +284,38 @@ function App() {
       attempt?: number;
       totalAttempts?: number;
     }) => {
+      const emoji: Record<string, string> = {
+        investigating: '🔍',
+        generating: '✏️',
+        applying: '📦',
+        verifying: '🧪',
+        completed: '✅',
+        failed: '❌',
+        stopped: '⏹',
+        reading: '📖',
+        analysing: '🔍',
+        modifying: '✏️',
+        creating: '🆕',
+        removing: '🗑️',
+        executing: '⚡',
+      };
+      const prefix = emoji[data.phase] || '•';
+      const attemptStr = data.attempt && data.totalAttempts ? ` (${data.attempt}/${data.totalAttempts})` : '';
+      const formattedContent = `${prefix} ${data.message}${attemptStr}`;
+      if (activeConvIdRef.current) {
+        window.ipcRenderer.invoke('chat:add-message', activeConvIdRef.current, 'system', formattedContent).then((res) => {
+          if (!res) console.warn('[ExecutionProgress] chat:add-message returned false (conv not found?) convId:', activeConvIdRef.current);
+        }).catch((err) => console.error('[ExecutionProgress] chat:add-message failed:', err));
+        console.log('[ExecutionProgress] persisted phase:', data.phase, 'convId:', activeConvIdRef.current, 'msg:', formattedContent);
+      } else {
+        console.warn('[ExecutionProgress] SKIPPED — activeConvIdRef.current is null/undefined. phase:', data.phase);
+      }
+      const nextStepIndex: number | undefined = (data as any).stepIndex;
+      if (data.phase !== lastProgressPhaseRef.current || (nextStepIndex !== undefined && nextStepIndex !== lastProgressStepRef.current)) {
+        lastProgressPhaseRef.current = data.phase;
+        if (nextStepIndex !== undefined) lastProgressStepRef.current = nextStepIndex;
+        setExecutionRefreshCount(prev => prev + 1);
+      }
       if (data.phase === 'completed') {
         setExecutionStatus({ ...data, message: '✓ Completed' });
         showNotification(`Execution completed — ${data.message}`);
@@ -547,7 +587,8 @@ function App() {
       const path = specifiedPath || await window.ipcRenderer.invoke('dialog-open-folder');
       if (path) {
         setRootPath(path);
-        await window.ipcRenderer.invoke('save-general-settings', { activeWorkspacePath: path });
+        setActiveSection('explorer');
+        await window.ipcRenderer.invoke('set-workspace-path', path);
         setFiles([]); // Clear open files
         setActiveFilePath('');
         showNotification(`Opened folder: ${path}`);
@@ -802,6 +843,8 @@ function App() {
                 onActiveTaskIdChange={(taskId) => {
                   activeChatTaskIdRef.current = taskId;
                 }}
+                onActiveConvIdChange={handleActiveConvIdChange}
+                executionRefreshTrigger={executionRefreshCount}
                 rootPath={rootPath}
                 pendingReview={pendingReview}
                 pendingReviewApplying={pendingReviewApplying}

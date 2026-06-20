@@ -1,6 +1,5 @@
 import { dbService } from '../db';
 import { aiService } from './AIService';
-import { VerificationService } from './VerificationService';
 import { SnapshotService } from './SnapshotService';
 import { PlanningService } from './PlanningService';
 import { TaskService } from './TaskService';
@@ -9,13 +8,14 @@ import { LearningService } from './LearningService';
 import { PathGuard } from './PathGuard';
 import { ASTPatchingService } from './ASTPatchingService';
 import { PendingModificationsService } from './PendingModificationsService';
-import { EmbeddingService } from './EmbeddingService';
 import { secureStore } from '../secureStore';
 import { taxonomyService } from './taxonomy/TaxonomyService';
+import { TaxonomyClassifier } from './taxonomy/TaxonomyClassifier';
+import type { OperationalContext } from './taxonomy/types';
 import * as fs from 'fs';
-import * as path from 'path';
 import console from 'console';
 import { BrowserWindow } from 'electron';
+import type { PlanStep } from '../../src/helpers/planEditorTypes';
 
 export interface ExecutionConfig {
     maxRetries: number;
@@ -31,14 +31,16 @@ interface DlqEntry {
     attemptHistory: string[];
 }
 
+const DEFAULT_CONFIG: ExecutionConfig = { maxRetries: 3, baseTemperature: 0.0, escalateModel: true };
+
 export class ExecutionLoopService {
     private static dlqEntries = new Map<number, DlqEntry>();
     private static abortControllers = new Map<number, AbortController>();
 
-    private static sendProgress(taskId: number, phase: string, message: string, attempt?: number, totalAttempts?: number): void {
+    private static sendProgress(taskId: number, phase: string, message: string, attempt?: number, totalAttempts?: number, stepIndex?: number): void {
         const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
         if (mainWindow) {
-            mainWindow.webContents.send('execution:progress', { taskId, phase, message, attempt, totalAttempts });
+            mainWindow.webContents.send('execution:progress', { taskId, phase, message, attempt, totalAttempts, stepIndex });
         }
     }
 
@@ -63,374 +65,646 @@ export class ExecutionLoopService {
             entry.resolve(guidance);
         }
     }
-    /**
-     * Executes a task through the complete planned plan-execute-verify self-healing loop.
-     * Integrates all 5 master framework phases (Pre-flight discovery, Tool masking, JSON AST patching, compiler loops).
-     */
-    static async executeTask(taskId: number, config: ExecutionConfig = { maxRetries: 3, baseTemperature: 0.0, escalateModel: true }): Promise<'passed' | 'failed'> {
-        console.assert(typeof taskId === 'number', 'taskId must be a valid number');
-        console.assert(config.maxRetries > 0, 'maxRetries must be positive');
 
-        console.log(`[ExecutionLoopService] Initiating execution loop for task ID ${taskId}...`);
-        
+    private static checkAborted(taskId: number): void {
+        const controller = this.abortControllers.get(taskId);
+        if (controller && controller.signal.aborted) throw new Error('EXECUTION_STOPPED');
+    }
+
+    private static actionToPhase(action: string): string {
+        switch (action) {
+            case 'read': return 'reading';
+            case 'analyze': return 'analysing';
+            case 'modify': return 'modifying';
+            case 'create': return 'creating';
+            case 'delete': return 'removing';
+            case 'run_command': return 'executing';
+            default: return 'generating';
+        }
+    }
+
+    private static resolveFilesFromTarget(target: string, action: string): string[] {
+        const files: string[] = [];
+        if (!target) return files;
+        if (action === 'delete' || action === 'modify' || action === 'create' || action === 'read') {
+            const parts = target.split(',').map(s => s.trim()).filter(Boolean);
+            for (const p of parts) {
+                const resolved = PathGuard.resolve(p);
+                if (resolved) files.push(p);
+            }
+        }
+        return files;
+    }
+
+    static async executeTask(taskId: number, config: ExecutionConfig = DEFAULT_CONFIG): Promise<'passed' | 'failed'> {
+        console.assert(typeof taskId === 'number', 'taskId must be a valid number');
+        console.log(`[ExecutionLoopService] Initiating step-level execution for task ID ${taskId}...`);
+
         let planRow = dbService.getTaskPlan(taskId);
         if (!planRow) {
-            console.log(`[ExecutionLoopService] No plan found for task ID ${taskId}. Generating plan...`);
+            console.log(`[ExecutionLoopService] No plan found. Generating...`);
             await PlanningService.generatePlan(taskId);
             planRow = dbService.getTaskPlan(taskId);
         }
-        
-        console.assert(planRow !== null, 'Plan must be successfully generated and present in DB');
+        console.assert(planRow !== null, 'Plan must be present in DB');
         const plan = JSON.parse(planRow!.plan_json);
-        const filesToModify = plan.filesToModify || [];
-
-        const preSnapshotId = SnapshotService.captureSnapshot(taskId, filesToModify, 'pre_execution');
-
-        let attempt = 1;
-        let success = false;
-        let finalOutputStatus: 'passed' | 'failed' | 'needs_review' = 'failed';
-        let failureFeedback = '';
-        let attemptHistory: string[] = [];
-
-        const startTime = Date.now();
+        const steps: PlanStep[] = plan.steps || [];
 
         const activeTask = dbService.getTask(taskId);
         console.assert(activeTask !== null, 'Active task must exist in DB');
-        const modelUsed = secureStore.getSelectedModel();
 
         const abortController = new AbortController();
         this.abortControllers.set(taskId, abortController);
-        const checkAborted = () => {
-            if (abortController.signal.aborted) throw new Error('EXECUTION_STOPPED');
-        };
 
+        const modelUsed = secureStore.getSelectedModel();
+        const startTime = Date.now();
+
+        // Investigation phase
         this.sendProgress(taskId, 'investigating', 'Analyzing dependencies and assumptions...');
         let investText = '';
-        investText = await this.performInvestigation(taskId, activeTask, modelUsed, startTime);
-        checkAborted();
-
-        // ==========================================================
-        // Modification and Compiler-Audited Self-Healing Loops
-        // ==========================================================
-        while (attempt <= config.maxRetries) {
-            checkAborted();
-            console.log(`[ExecutionLoopService] Starting Execution Attempt ${attempt}/${config.maxRetries}...`);
-            
-            try {
-                if (attempt > 1) {
-                    console.log(`[ExecutionLoopService] Resetting files to pre-execution state for clean retry attempt.`);
-                    SnapshotService.rollbackToSnapshot(preSnapshotId);
-                }
-
-                const assembled = await ContextAssembler.assembleContext(taskId, [], undefined, undefined, undefined, investText);
-                
-                if (assembled.taxonomyResult) {
-                    try {
-                        taxonomyService.trackResult(taskId, assembled.taxonomyResult, 'modify');
-                    } catch (e) {
-                        console.error('[ExecutionLoopService] Failed to track modify taxonomy:', e);
-                    }
-                }
-
-                // Expose ONLY modify instructions and ask for JSON AST Patch!
-                let systemInstructions = ASTPatchingService.shapeSystemInstructions('modify', assembled.systemPrompt, undefined, assembled.taxonomyResult);
-                
-                if (config.userGuidance) {
-                    systemInstructions += `\n\n⚠️ USER GUIDANCE\n${config.userGuidance}\nAdjust your approach according to this guidance.`;
-                }
-
-                if (attempt > 1 && failureFeedback) {
-                    // Inject Compiler-Audited Self-Healing instructions!
-                    const fileExt = filesToModify.length > 0 ? path.extname(filesToModify[0]) : '';
-                    systemInstructions = ASTPatchingService.shapeSystemInstructions('verify', assembled.systemPrompt, fileExt, assembled.taxonomyResult);
-                    systemInstructions += `\n\n⚠️ PREVIOUS ATTEMPT FAILED VERIFICATION!\n` +
-                        `Error & Feedback:\n${failureFeedback}\n` +
-                        `Analyze the compiler logs and linter errors above, self-correct your mistakes, and write a repaired JSON AST patch.`;
-                }
-
-                const tempWithEscalation = config.baseTemperature + (attempt - 1) * 0.1;
-                let responseContent = '';
-
-                this.sendProgress(taskId, 'generating', 'Generating code changes...', attempt, config.maxRetries);
-
-                if (aiService.isActive()) {
-                    const prompt = `Task Title: ${activeTask.title}
-Task Details: ${activeTask.description || ''}
-
-Apply the planned file modifications. Expose only the required file modifications using our strict JSON AST Patch format.
-Files to modify: ${filesToModify.join(', ')}
-
-Enforce strict type safety and preserve imports. Return ONLY the strict JSON patch block.`;
-
-                    const response = await aiService.chat([
-                        { role: 'system', content: systemInstructions },
-                        { role: 'user', content: prompt }
-                    ], { temperature: tempWithEscalation, model: modelUsed });
-
-                    const chatResp = response as import('./AIService').ChatResponse;
-                    responseContent = chatResp.text;
-                } else {
-                    throw new Error('AI Service is inactive. Code generation impossible.');
-                }
-                checkAborted();
-
-                // Generate preview patches (does NOT write to disk)
-                const previewPatches = ASTPatchingService.generatePreviewPatches(responseContent);
-                let parseSuccess = previewPatches.length > 0;
-
-                if (!parseSuccess) {
-                    console.warn(`[ExecutionLoopService] AST JSON Preview Patching failed or returned non-JSON. Falling back to Full-File Markdown Block parser.`);
-
-                    // Fallback: use full-file blocks to build preview patches
-                    const fallbackPatches = this.generateFallbackPatches(responseContent);
-                    if (fallbackPatches.length > 0) {
-                        previewPatches.push(...fallbackPatches);
-                        parseSuccess = true;
-                    }
-                }
-
-                if (!parseSuccess) {
-                    throw new Error('Failed parsing target file structures from LLM response (both JSON AST Preview and Full-File fallbacks failed).');
-                }
-
-                // Store pending modifications and notify renderer for user review
-                const totalAdded = previewPatches.reduce((sum, p) => sum + p.addedLines, 0);
-                const totalRemoved = previewPatches.reduce((sum, p) => sum + p.removedLines, 0);
-                console.log(`[ExecutionLoopService] Generated ${previewPatches.length} file patches (+${totalAdded}/-${totalRemoved}). Awaiting user review...`);
-
-                PendingModificationsService.setPending(taskId, {
-                    taskId,
-                    modifications: previewPatches,
-                    planSnapshot: plan,
-                    createdAt: Date.now(),
-                });
-
-                // Send notification to renderer
-                const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
-                if (mainWindow) {
-                    mainWindow.webContents.send('execution:pending-modifications', {
-                        taskId,
-                        modifications: previewPatches.map(m => ({
-                            relativePath: m.relativePath,
-                            originalContent: m.originalContent,
-                            proposedContent: m.proposedContent,
-                            addedLines: m.addedLines,
-                            removedLines: m.removedLines,
-                        })),
-                    });
-                }
-
-                checkAborted();
-
-                let userAccepted: boolean;
-                if (plan.approved) {
-                    // Plan mode: auto-apply changes immediately (plan IS the approval)
-                    console.log(`[ExecutionLoopService] Plan is approved. Auto-applying modifications...`);
-                    this.sendProgress(taskId, 'applying', 'Applying changes...', attempt, config.maxRetries);
-                    const applied = PendingModificationsService.applyModifications(taskId);
-                    if (!applied) {
-                        throw new Error('Failed to auto-apply modifications to disk.');
-                    }
-                    userAccepted = true;
-                } else {
-                    // BLOCK execution until user accepts or rejects
-                    userAccepted = await new Promise<boolean>((resolve) => {
-                        PendingModificationsService.setResolver(taskId, resolve);
-                    });
-                }
-
-                if (!userAccepted) {
-                    throw new Error('User rejected the proposed modifications.');
-                }
-
-                if (!plan.approved) {
-                    console.log(`[ExecutionLoopService] User accepted modifications. Applying patches to disk...`);
-                    // Now apply the patches to disk (using original method)
-                    parseSuccess = ASTPatchingService.applyJSONPatch(responseContent);
-                    if (!parseSuccess) {
-                        // Fallback: apply full-file blocks
-                        parseSuccess = this.applyFileEdits(responseContent);
-                        if (!parseSuccess) {
-                            throw new Error('Failed to write accepted modifications to disk.');
-                        }
-                    }
-                }
-
-                const outputId = TaskService.completeTask(
-                    taskId,
-                    responseContent,
-                    activeTask.assigned_agent_id,
-                    'code',
-                    Math.ceil(responseContent.length / 4),
-                    modelUsed,
-                    aiService.isActive() ? aiService.providerId : 'fallback'
-                );
-
-                this.sendProgress(taskId, 'verifying', 'Running verification checks...', attempt, config.maxRetries);
-                finalOutputStatus = await VerificationService.verifyOutput(outputId, assembled.taxonomyResult);
-
-                dbService.addExecutionAttempt(
-                    taskId,
-                    attempt,
-                    modelUsed,
-                    aiService.isActive() ? aiService.providerId : 'fallback',
-                    Number(planRow.id),
-                    outputId,
-                    finalOutputStatus,
-                    finalOutputStatus === 'passed' ? null : 'Failed verification rules'
-                );
-
-                if (finalOutputStatus === 'passed') {
-                    success = true;
-                    console.log(`[ExecutionLoopService] Attempt ${attempt} passed all verification checks!`);
-                    
-                    const providerId = aiService.isActive() ? aiService.providerId : 'fallback';
-                    const outputTokens = Math.max(1, Math.ceil(responseContent.length / 4));
-                    const latency = Date.now() - startTime;
-                    
-                    dbService.addModelPerformance(
-                        modelUsed,
-                        providerId,
-                        'code_edit',
-                        1,
-                        attempt,
-                        outputTokens,
-                        latency,
-                        Math.round(outputTokens * 0.6),
-                        outputTokens
-                    );
-
-                    break;
-                } else {
-                    const verificationLogs = dbService.getVerificationResults(outputId);
-                    const failedLogs = verificationLogs.filter((l: any) => l.result === 'failed');
-                    const attemptFeedback = failedLogs.map((l: any) => `Rule Check failed: ${l.details || 'No details provided'}`).join('\n');
-                    failureFeedback = attemptFeedback;
-                    attemptHistory.push(`Attempt ${attempt}/${config.maxRetries}: ${attemptFeedback}`);
-
-                    // Store failure in RAG for future reference
-                    try {
-                        const ragContent = `Task #${taskId} ("${activeTask.title}"): ${attemptFeedback}`;
-                        EmbeddingService.indexKnowledge('execution_failure', `task_${taskId}_attempt_${attempt}`, ragContent, { taskId, attempt }).catch(() => {});
-                    } catch {
-                        // Non-critical
-                    }
-
-                    console.warn(`[ExecutionLoopService] Attempt ${attempt} failed verification. Details:\n${failureFeedback}`);
-                    if (attempt < config.maxRetries) {
-                        this.sendProgress(taskId, 'generating', `Verification failed, retrying (${attempt}/${config.maxRetries})...`, attempt, config.maxRetries);
-                    }
-                }
-
-            } catch (err: any) {
-                if (err.message === 'EXECUTION_STOPPED') {
-                    console.log(`[ExecutionLoopService] Task ${taskId} stopped by user.`);
-                    dbService.updateTaskStatus(taskId, 'stopped');
-                    success = false;
-                    break;
-                }
-
-                console.error(`[ExecutionLoopService] Exception on attempt ${attempt}:`, err);
-                const attemptFeedback = `Attempt ${attempt}/${config.maxRetries} failed: ${err.message || err}`;
-                failureFeedback = attemptFeedback;
-                attemptHistory.push(attemptFeedback);
-                if (attempt < config.maxRetries) {
-                    this.sendProgress(taskId, 'generating', `Attempt ${attempt}/${config.maxRetries} failed, retrying...`, attempt, config.maxRetries);
-                }
-
-                // Store failure in RAG for future reference
-                try {
-                    const ragContent = `Task #${taskId} ("${activeTask.title}"): ${attemptFeedback}`;
-                    EmbeddingService.indexKnowledge('execution_failure', `task_${taskId}_attempt_${attempt}`, ragContent, { taskId, attempt }).catch(() => {});
-                } catch {
-                    // Non-critical
-                }
-
-                dbService.addExecutionAttempt(
-                    taskId,
-                    attempt,
-                    'none',
-                    'none',
-                    Number(planRow.id),
-                    null,
-                    'failed',
-                    failureFeedback
-                );
+        try {
+            investText = await this.performInvestigation(taskId, activeTask, modelUsed, startTime);
+        } catch (err: any) {
+            if (err.message === 'EXECUTION_STOPPED') {
+                this.abortControllers.delete(taskId);
+                dbService.updateTaskStatus(taskId, 'stopped');
+                return 'failed';
             }
+            console.error('[ExecutionLoopService] Investigation failed, continuing without:', err);
+        }
+        this.checkAborted(taskId);
 
-            attempt++;
+        // Classify taxonomy for full task (used as baseline)
+        let baseTaxonomyResult: any = null;
+        try {
+            const assembled = await ContextAssembler.assembleContext(taskId, [], undefined, undefined, undefined, investText);
+            baseTaxonomyResult = assembled.taxonomyResult || null;
+            if (baseTaxonomyResult) {
+                taxonomyService.trackResult(taskId, baseTaxonomyResult, 'investigation');
+            }
+        } catch (e) {
+            console.error('[ExecutionLoopService] Taxonomy classification failed:', e);
         }
 
-        if (success) {
+        // Pre-execution snapshot of all planned files
+        const allFiles = plan.filesToModify || [];
+        const { snapshotId: _preSnapshotId, skippedFiles } = SnapshotService.captureSnapshot(taskId, allFiles, 'pre_execution');
+
+        if (allFiles.length > 0 && skippedFiles.length === allFiles.length) {
+            console.warn(`[ExecutionLoopService] None of ${allFiles.length} planned files exist — creating new files.`);
+            this.sendProgress(taskId, 'warning', `Planned files don't exist — creating: ${allFiles.join(', ')}`);
+        }
+
+        let allStepsPassed = true;
+        let completedCount = 0;
+
+        for (let stepIdx = 0; stepIdx < steps.length; stepIdx++) {
+            const step = steps[stepIdx];
+            this.checkAborted(taskId);
+
+            const phase = this.actionToPhase(step.action);
+            const stepLabel = `Step ${stepIdx + 1}/${steps.length}: ${step.action} ${step.target}`;
+            console.log(`[ExecutionLoopService] ${stepLabel}`);
+
+            // Create child task for this step
+            let childTaskId: number;
+            try {
+                childTaskId = TaskService.createTask(
+                    `[Step ${stepIdx + 1}] ${step.action}: ${step.target}`,
+                    `Parent task #${taskId}. ${step.rationale || ''}`,
+                    taskId,
+                    activeTask?.assigned_agent_id || null,
+                    'agent',
+                    2000,
+                    0
+                );
+            } catch (e) {
+                console.error('[ExecutionLoopService] Failed to create child task:', e);
+                childTaskId = taskId; // fallback to parent
+            }
+
+            // Per-step snapshot
+            const stepFiles = this.resolveFilesFromTarget(step.target, step.action);
+            const stepSnapshot = SnapshotService.captureSnapshot(childTaskId, stepFiles, `step_${stepIdx}`);
+
+            // Build taxonomy-scoped context for this step
+            const stepTaxonomy = this.classifyStep(taskId, step, plan, investText, baseTaxonomyResult);
+
+            // Execute step with retry loop
+            let stepSuccess = false;
+            let stepFeedback = '';
+            let stepAttemptHistory: string[] = [];
+
+            for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
+                this.checkAborted(taskId);
+                console.log(`[ExecutionLoopService] Step ${stepIdx + 1}, attempt ${attempt}/${config.maxRetries}`);
+
+                try {
+                    this.sendProgress(taskId, phase, `${stepLabel}...`, attempt, config.maxRetries, stepIdx);
+
+                    const result = await this.executeSingleStep(
+                        childTaskId, step, taskId, activeTask, investText, stepTaxonomy,
+                        modelUsed, config, abortController.signal, attempt, stepIdx
+                    );
+
+                    if (result.success) {
+                        stepSuccess = true;
+                        step.completed = true;
+                        break;
+                    } else {
+                        stepFeedback = result.feedback || 'Step failed';
+                        stepAttemptHistory.push(`Attempt ${attempt}/${config.maxRetries}: ${stepFeedback}`);
+                        console.warn(`[ExecutionLoopService] Step ${stepIdx + 1} attempt ${attempt} failed: ${stepFeedback}`);
+                    }
+                } catch (err: any) {
+                    if (err.message === 'EXECUTION_STOPPED') {
+                        console.log(`[ExecutionLoopService] Task ${taskId} stopped during step ${stepIdx + 1}.`);
+                        dbService.updateTaskStatus(taskId, 'stopped');
+                        this.abortControllers.delete(taskId);
+                        return 'failed';
+                    }
+                    stepFeedback = err.message || String(err);
+                    stepAttemptHistory.push(`Attempt ${attempt}/${config.maxRetries}: ${stepFeedback}`);
+                    console.error(`[ExecutionLoopService] Step ${stepIdx + 1} exception:`, err);
+                }
+
+                // Rollback per-step snapshot on failure
+                try {
+                    SnapshotService.rollbackToSnapshot(stepSnapshot.snapshotId, stepSnapshot.skippedFiles);
+                } catch (rbErr) {
+                    console.error('[ExecutionLoopService] Step rollback failed:', rbErr);
+                }
+
+                if (attempt < config.maxRetries) {
+                    this.sendProgress(taskId, phase, `Retrying step ${stepIdx + 1} (${attempt}/${config.maxRetries})...`, attempt, config.maxRetries, stepIdx);
+                }
+            }
+
+            if (stepSuccess) {
+                completedCount++;
+                this.sendProgress(taskId, phase, `Step ${stepIdx + 1} completed`, undefined, undefined, stepIdx);
+            } else {
+                this.sendProgress(taskId, 'failed', `Step ${stepIdx + 1} failed: ${stepFeedback}`, undefined, undefined, stepIdx);
+
+                if (step.action === 'read' || step.action === 'analyze') {
+                    // Non-fatal — continue execution
+                    console.warn(`[ExecutionLoopService] Non-fatal step ${stepIdx + 1} failed. Continuing...`);
+                    step.completed = false;
+                    continue;
+                }
+
+                // Fatal for modify/create/delete/run_command — DLQ escalation
+                allStepsPassed = false;
+                return await this.handleStepDlq(taskId, stepIdx, step, stepFeedback, stepAttemptHistory, config);
+            }
+        }
+
+        // All steps completed
+        if (allStepsPassed) {
             dbService.updateTaskStatus(taskId, 'completed');
-            dbService.addTaskDoc(taskId, 'Completion Report', `Task successfully completed and verified on attempt ${attempt - 1}.`, 'completion');
-            
             await LearningService.captureLearning(taskId).catch(err => {
                 console.error('[ExecutionLoopService] LearningService capture failed:', err);
             });
-
             this.abortControllers.delete(taskId);
-            this.sendProgress(taskId, 'completed', 'Execution completed successfully', attempt - 1, config.maxRetries);
+            this.sendProgress(taskId, 'completed', `Execution completed (${completedCount}/${steps.length} steps)`);
             return 'passed';
         }
 
-        // === Not stopped by user ===
-        const taskStatus = dbService.getTask(taskId);
-        if (taskStatus && taskStatus.status === 'stopped') {
-            this.abortControllers.delete(taskId);
-            this.sendProgress(taskId, 'stopped', 'Execution stopped by user');
-            dbService.updateTaskStatus(taskId, 'stopped');
-            return 'failed';
+        this.abortControllers.delete(taskId);
+        this.sendProgress(taskId, 'failed', 'Execution failed');
+        return 'failed';
+    }
+
+    private static classifyStep(
+        taskId: number,
+        step: PlanStep,
+        plan: any,
+        investText: string,
+        baseTaxonomyResult: any
+    ): any {
+        if (baseTaxonomyResult && !baseTaxonomyResult.skippedReason) {
+            return baseTaxonomyResult;
+        }
+        // Attempt per-step classification for steps that pass the complexity gate
+        try {
+            const stepPlan = { ...plan, steps: [step], filesToModify: this.resolveFilesFromTarget(step.target, step.action) };
+            if (TaxonomyClassifier.shouldActivateTaxonomy({ id: taskId, title: `${step.action}: ${step.target}`, description: step.rationale }, stepPlan)) {
+                const context: OperationalContext = 'execution';
+                return taxonomyService.classify(
+                    { id: taskId, title: `${step.action}: ${step.target}`, description: step.rationale },
+                    context,
+                    stepPlan,
+                    investText
+                );
+            }
+        } catch (e) {
+            console.error('[ExecutionLoopService] Per-step taxonomy classification failed:', e);
+        }
+        return baseTaxonomyResult;
+    }
+
+    private static async executeSingleStep(
+        childTaskId: number,
+        step: PlanStep,
+        parentTaskId: number,
+        activeTask: any,
+        investText: string,
+        taxonomyResult: any,
+        modelUsed: string,
+        config: ExecutionConfig,
+        _abortSignal: AbortSignal,
+        attempt: number,
+        stepIdx: number
+    ): Promise<{ success: boolean; patches?: any[]; feedback?: string }> {
+        const action = step.action;
+
+        if (action === 'read' || action === 'analyze') {
+            return this.executeReadAnalyzeStep(childTaskId, step, activeTask, investText, taxonomyResult, modelUsed, config, attempt, stepIdx);
         }
 
-        // === DLQ Escalation: All retries exhausted, ask user for guidance ===
-        this.abortControllers.delete(taskId);
-        this.sendProgress(taskId, 'failed', 'All retries exhausted', config.maxRetries, config.maxRetries);
-        console.error(`[ExecutionLoopService] Task ID ${taskId} failed after exhausting ${config.maxRetries} attempts. Escalating to user...`);
+        if (action === 'modify' || action === 'create') {
+            return this.executeModifyCreateStep(childTaskId, step, parentTaskId, activeTask, investText, taxonomyResult, modelUsed, config, attempt);
+        }
 
-        console.log('[ExecutionLoopService] Restoring workspace to pristine pre-execution snapshot.');
-        SnapshotService.rollbackToSnapshot(preSnapshotId);
+        if (action === 'delete') {
+            return this.executeDeleteStep(childTaskId, step);
+        }
 
-        // Notify renderer
+        if (action === 'run_command') {
+            return this.executeCommandStep(childTaskId, step);
+        }
+
+        return { success: false, feedback: `Unknown action: ${action}` };
+    }
+
+    private static async executeReadAnalyzeStep(
+        childTaskId: number,
+        step: PlanStep,
+        activeTask: any,
+        _investText: string,
+        taxonomyResult: any,
+        modelUsed: string,
+        _config: ExecutionConfig,
+        attempt: number,
+        _stepIdx: number
+    ): Promise<{ success: boolean; feedback?: string }> {
+        if (!aiService.isActive()) return { success: true, feedback: 'AI not available' };
+
+        const assembled = await ContextAssembler.assembleContext(childTaskId, []);
+        const systemInstructions = ASTPatchingService.shapeSystemInstructions('investigate', assembled.systemPrompt, undefined, taxonomyResult);
+
+        // Resolve target files and check for non-existent ones
+        const targetFiles = this.resolveFilesFromTarget(step.target, step.action);
+        const nonExistentFiles: string[] = [];
+        for (const file of targetFiles) {
+            const absPath = PathGuard.resolve(file);
+            if (absPath && !fs.existsSync(absPath)) {
+                nonExistentFiles.push(file);
+            }
+        }
+
+        let nonExistentNotice = '';
+        if (nonExistentFiles.length > 0) {
+            nonExistentNotice = `\n\nNOTE: The following target file(s) do not exist on disk yet: ${nonExistentFiles.join(', ')}. Please analyze how they should be integrated or confirm they do not exist. Since these files are currently missing, you are not expected to cite their contents, but you should explain their role or requirements.`;
+        }
+
+        const prompt = `You are in READING/ANALYSIS mode for Step ${step.order}.
+Target: ${step.target}
+Rationale: ${step.rationale || ''}${nonExistentNotice}
+
+Read and analyze the target file(s) and codebase. Report your findings, including:
+1. Current state of the target code (if the file exists) or that the file does not yet exist
+2. Dependencies and patterns
+3. Any assumptions that need validation
+
+Do NOT propose or generate code modifications. Return only findings and analysis.
+
+IMPORTANT: Do NOT output any tool/function calls. You do not have access to tools in this step. Return your response purely as plain text in the chat response.`;
+
+        const response = await aiService.chat([
+            { role: 'system', content: systemInstructions },
+            { role: 'user', content: prompt }
+        ], { temperature: Math.min(0.1 + (attempt - 1) * 0.05, 0.3), model: modelUsed });
+
+        const text = typeof response === 'string' ? response : 'text' in response ? response.text : '';
+        if (!text) return { success: false, feedback: 'Empty AI response' };
+
+        // Store analysis as task output for subsequent steps
+        TaskService.completeTask(
+            childTaskId,
+            text,
+            activeTask.assigned_agent_id,
+            'analysis',
+            Math.ceil(text.length / 4),
+            modelUsed,
+            aiService.providerId
+        );
+
+        return { success: true };
+    }
+
+    private static async executeModifyCreateStep(
+        childTaskId: number,
+        step: PlanStep,
+        parentTaskId: number,
+        activeTask: any,
+        _investText: string,
+        taxonomyResult: any,
+        modelUsed: string,
+        config: ExecutionConfig,
+        attempt: number
+    ): Promise<{ success: boolean; patches?: any[]; feedback?: string }> {
+        if (!aiService.isActive()) return { success: false, feedback: 'AI Service is inactive' };
+
+        const assembled = await ContextAssembler.assembleContext(childTaskId, []);
+        let systemInstructions = ASTPatchingService.shapeSystemInstructions('modify', assembled.systemPrompt, undefined, taxonomyResult);
+
+        if (config.userGuidance) {
+            systemInstructions += `\n\n⚠️ USER GUIDANCE\n${config.userGuidance}\nAdjust your approach according to this guidance.`;
+        }
+
+        const tempWithEscalation = config.baseTemperature + (attempt - 1) * 0.1;
+        const targetFiles = this.resolveFilesFromTarget(step.target, step.action);
+
+        let isCreate = step.action === 'create';
+
+        // If it's a modify step, but the target file doesn't exist on disk, treat it as a create step
+        if (!isCreate && step.action === 'modify') {
+            let allMissing = true;
+            for (const file of targetFiles) {
+                const absPath = PathGuard.resolve(file);
+                if (absPath && fs.existsSync(absPath)) {
+                    allMissing = false;
+                    break;
+                }
+            }
+            if (allMissing && targetFiles.length > 0) {
+                console.log(`[ExecutionLoopService] Target file(s) for modify step do not exist. Falling back modify step to create behavior.`);
+                isCreate = true;
+            }
+        }
+
+        const formatInstruction = isCreate
+            ? `Return your changes as a JSON array containing exactly one object:
+\`\`\`json
+[{
+  "file": "${step.target}",
+  "patches": [{ "find": "", "replace": "<full file content here>" }]
+}]
+\`\`\`
+For new files, use "find": "" (empty string) to indicate full-file creation.`
+            : `Return your changes in JSON AST Patch format:
+\`\`\`json
+[{
+  "file": "relative/path/to/file.ts",
+  "patches": [{ "find": "exact code to replace", "replace": "replacement code" }]
+}]
+\`\`\``;
+
+        const prompt = `Task Title: ${activeTask.title}
+Step: ${step.action} — ${step.target}
+Rationale: ${step.rationale || ''}
+
+Apply changes ONLY to the target: ${step.target}
+Files involved: ${targetFiles.join(', ') || 'to be determined'}
+
+${isCreate ? 'Create the file with full content.' : 'Modify the existing file according to the plan.'}
+
+${formatInstruction}
+
+IMPORTANT: You MUST wrap your response in a JSON array [...], even for a single file.
+
+IMPORTANT: Do NOT output any tool/function calls. You do not have access to tools in this step. Return your response purely as plain text in the chat response.`;
+
+        const response = await aiService.chat([
+            { role: 'system', content: systemInstructions },
+            { role: 'user', content: prompt }
+        ], { temperature: tempWithEscalation, model: modelUsed });
+
+        const chatResp = response as import('./AIService').ChatResponse;
+        const responseContent = chatResp.text;
+
+        if (!responseContent) return { success: false, feedback: 'Empty AI response' };
+
+        console.log(`[ExecutionLoopService] AI response (first 500): ${responseContent.substring(0, 500)}`);
+
+        // Parse patches using 4-fallback chain
+        let patches = ASTPatchingService.generatePreviewPatches(responseContent);
+        let parseSuccess = patches.length > 0;
+
+        if (!parseSuccess) {
+            console.warn(`[ExecutionLoopService] JSON AST parse failed. Trying full-file block parser...`);
+            const fallbackPatches = this.generateFallbackPatches(responseContent);
+            if (fallbackPatches.length > 0) {
+                patches.push(...fallbackPatches);
+                parseSuccess = true;
+            }
+        }
+
+        if (!parseSuccess) {
+            console.warn(`[ExecutionLoopService] Full-file blocks failed. Trying markdown code blocks...`);
+            const markdownPatches = this.generateMarkdownFallbackPatches(responseContent);
+            if (markdownPatches.length > 0) {
+                patches.push(...markdownPatches);
+                parseSuccess = true;
+            }
+        }
+
+        if (!parseSuccess) {
+            console.warn(`[ExecutionLoopService] Markdown blocks failed. Trying raw path+content fallback...`);
+            const rawPatches = this.generateRawPathFallbackPatches(responseContent);
+            if (rawPatches.length > 0) {
+                patches.push(...rawPatches);
+                parseSuccess = true;
+            }
+        }
+
+        if (!parseSuccess) {
+            console.warn(`[ExecutionLoopService] All structured parsers failed. Using entire AI response as file content for ${step.target}...`);
+            const absolutePath = PathGuard.resolve(step.target);
+            if (absolutePath) {
+                let originalContent = '';
+                if (fs.existsSync(absolutePath)) {
+                    originalContent = fs.readFileSync(absolutePath, 'utf-8');
+                }
+                patches.push({
+                    relativePath: step.target,
+                    absolutePath,
+                    originalContent,
+                    proposedContent: responseContent.trim(),
+                    patches: [{ find: '', replace: responseContent.trim() }],
+                    addedLines: 0,
+                    removedLines: 0,
+                });
+                parseSuccess = true;
+            } else {
+                throw new Error('Failed parsing file patches from AI response (JSON AST, full-file blocks, markdown code blocks, and raw path+content all failed).');
+            }
+        }
+
+        // Apply patches via PendingModificationsService
+        PendingModificationsService.setPending(childTaskId, {
+            taskId: childTaskId,
+            modifications: patches,
+            planSnapshot: {},
+            createdAt: Date.now(),
+        });
+
+        const plan = dbService.getTaskPlan(parentTaskId);
+        const planJson = plan ? JSON.parse(plan.plan_json) : {};
+        const isPlanMode = planJson.approved === true;
+
+        if (isPlanMode) {
+            console.log(`[ExecutionLoopService] Plan approved. Auto-applying step patches...`);
+            const applied = PendingModificationsService.applyModifications(childTaskId);
+            if (!applied) throw new Error('Failed to auto-apply modifications.');
+            PendingModificationsService.removePending(childTaskId);
+        } else {
+            // Store patches and resolve to let the renderer know
+            const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
+            if (mainWindow) {
+                mainWindow.webContents.send('execution:pending-modifications', {
+                    taskId: childTaskId,
+                    modifications: patches.map((m: any) => ({
+                        relativePath: m.relativePath,
+                        originalContent: m.originalContent,
+                        proposedContent: m.proposedContent,
+                        addedLines: m.addedLines,
+                        removedLines: m.removedLines,
+                    })),
+                });
+            }
+            const userAccepted = await new Promise<boolean>((resolve) => {
+                PendingModificationsService.setResolver(childTaskId, resolve);
+            });
+            if (!userAccepted) {
+                PendingModificationsService.removePending(childTaskId);
+                throw new Error('User rejected modifications.');
+            }
+            // Apply the already-parsed stored patches (not re-parsing raw text)
+            const applied = PendingModificationsService.applyModifications(childTaskId);
+            PendingModificationsService.removePending(childTaskId);
+            if (!applied) throw new Error('Failed to apply modifications to disk.');
+        }
+
+        // Store output
+        TaskService.completeTask(
+            childTaskId,
+            responseContent,
+            activeTask.assigned_agent_id,
+            'code',
+            Math.ceil(responseContent.length / 4),
+            modelUsed,
+            aiService.isActive() ? aiService.providerId : 'fallback'
+        );
+
+        return { success: true, patches };
+    }
+
+    private static async executeDeleteStep(
+        childTaskId: number,
+        step: PlanStep
+    ): Promise<{ success: boolean; feedback?: string }> {
+        // Require user approval for delete
+        const targetFiles = this.resolveFilesFromTarget(step.target, 'delete');
+
+        const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
+        if (!mainWindow) return { success: false, feedback: 'No renderer window' };
+
+        const approved = await new Promise<boolean>((resolve) => {
+            mainWindow.webContents.send('tool:approval-request', {
+                type: 'delete',
+                taskId: childTaskId,
+                details: `Delete files: ${targetFiles.join(', ') || step.target}`,
+                rationale: step.rationale,
+            });
+            // The renderer sends back via execution:dlq-respond or a resolution mechanism
+            // We use an inline approval pattern: store a resolver
+            PendingModificationsService.setResolver(childTaskId, resolve);
+        });
+
+        if (!approved) return { success: false, feedback: 'Delete rejected by user' };
+
+        // Perform the deletion
+        for (const file of targetFiles) {
+            const absolutePath = PathGuard.resolve(file);
+            if (absolutePath && fs.existsSync(absolutePath)) {
+                try {
+                    fs.unlinkSync(absolutePath);
+                    console.log(`[ExecutionLoopService] Deleted: ${file}`);
+                } catch (err) {
+                    console.error(`[ExecutionLoopService] Failed to delete ${file}:`, err);
+                    return { success: false, feedback: `Failed to delete ${file}` };
+                }
+            }
+        }
+
+        PendingModificationsService.removePending(childTaskId);
+        return { success: true };
+    }
+
+    private static async executeCommandStep(
+        childTaskId: number,
+        step: PlanStep
+    ): Promise<{ success: boolean; feedback?: string }> {
+        const approved = await new Promise<boolean>((resolve) => {
+            const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
+            if (!mainWindow) return resolve(false);
+
+            mainWindow.webContents.send('tool:approval-request', {
+                type: 'run_command',
+                taskId: childTaskId,
+                details: `Run command: ${step.target}`,
+                rationale: step.rationale,
+            });
+            PendingModificationsService.setResolver(childTaskId, resolve);
+        });
+
+        if (!approved) return { success: false, feedback: 'Command rejected by user' };
+
+        PendingModificationsService.removePending(childTaskId);
+        return { success: true, feedback: 'Command approved but execution not implemented in this version' };
+    }
+
+    private static async handleStepDlq(
+        taskId: number,
+        stepIdx: number,
+        _step: PlanStep,
+        failureFeedback: string,
+        attemptHistory: string[],
+        config: ExecutionConfig
+    ): Promise<'passed' | 'failed'> {
+        const activeTask = dbService.getTask(taskId);
+        this.sendProgress(taskId, 'failed', `Step ${stepIdx + 1} exhausted all retries`);
+        console.error(`[ExecutionLoopService] Step ${stepIdx + 1} failed after ${config.maxRetries} attempts. Escalating to user...`);
+
         const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
         if (mainWindow) {
             mainWindow.webContents.send('execution:dlq-notify', {
                 taskId,
-                taskTitle: activeTask?.title || 'Unknown Task',
+                taskTitle: activeTask?.title || 'Unknown',
                 failureFeedback,
                 attemptHistory,
                 maxRetries: config.maxRetries,
             });
         }
 
-        // Wait for user guidance (or cancel)
         const userGuidance = await new Promise<string | null>((resolve) => {
             ExecutionLoopService.setDlqResolver(taskId, resolve, failureFeedback, attemptHistory);
         });
 
         if (!userGuidance) {
-            // User cancelled — mark failed and throw
             dbService.updateTaskStatus(taskId, 'failed');
-            TaskService.failTask(taskId, `User cancelled after ${config.maxRetries} failed attempts. Details: ${failureFeedback}`);
-
-            await LearningService.captureLearning(taskId).catch(err => {
-                console.error('[ExecutionLoopService] LearningService capture failed on cancel:', err);
-            });
-
+            TaskService.failTask(taskId, `User cancelled after step ${stepIdx + 1} failed. ${failureFeedback}`);
+            await LearningService.captureLearning(taskId).catch(() => {});
             this.abortControllers.delete(taskId);
             this.sendProgress(taskId, 'failed', 'Execution cancelled by user');
-            throw new Error(`[ExecutionLoopService] User cancelled task ${taskId} after ${config.maxRetries} failed attempts.`);
+            throw new Error(`[ExecutionLoopService] User cancelled task ${taskId} at step ${stepIdx + 1}.`);
         }
 
-        // Retry with user guidance — reset attempt counter for guided retry
-        console.log(`[ExecutionLoopService] User provided guidance. Retrying task ${taskId} with injected guidance...`);
         this.abortControllers.delete(taskId);
-        attempt = 1;
-        config = { ...config, maxRetries: 3, userGuidance };
-
-        // Re-enter the retry loop
-        const guidedResult = await this.executeTask(taskId, config);
-        return guidedResult;
+        const guidedConfig: ExecutionConfig = { ...config, userGuidance };
+        return await this.executeTask(taskId, guidedConfig);
     }
 
     private static async performInvestigation(
@@ -441,7 +715,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
     ): Promise<string> {
         if (!aiService.isActive()) return '';
 
-        console.log(`[ExecutionLoopService] Triggering Taxonomy Steering: Active Investigation Phase...`);
+        console.log(`[ExecutionLoopService] Investigation phase...`);
         const investAssembled = await ContextAssembler.assembleContext(taskId, []);
         const investSystemInstructions = ASTPatchingService.shapeSystemInstructions(
             'investigate',
@@ -454,7 +728,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
             try {
                 taxonomyService.trackResult(taskId, investAssembled.taxonomyResult, 'investigation');
             } catch (e) {
-                console.error('[ExecutionLoopService] Failed to track investigation taxonomy:', e);
+                console.error('[ExecutionLoopService] Failed to track taxonomy:', e);
             }
         }
 
@@ -468,7 +742,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
             { role: 'user', content: investPrompt }
         ], { temperature: 0.1, model: modelUsed });
 
-        console.log(`[ExecutionLoopService] Active Investigation completed successfully.`);
+        console.log(`[ExecutionLoopService] Investigation completed.`);
 
         const investText = typeof investResult === 'string' ? investResult : 'text' in investResult ? investResult.text : '';
         if (investText) {
@@ -484,6 +758,8 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
         return investText;
     }
 
+    // === Patch parsing helpers (unchanged from original) ===
+
     private static parseFileBlockResponse(response: string): Array<{ relativePath: string; content: string }> {
         if (!response) return [];
         const fileBlockRegex = /===\s*FILE:\s*([^\s=]+)\s*===([\s\S]*?)===\s*END FILE\s*===/gi;
@@ -496,6 +772,127 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
             blocks.push({ relativePath, content: cleanContent });
         }
         return blocks;
+    }
+
+    private static parseMarkdownCodeBlocks(response: string): Array<{ relativePath: string; content: string }> {
+        if (!response) return [];
+        const blockRegex = /```(\S+)?\s*\n([\s\S]*?)```/g;
+        const blocks: Array<{ relativePath: string; content: string }> = [];
+        let match;
+
+        while ((match = blockRegex.exec(response)) !== null) {
+            const info = (match[1] || '').trim();
+            const rawContent = match[2];
+            const cleanContent = rawContent.replace(/^\r?\n/, '').replace(/\r?\n\s*$/, '');
+            if (!cleanContent) continue;
+
+            let relativePath = '';
+            const colonIdx = info.indexOf(':');
+            const spaceIdx = info.indexOf(' ');
+            if (colonIdx !== -1) {
+                relativePath = info.substring(colonIdx + 1).trim();
+            } else if (spaceIdx !== -1) {
+                relativePath = info.substring(spaceIdx + 1).trim();
+            } else if (/\.\w+$/.test(info)) {
+                relativePath = info;
+            }
+
+            if (!relativePath) {
+                const firstLine = cleanContent.split('\n')[0]?.trim() || '';
+                const commentMatch = firstLine.match(/^\/\/\s*(\S+\.\w+)/);
+                if (commentMatch) {
+                    relativePath = commentMatch[1];
+                }
+            }
+
+            if (relativePath && relativePath.includes('.') && !relativePath.includes(' ')) {
+                blocks.push({ relativePath, content: cleanContent });
+            }
+        }
+
+        return blocks;
+    }
+
+    private static generateMarkdownFallbackPatches(response: string): import('../../src/types/appTypes').PendingFileModification[] {
+        const blocks = this.parseMarkdownCodeBlocks(response);
+        const results: import('../../src/types/appTypes').PendingFileModification[] = [];
+
+        for (const { relativePath, content: cleanContent } of blocks) {
+            const absolutePath = PathGuard.resolve(relativePath);
+            if (!absolutePath) {
+                console.error(`[ExecutionLoopService] Safety Block: Out-of-bounds file edit rejected: ${relativePath}`);
+                continue;
+            }
+
+            try {
+                let originalContent = '';
+                if (fs.existsSync(absolutePath)) {
+                    originalContent = fs.readFileSync(absolutePath, 'utf-8');
+                }
+
+                results.push({
+                    relativePath,
+                    absolutePath,
+                    originalContent,
+                    proposedContent: cleanContent,
+                    patches: [{ find: '', replace: cleanContent }],
+                    addedLines: 0,
+                    removedLines: 0,
+                });
+            } catch (err) {
+                console.error(`[ExecutionLoopService] Failed to read file for preview: ${relativePath}`, err);
+            }
+        }
+
+        return results;
+    }
+
+    private static generateRawPathFallbackPatches(response: string): import('../../src/types/appTypes').PendingFileModification[] {
+        const lines = response.split('\n');
+        const results: import('../../src/types/appTypes').PendingFileModification[] = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            // Detect a line that looks like a file path: starts with . or / or letter: contains a dot, no spaces
+            if (line && !line.includes(' ') && line.includes('.') &&
+                (line.startsWith('.') || line.startsWith('/') || /^[a-zA-Z]:/.test(line) || line.includes('/'))) {
+                const contentLines = lines.slice(i + 1).filter(l => l.trim().length > 0);
+                if (contentLines.length === 0) continue;
+
+                const relativePath = line;
+                const content = lines.slice(i + 1).join('\n').trim();
+
+                // Skip if content looks like JSON (starts with { or [)
+                if (content.startsWith('{') || content.startsWith('[')) continue;
+
+                const absolutePath = PathGuard.resolve(relativePath);
+                if (!absolutePath) continue;
+
+                try {
+                let originalContent = '';
+                try {
+                    if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
+                        originalContent = fs.readFileSync(absolutePath, 'utf-8');
+                    }
+                } catch {
+                    // EISDIR or permission error — treat as empty (new file)
+                }
+                    results.push({
+                        relativePath,
+                        absolutePath,
+                        originalContent,
+                        proposedContent: content,
+                        patches: [{ find: '', replace: content }],
+                        addedLines: 0,
+                        removedLines: 0,
+                    });
+                } catch (err) {
+                    console.error(`[ExecutionLoopService] Raw path fallback failed for: ${relativePath}`, err);
+                }
+                break;
+            }
+        }
+        return results;
     }
 
     private static generateFallbackPatches(response: string): import('../../src/types/appTypes').PendingFileModification[] {
@@ -532,7 +929,7 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
         return results;
     }
 
-    private static applyFileEdits(response: string): boolean {
+    /* private static applyFileEdits(response: string): boolean {
         const blocks = this.parseFileBlockResponse(response);
         let parsedAny = false;
 
@@ -550,14 +947,14 @@ Enforce strict type safety and preserve imports. Return ONLY the strict JSON pat
                 }
 
                 fs.writeFileSync(absolutePath, cleanContent, 'utf-8');
-                console.log(`[ExecutionLoopService] Successfully applied file update: ${relativePath}`);
+                console.log(`[ExecutionLoopService] Applied file update: ${relativePath}`);
                 parsedAny = true;
             } catch (err) {
-                console.error(`[ExecutionLoopService] Failed writing file edits to disk: ${relativePath}`, err);
+                console.error(`[ExecutionLoopService] Failed writing file edits: ${relativePath}`, err);
                 return false;
             }
         }
 
         return parsedAny;
-    }
+    } */
 }

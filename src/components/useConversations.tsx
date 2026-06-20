@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { getNumericTaskId } from '../utils/taskId';
 import { cleanAndExtractJSONObjects, mergeExecutionPlans } from '../utils/jsonParser';
 import { rLog, rWarn, rError } from '../utils/rendererLog';
@@ -11,12 +11,18 @@ interface ConvMessage {
 
 export function useConversations(
     setMessages: React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>,
-    setIsLoading: React.Dispatch<React.SetStateAction<boolean>>,
+    setLoadingConversations: React.Dispatch<React.SetStateAction<Set<string>>> | undefined,
     setActiveProvider: React.Dispatch<React.SetStateAction<string>>,
     setActiveModel: React.Dispatch<React.SetStateAction<string>>,
-    rootPath: string
+    rootPath: string,
+    activeStreamIdsRef?: React.MutableRefObject<Set<string>>
 ) {
     const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+    const activeConvIdRef = useRef<string | null>(null);
+
+    useEffect(() => {
+        activeConvIdRef.current = activeConversationId;
+    }, [activeConversationId]);
     const [conversations, setConversations] = useState<Record<string, unknown>[]>([]);
     const [showHistoryDrawer, setShowHistoryDrawer] = useState(false);
     const [editingConvId, setEditingConvId] = useState<string | null>(null);
@@ -69,25 +75,38 @@ export function useConversations(
         try {
             const enriched = await getEnrichedMessages(convId);
             if (enriched && enriched.length > 0) {
-                if (forceLastMessageStreaming) {
+                const hasActiveStream = activeStreamIdsRef?.current.has(convId) || forceLastMessageStreaming;
+                if (hasActiveStream) {
                     const lastIdx = enriched.length - 1;
                     if (getMsg(enriched[lastIdx]).role === 'assistant') {
                         enriched[lastIdx] = {
                             ...enriched[lastIdx],
                             isStreaming: true
                         };
+                    } else {
+                        // Append a streaming assistant placeholder message
+                        enriched.push({
+                            role: 'assistant',
+                            content: '',
+                            isStreaming: true,
+                            activities: []
+                        });
                     }
                 }
-                setMessages(enriched as Record<string, unknown>[]);
+                if (convId === activeConvIdRef.current) {
+                    setMessages(enriched as Record<string, unknown>[]);
+                }
             } else {
-                setMessages([
-                    { role: 'system', content: 'You are a helpful coding assistant.' }
-                ]);
+                if (convId === activeConvIdRef.current) {
+                    setMessages([
+                        { role: 'system', content: 'You are a helpful coding assistant.' }
+                    ]);
+                }
             }
         } catch (err) {
             console.error('Failed to refresh active messages:', err);
         }
-    }, [setMessages, getEnrichedMessages]);
+    }, [setMessages, getEnrichedMessages, activeStreamIdsRef]);
 
     // eslint-disable-next-line complexity
     const handleRollbackConversation = async (messageId: number) => {
@@ -256,7 +275,13 @@ export function useConversations(
         const sourceConversationId = conversationId || activeConversationId;
         if (!sourceConversationId) return;
         try {
-            setIsLoading(true);
+            if (setLoadingConversations) {
+                setLoadingConversations(prev => {
+                    const next = new Set(prev);
+                    next.add(sourceConversationId);
+                    return next;
+                });
+            }
             const newConvId = await window.ipcRenderer.invoke('chat:fork-conv', sourceConversationId);
             setActiveConversationId(newConvId);
             await loadConversations();
@@ -265,7 +290,13 @@ export function useConversations(
             console.error('Failed to fork chat:', e);
             alert('Failed to fork chat: ' + (e instanceof Error ? e.message : String(e)));
         } finally {
-            setIsLoading(false);
+            if (setLoadingConversations) {
+                setLoadingConversations(prev => {
+                    const next = new Set(prev);
+                    next.delete(sourceConversationId);
+                    return next;
+                });
+            }
         }
     };
 

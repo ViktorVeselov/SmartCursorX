@@ -44,6 +44,7 @@ export function createLanguageModel(config: ProviderConfig, modelId: string): La
       return createOpenAICompatible({
         name: 'zen',
         baseURL: 'https://opencode.ai/zen/v1',
+        supportsStructuredOutputs: true,
       }).languageModel(resolved.model) as unknown as LanguageModel;
     }
     case 'litellm':
@@ -51,6 +52,7 @@ export function createLanguageModel(config: ProviderConfig, modelId: string): La
         name: 'litellm',
         baseURL: config.baseUrl || 'http://localhost:4000/v1',
         apiKey: config.apiKey,
+        supportsStructuredOutputs: true,
       }).languageModel(modelId) as unknown as LanguageModel;
     case 'gemini':
       return createOpenAICompatible({
@@ -68,6 +70,7 @@ export function createLanguageModel(config: ProviderConfig, modelId: string): La
           'HTTP-Referer': 'https://github.com/anomalyco/opencode',
           'X-Title': 'SmartCursor-X',
         },
+        supportsStructuredOutputs: true,
       }).languageModel(modelId) as unknown as LanguageModel;
     case 'finetuned':
       // Fine-tuned models require special handling (adapter loading)
@@ -78,12 +81,14 @@ export function createLanguageModel(config: ProviderConfig, modelId: string): La
         name: 'local',
         baseURL: config.baseUrl || 'http://localhost:8080/v1',
         apiKey: 'not-needed',
+        supportsStructuredOutputs: true,
       }).languageModel(modelId) as unknown as LanguageModel;
     default:
       return createOpenAICompatible({
         name: config.providerId,
         baseURL: config.baseUrl || 'http://localhost:11434/v1',
         apiKey: config.apiKey,
+        supportsStructuredOutputs: true,
       }).languageModel(modelId) as unknown as LanguageModel;
   }
 }

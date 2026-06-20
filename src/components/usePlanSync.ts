@@ -13,6 +13,7 @@ export function usePlanSync(
     const planStartTimeRef = useRef<number | null>(null);
     const planModifyAssistantMessageIdRef = useRef<number | null>(null);
     const planModifyInFlightRef = useRef(false);
+    const planModifyConvIdRef = useRef<string | null>(null);
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     // eslint-disable-next-line max-lines-per-function
@@ -50,6 +51,7 @@ export function usePlanSync(
                     const assistantContent = `**AI is updating the implementation plan...**\nRunning background optimization. Please wait.`;
                     const tempMessageId = await window.ipcRenderer.invoke('chat:add-message', convId, 'assistant', assistantContent);
                     planModifyAssistantMessageIdRef.current = tempMessageId !== undefined && tempMessageId !== null ? Number(tempMessageId) : null;
+                    planModifyConvIdRef.current = convId;
                     planModifyInFlightRef.current = true;
                     await refreshActiveMessages(convId, true);
                 } catch (err) {
@@ -65,7 +67,7 @@ export function usePlanSync(
             const success = customEvent.detail.success;
             const description = customEvent.detail.description;
             const errorMessage = customEvent.detail.errorMessage || 'The model did not return valid plan JSON.';
-            const convId = activeConversationIdRef.current;
+            const convId = planModifyConvIdRef.current;
             const trackedMessageId = planModifyAssistantMessageIdRef.current;
 
             if (!planModifyInFlightRef.current && trackedMessageId === null) {
@@ -79,6 +81,7 @@ export function usePlanSync(
             setIsPlanModifying(false);
             planModifyInFlightRef.current = false;
             planModifyAssistantMessageIdRef.current = null;
+            planModifyConvIdRef.current = null;
 
             if (convId && trackedMessageId !== null) {
                 try {

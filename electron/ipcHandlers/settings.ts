@@ -2,8 +2,10 @@ import { secureStore } from '../secureStore';
 import { PathGuard } from '../services/PathGuard';
 import { checkArgs } from '../../src/helpers/invariant';
 import { WorkspaceWatcherService } from '../services/WorkspaceWatcherService';
+import path from 'node:path';
+import type { IpcHandlerContext } from './index';
 
-export function registerSettingsHandlers(ipcMain: Electron.IpcMain) {
+export function registerSettingsHandlers(ipcMain: Electron.IpcMain, context: IpcHandlerContext) {
     ipcMain.handle('get-api-key', () => secureStore.getApiKey('openai'));
     ipcMain.handle('set-api-key', (_event, key: string) => {
         if (!key) {
@@ -85,14 +87,16 @@ export function registerSettingsHandlers(ipcMain: Electron.IpcMain) {
         if (typeof settings.vertexLocation === 'string') secureStore.setVertexLocation(settings.vertexLocation);
         if (typeof settings.azureApiBase === 'string') secureStore.setAzureApiBase(settings.azureApiBase);
         if (typeof settings.azureApiVersion === 'string') secureStore.setAzureApiVersion(settings.azureApiVersion);
-        if (typeof settings.activeWorkspacePath === 'string') {
-            secureStore.setActiveWorkspacePath(settings.activeWorkspacePath);
-            if (settings.activeWorkspacePath.trim().length > 0) {
-                PathGuard.setWorkspacePath(settings.activeWorkspacePath);
-            }
-            WorkspaceWatcherService.getInstance().watch(settings.activeWorkspacePath);
-        }
 
+        return true;
+    });
+
+    ipcMain.handle('set-workspace-path', (_event, workspacePath: string) => {
+        const resolved = path.resolve(workspacePath);
+        PathGuard.setWorkspacePath(resolved);
+        secureStore.setActiveWorkspacePath(resolved);
+        context.workspacePath = resolved;
+        WorkspaceWatcherService.getInstance().watch(resolved);
         return true;
     });
 }

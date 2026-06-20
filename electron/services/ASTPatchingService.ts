@@ -13,6 +13,14 @@ export interface PatchBlock {
 export interface FilePatch {
     file: string;
     patches: PatchBlock[];
+    /** @deprecated use file instead — treated as alias for `file` */
+    path?: string;
+    /** @deprecated use file instead — treated as alias for `file` */
+    filename?: string;
+    /** @deprecated use patches instead — treated as alias for `[{ find: "", replace: content }]` */
+    content?: string;
+    /** @deprecated use patches instead — treated as alias for `[{ find: "", replace: code }]` */
+    code?: string;
 }
 
 export class ASTPatchingService {
@@ -148,15 +156,19 @@ export class ASTPatchingService {
 
         try {
             const cleaned = this.extractJson(patchJson);
-            const patches = JSON.parse(cleaned) as FilePatch[];
+            let patches = JSON.parse(cleaned) as FilePatch[];
             if (!Array.isArray(patches)) {
-                throw new Error("JSON Patch payload is not a valid array.");
+                if (patches && typeof patches === 'object' && (('file' in patches && 'patches' in patches) || (('file' in patches || 'path' in patches || 'filename' in patches) && ('content' in patches || 'code' in patches || 'patches' in patches)))) {
+                    patches = [patches as FilePatch];
+                } else {
+                    throw new Error("JSON Patch payload is not a valid array or single patch object.");
+                }
             }
 
             const results: PendingFileModification[] = [];
 
             for (const filePatch of patches) {
-                const relativePath = filePatch.file;
+                const relativePath = filePatch.file || filePatch.path || filePatch.filename || '';
                 const absolutePath = PathGuard.resolve(relativePath);
 
                 if (!absolutePath) {
@@ -164,21 +176,34 @@ export class ASTPatchingService {
                     continue;
                 }
 
-                if (!fs.existsSync(absolutePath)) {
-                    console.error(`[ASTPatchingService] Preview: Patch target file does not exist: ${relativePath}`);
+                    let content = '';
+                    try {
+                        if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
+                            content = fs.readFileSync(absolutePath, 'utf-8');
+                        }
+                    } catch {
+                        // EISDIR or permission error — treat as empty (new file)
+                    }
+                    const originalContent = content;
+                const appliedPatches: PendingPatch[] = [];
+
+                const patchList = filePatch.patches || (filePatch.content ? [{ find: '', replace: filePatch.content }] : filePatch.code ? [{ find: '', replace: filePatch.code }] : null);
+                if (!patchList) {
+                    console.error(`[ASTPatchingService] Preview: No patches, content, or code found for ${relativePath}, skipping.`);
                     continue;
                 }
 
-                let content = fs.readFileSync(absolutePath, 'utf-8');
-                const originalContent = content;
-                const appliedPatches: PendingPatch[] = [];
-
-                for (const patch of filePatch.patches) {
+                for (const patch of patchList) {
                     const findStr = patch.find;
                     const replaceStr = patch.replace;
 
                     const index = content.indexOf(findStr);
                     if (index === -1) {
+                        if (content === '') {
+                            content = replaceStr;
+                            appliedPatches.push({ find: findStr, replace: replaceStr });
+                            continue;
+                        }
                         console.error(`[ASTPatchingService] Preview: could not locate target block in ${relativePath}. Skipping patch.`);
                         continue;
                     }
@@ -220,15 +245,19 @@ export class ASTPatchingService {
 
         try {
             const cleaned = this.extractJson(patchJson);
-            const patches = JSON.parse(cleaned) as FilePatch[];
+            let patches = JSON.parse(cleaned) as FilePatch[];
             if (!Array.isArray(patches)) {
-                throw new Error("JSON Patch payload is not a valid array.");
+                if (patches && typeof patches === 'object' && (('file' in patches && 'patches' in patches) || (('file' in patches || 'path' in patches || 'filename' in patches) && ('content' in patches || 'code' in patches || 'patches' in patches)))) {
+                    patches = [patches as FilePatch];
+                } else {
+                    throw new Error("JSON Patch payload is not a valid array or single patch object.");
+                }
             }
 
             let appliedAny = false;
 
             for (const filePatch of patches) {
-                const relativePath = filePatch.file;
+                const relativePath = filePatch.file || filePatch.path || filePatch.filename || '';
                 const absolutePath = PathGuard.resolve(relativePath);
 
                 if (!absolutePath) {
@@ -236,20 +265,32 @@ export class ASTPatchingService {
                     return false;
                 }
 
-                if (!fs.existsSync(absolutePath)) {
-                    console.error(`[ASTPatchingService] Patch target file does not exist: ${relativePath}`);
+                let content = '';
+                try {
+                    if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
+                        content = fs.readFileSync(absolutePath, 'utf-8');
+                    }
+                } catch {
+                    // EISDIR or permission error — treat as empty (new file)
+                }
+
+                const patchList = filePatch.patches || (filePatch.content ? [{ find: '', replace: filePatch.content }] : filePatch.code ? [{ find: '', replace: filePatch.code }] : null);
+                if (!patchList) {
+                    console.error(`[ASTPatchingService] No patches, content, or code found for ${relativePath}, skipping.`);
                     return false;
                 }
 
-                let content = fs.readFileSync(absolutePath, 'utf-8');
-
-                for (const patch of filePatch.patches) {
+                for (const patch of patchList) {
                     const findStr = patch.find;
                     const replaceStr = patch.replace;
 
                     // Exact match search
                     const index = content.indexOf(findStr);
                     if (index === -1) {
+                        if (content === '') {
+                            content = replaceStr;
+                            continue;
+                        }
                         console.error(`[ASTPatchingService] Patch failed: could not locate target block in ${relativePath}. Target was:\n${findStr}`);
                         return false;
                     }

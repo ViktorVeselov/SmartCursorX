@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const fs = require('fs').promises;
 
 function getWorkspacePath(context: IpcHandlerContext): string {
-    return context.workspacePath || PathGuard.getWorkspacePath() || '';
+    return PathGuard.getWorkspacePath() || context.workspacePath || '';
 }
 
 function resolveWorkspacePath(filePath: string, context: IpcHandlerContext): string {

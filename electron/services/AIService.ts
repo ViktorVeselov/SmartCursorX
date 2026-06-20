@@ -318,6 +318,10 @@ export class AIService {
         timeout: API_TIMEOUT,
       });
 
+      if (!result.text) {
+        console.warn('[AIService:generateText] Empty response. finishReason:', result.finishReason, 'warnings:', result.warnings, 'response:', JSON.stringify(result.response || {}));
+      }
+
       return {
         text: result.text,
         usage: {

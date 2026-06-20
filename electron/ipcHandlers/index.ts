@@ -35,7 +35,7 @@ export function registerAllHandlers(context: IpcHandlerContext) {
     registerGitHandlers(ipcMain, context);
     registerDBHandlers(ipcMain);
     registerShellHandlers(ipcMain, context);
-    registerSettingsHandlers(ipcMain);
+    registerSettingsHandlers(ipcMain, context);
     registerExecutionHandlers(ipcMain, context);
     registerFinetuningHandlers(ipcMain);
     registerChangesHandlers(ipcMain, context);
