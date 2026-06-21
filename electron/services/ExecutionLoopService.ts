@@ -8,6 +8,7 @@ import { LearningService } from './LearningService';
 import { PathGuard } from './PathGuard';
 import { ASTPatchingService } from './ASTPatchingService';
 import { PendingModificationsService } from './PendingModificationsService';
+import { VerificationService } from './VerificationService';
 import { secureStore } from '../secureStore';
 import { taxonomyService } from './taxonomy/TaxonomyService';
 import { TaxonomyClassifier } from './taxonomy/TaxonomyClassifier';
@@ -108,6 +109,14 @@ export class ExecutionLoopService {
         }
         console.assert(planRow !== null, 'Plan must be present in DB');
         const plan = JSON.parse(planRow!.plan_json);
+
+        // Pre-Execution Plan Audit
+        const workspacePath = dbService.getWorkspacePathForTask(taskId) || process.cwd();
+        const auditIssues = PlanningService.auditPlan(plan, workspacePath);
+        if (auditIssues.length > 0) {
+            throw new Error(`Plan Audit Failed:\n- ${auditIssues.join('\n- ')}`);
+        }
+
         const steps: PlanStep[] = plan.steps || [];
 
         const activeTask = dbService.getTask(taskId);
@@ -323,7 +332,48 @@ export class ExecutionLoopService {
         }
 
         if (action === 'modify' || action === 'create') {
-            return this.executeModifyCreateStep(childTaskId, step, parentTaskId, activeTask, investText, taxonomyResult, modelUsed, config, attempt);
+            const result = await this.executeModifyCreateStep(childTaskId, step, parentTaskId, activeTask, investText, taxonomyResult, modelUsed, config, attempt);
+
+            // Plan-adherence verification gate (opt-in via plan.autoVerify)
+            // BOUNDED RETRY SAFETY: If verification fails, it returns { success: false }
+            // which is handled by the existing retry loop (maxRetries=3, default).
+            // After 3 exhausted retries → DLQ escalation to user. No infinite loop.
+            if (result.success) {
+                try {
+                    const parentPlanRow = dbService.getTaskPlan(parentTaskId);
+                    if (parentPlanRow) {
+                        const parentPlan = JSON.parse(parentPlanRow.plan_json);
+                        if (parentPlan.autoVerify === true) {
+                            const outputs = dbService.getTaskOutputs(childTaskId);
+                            if (outputs && outputs.length > 0) {
+                                this.sendProgress(parentTaskId, 'verifying', `Verifying plan adherence for step: ${step.target}...`);
+                                const verifyStatus = await VerificationService.verifyOutput(
+                                    outputs[0].id, taxonomyResult
+                                );
+                                if (verifyStatus === 'failed') {
+                                    const verifyDetails = dbService.getVerificationResults(outputs[0].id);
+                                    const failedChecks = (verifyDetails as any[])
+                                        .filter((r: any) => r.result === 'failed')
+                                        .map((r: any) => r.details)
+                                        .join('; ');
+                                    this.sendProgress(parentTaskId, 'verifying',
+                                        `Plan adherence check failed: ${(failedChecks || 'Unknown').substring(0, 200)}`);
+                                    return {
+                                        success: false,
+                                        feedback: `Plan adherence verification failed: ${failedChecks}`
+                                    };
+                                }
+                                this.sendProgress(parentTaskId, 'verifying', 'Plan adherence check passed ✓');
+                            }
+                        }
+                    }
+                } catch (verifyErr) {
+                    // Verification errors should not block execution — log and continue
+                    console.error('[ExecutionLoopService] Plan adherence verification error (non-blocking):', verifyErr);
+                }
+            }
+
+            return result;
         }
 
         if (action === 'delete') {
@@ -356,10 +406,25 @@ export class ExecutionLoopService {
         // Resolve target files and check for non-existent ones
         const targetFiles = this.resolveFilesFromTarget(step.target, step.action);
         const nonExistentFiles: string[] = [];
+        const fileContentsList: string[] = [];
         for (const file of targetFiles) {
             const absPath = PathGuard.resolve(file);
-            if (absPath && !fs.existsSync(absPath)) {
-                nonExistentFiles.push(file);
+            if (absPath) {
+                if (!fs.existsSync(absPath)) {
+                    nonExistentFiles.push(file);
+                } else {
+                    try {
+                        const size = fs.statSync(absPath).size;
+                        if (size < 100000) { // Limit to 100KB
+                            const content = fs.readFileSync(absPath, 'utf-8');
+                            fileContentsList.push(`=== FILE: ${file} ===\n${content}\n=== END FILE ===`);
+                        } else {
+                            fileContentsList.push(`=== FILE: ${file} (TOO LARGE TO LOAD, SIZE: ${Math.round(size / 1024)}KB) ===`);
+                        }
+                    } catch (e) {
+                        console.warn(`[ExecutionLoopService] Failed to read target file ${file}:`, e);
+                    }
+                }
             }
         }
 
@@ -368,9 +433,14 @@ export class ExecutionLoopService {
             nonExistentNotice = `\n\nNOTE: The following target file(s) do not exist on disk yet: ${nonExistentFiles.join(', ')}. Please analyze how they should be integrated or confirm they do not exist. Since these files are currently missing, you are not expected to cite their contents, but you should explain their role or requirements.`;
         }
 
+        let targetFileContents = '';
+        if (fileContentsList.length > 0) {
+            targetFileContents = `\n\nHere is the current content of the target file(s) on disk:\n${fileContentsList.join('\n\n')}`;
+        }
+
         const prompt = `You are in READING/ANALYSIS mode for Step ${step.order}.
 Target: ${step.target}
-Rationale: ${step.rationale || ''}${nonExistentNotice}
+Rationale: ${step.rationale || ''}${nonExistentNotice}${targetFileContents}
 
 Read and analyze the target file(s) and codebase. Report your findings, including:
 1. Current state of the target code (if the file exists) or that the file does not yet exist
@@ -426,6 +496,29 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
         const tempWithEscalation = config.baseTemperature + (attempt - 1) * 0.1;
         const targetFiles = this.resolveFilesFromTarget(step.target, step.action);
 
+        // Load contents of target files that exist on disk
+        let targetFileContents = '';
+        const fileContentsList: string[] = [];
+        for (const file of targetFiles) {
+            const absPath = PathGuard.resolve(file);
+            if (absPath && fs.existsSync(absPath)) {
+                try {
+                    const size = fs.statSync(absPath).size;
+                    if (size < 100000) { // Limit to 100KB
+                        const content = fs.readFileSync(absPath, 'utf-8');
+                        fileContentsList.push(`=== FILE: ${file} ===\n${content}\n=== END FILE ===`);
+                    } else {
+                        fileContentsList.push(`=== FILE: ${file} (TOO LARGE TO LOAD, SIZE: ${Math.round(size / 1024)}KB) ===`);
+                    }
+                } catch (e) {
+                    console.warn(`[ExecutionLoopService] Failed to read target file ${file}:`, e);
+                }
+            }
+        }
+        if (fileContentsList.length > 0) {
+            targetFileContents = `\n\nHere is the current content of the files involved on disk:\n${fileContentsList.join('\n\n')}`;
+        }
+
         let isCreate = step.action === 'create';
 
         // If it's a modify step, but the target file doesn't exist on disk, treat it as a create step
@@ -466,7 +559,7 @@ Step: ${step.action} — ${step.target}
 Rationale: ${step.rationale || ''}
 
 Apply changes ONLY to the target: ${step.target}
-Files involved: ${targetFiles.join(', ') || 'to be determined'}
+Files involved: ${targetFiles.join(', ') || 'to be determined'}${targetFileContents}
 
 ${isCreate ? 'Create the file with full content.' : 'Modify the existing file according to the plan.'}
 
@@ -489,7 +582,7 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
         console.log(`[ExecutionLoopService] AI response (first 500): ${responseContent.substring(0, 500)}`);
 
         // Parse patches using 4-fallback chain
-        let patches = ASTPatchingService.generatePreviewPatches(responseContent);
+        let patches = ASTPatchingService.generatePreviewPatches(responseContent, step.target, isCreate);
         let parseSuccess = patches.length > 0;
 
         if (!parseSuccess) {

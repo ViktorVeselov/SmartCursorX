@@ -17,6 +17,7 @@ import { diffLines } from 'diff';
 import type { IpcHandlerContext } from './index';
 import { ipcMain } from 'electron';
 import { SessionChangesTrackerService } from '../services/SessionChangesTrackerService';
+import { PlanningService } from '../services/PlanningService';
 
 async function withUsageTimeout<T>(promise: Promise<T>, timeoutMs = 1500): Promise<T | undefined> {
   let timeoutId: NodeJS.Timeout;
@@ -519,6 +520,15 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
         }
     });
 
+function getNumericTaskId(conversationId: string): number {
+    if (!conversationId) return 1;
+    let hash = 5381;
+    for (let i = 0; i < conversationId.length; i++) {
+        hash = (hash * 33) ^ conversationId.charCodeAt(i);
+    }
+    return Math.abs(hash) || 1;
+}
+
 async function handleStructuredPlanStart(
         event: Electron.IpcMainEvent,
         channelPrefix: string,
@@ -631,6 +641,24 @@ async function handleStructuredPlanStart(
             }
 
             const planCost = CostEstimatorService.estimateCost(targetModel, actualInputTokens, actualOutputTokens, targetProvider);
+            
+            // Run Pre-Execution Plan Audit
+            if (finalPlan && !context.abortedConvIds.has(PLAN_CONV_ID)) {
+                const taskId = getNumericTaskId(convId || '');
+                const workspacePath = dbService.getWorkspacePathForTask(taskId) || process.cwd();
+                const auditIssues = PlanningService.auditPlan(finalPlan, workspacePath);
+                if (auditIssues.length > 0) {
+                    console.warn(`[PlanStream:${channelPrefix}] Audit failed for streamed plan:`, auditIssues);
+                    event.sender.send(`${channelPrefix}-chunk`, {
+                        convId: PLAN_CONV_ID,
+                        error: `Plan Audit Failed:\n- ${auditIssues.join('\n- ')}`,
+                        errorType: 'VALIDATION'
+                    });
+                    event.sender.send(`${channelPrefix}-end`, { convId: PLAN_CONV_ID });
+                    return;
+                }
+            }
+
             console.log(`[PlanStream:${channelPrefix}] Sending end, tokens:`, { input: actualInputTokens, output: actualOutputTokens, cost: planCost });
             event.sender.send(`${channelPrefix}-end`, {
                 convId: PLAN_CONV_ID,

@@ -79,6 +79,19 @@ export class VerificationService {
             return 'failed';
         }
 
+        // Tier 0.5: Plan Adherence LLM Judge (opt-in via plan.autoVerify)
+        // SAFETY: This does NOT introduce an infinite loop. Verification failures are fed back
+        // into the existing bounded retry loop (maxRetries=3) in ExecutionLoopService.
+        // After 3 failures → DLQ escalation to user. No automatic restart.
+        console.log(`[VerificationService] Running Plan Adherence Check for task output ID ${taskOutputId}...`);
+        const adherenceResult = await this.runPlanAdherenceCheck(taskId, taskOutputId, output.content);
+        if (adherenceResult === 'failed') {
+            console.warn('[VerificationService] Plan adherence check failed.');
+            finalStatus = 'failed';
+            dbService.updateTaskOutputVerification(taskOutputId, 'failed');
+            return 'failed';
+        }
+
         const rules = dbService.getVerificationRules() as VerificationRule[];
 
         for (const rule of rules) {
@@ -214,5 +227,128 @@ Content to verify:
 
         dbService.updateTaskOutputVerification(taskOutputId, finalStatus);
         return finalStatus;
+    }
+
+    /**
+     * Plan-adherence LLM judge. Dynamically builds a rubric from plan fields
+     * (expectedOutcome, verificationCriteria, tradeoffs, consequences) and asks the
+     * LLM to score the output against it.
+     *
+     * Only fires when plan.autoVerify === true (opt-in).
+     * Uses the same model as the execution step.
+     * Stores results with rule_id 998.
+     *
+     * BOUNDED RETRY SAFETY: Failures are consumed by the existing retry loop
+     * (maxRetries=3) in ExecutionLoopService. After 3 exhausted retries → DLQ
+     * escalation to user. No infinite loop risk.
+     */
+    private static async runPlanAdherenceCheck(
+        taskId: number,
+        taskOutputId: number,
+        outputContent: string
+    ): Promise<'passed' | 'failed' | 'skipped'> {
+        // Resolve plan (with parent task fallback)
+        let planRow = dbService.getTaskPlan(taskId);
+        const task = dbService.getTask(taskId);
+        if (!planRow && task?.parent_task_id) {
+            planRow = dbService.getTaskPlan(task.parent_task_id);
+        }
+        if (!planRow) return 'skipped';
+
+        let plan: any;
+        try {
+            plan = JSON.parse(planRow.plan_json);
+        } catch (e) {
+            console.error('[VerificationService] Failed to parse plan JSON for adherence check:', e);
+            return 'skipped';
+        }
+
+        // Gate: only run when plan.autoVerify is explicitly true
+        if (plan.autoVerify !== true) return 'skipped';
+
+        // Build dynamic rubric from plan fields
+        const rubricParts: string[] = [];
+
+        if (plan.expectedOutcome) {
+            rubricParts.push(`Expected outcome: "${plan.expectedOutcome}"`);
+        }
+        if (plan.verificationCriteria && Array.isArray(plan.verificationCriteria)) {
+            for (const c of plan.verificationCriteria) {
+                rubricParts.push(`Verification criterion: "${c}"`);
+            }
+        }
+        if (plan.tradeoffs && Array.isArray(plan.tradeoffs)) {
+            for (const t of plan.tradeoffs) {
+                if (t.decision) {
+                    rubricParts.push(`Chosen approach: "${t.decision}" (not alternatives)`);
+                }
+            }
+        }
+        if (plan.consequences && Array.isArray(plan.consequences)) {
+            for (const c of plan.consequences) {
+                if (c.mitigation) {
+                    rubricParts.push(`Required mitigation: "${c.mitigation}"`);
+                }
+            }
+        }
+
+        // If the plan has no verifiable fields, skip gracefully
+        if (rubricParts.length === 0) return 'skipped';
+
+        const rubric = rubricParts
+            .map((r, i) => `${i + 1}. ${r}`)
+            .join('\n');
+
+        // LLM Judge call (same model as execution)
+        if (!aiService.isActive()) return 'skipped';
+
+        try {
+            const prompt = `You are a plan-adherence verification judge.
+Rate the following code output against these plan requirements:
+${rubric}
+
+Score 0.0 to 1.0 based on how many requirements are met.
+Score 1.0 = all requirements fully addressed. Score 0.0 = none addressed.
+Be strict: partial implementations or missing mitigations should lower the score significantly.
+
+Code output to verify:
+"${outputContent.substring(0, 8000)}"`;
+
+            const response = await aiService.chat([
+                { role: 'user', content: prompt }
+            ], {
+                temperature: 0.0,
+                responseSchema: {
+                    type: 'object',
+                    title: 'VerificationScore',
+                    properties: {
+                        score: { type: 'number', minimum: 0, maximum: 1 },
+                        explanation: { type: 'string' }
+                    },
+                    required: ['score', 'explanation'],
+                    additionalProperties: false
+                }
+            }) as import('./AIService').ChatResponse;
+
+            const data = JSON.parse(response.text);
+            const score = Number(data.score || 0.0);
+            const passed = score >= 0.7;
+
+            dbService.addVerificationResult(
+                taskOutputId,
+                998, // Plan adherence dynamic rule ID
+                passed ? 'passed' : 'failed',
+                score,
+                `Plan adherence (${rubricParts.length} criteria): ${data.explanation || ''}`,
+                'llm'
+            );
+
+            console.log(`[VerificationService] Plan adherence score: ${score.toFixed(2)} — ${passed ? 'PASSED' : 'FAILED'}`);
+            return passed ? 'passed' : 'failed';
+        } catch (e) {
+            console.error('[VerificationService] Plan adherence LLM judge failed:', e);
+            // On error, skip rather than block execution
+            return 'skipped';
+        }
     }
 }

@@ -6,6 +6,7 @@ import { TaxonomyPromptComposer } from './taxonomy/TaxonomyPromptComposer';
 import { PathGuard } from './PathGuard';
 import { RuleDiscoveryService } from './RuleDiscoveryService';
 import { ContextReconciler } from './ContextReconciler';
+import { secureStore } from '../secureStore';
 import console from 'console';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -43,6 +44,33 @@ export class ContextAssembler {
         console.assert(Array.isArray(recentMessages), 'Messages must be a valid array');
 
         const workspacePath = passedWorkspacePath || dbService.getWorkspacePathForTask(taskId) || undefined;
+
+        // Dynamic Context Window Budgeting
+        let finalBudget = { ...budget };
+        try {
+            const userModel = secureStore.getSelectedModel();
+            const maxTokens = this.resolveModelContextWindow(userModel);
+            const targetTotal = Math.floor(maxTokens * 0.75); // Leave 25% safety buffer
+            
+            if (targetTotal < budget.total) {
+                const scale = targetTotal / budget.total;
+                finalBudget.taskContext = Math.max(500, Math.floor(budget.taskContext * scale));
+                finalBudget.ragResults = Math.max(500, Math.floor(budget.ragResults * scale));
+                finalBudget.codeSymbols = Math.max(500, Math.floor(budget.codeSymbols * scale));
+                finalBudget.chatHistory = Math.max(500, Math.floor(budget.chatHistory * scale));
+                finalBudget.total = targetTotal;
+                console.log(`[ContextAssembler] Small context window detected (${maxTokens} tokens). scaled context budgets down:`, finalBudget);
+            } else if (maxTokens > 16000) {
+                // Scale up budget for large models
+                finalBudget.taskContext = 8000;
+                finalBudget.ragResults = 8000;
+                finalBudget.codeSymbols = 8000;
+                finalBudget.chatHistory = 8000;
+                finalBudget.total = Math.floor(maxTokens * 0.75);
+            }
+        } catch (e) {
+            console.warn('[ContextAssembler] Failed to resolve dynamic context window budget:', e);
+        }
 
         if (conversationId) {
             let hash = 5381;
@@ -86,7 +114,10 @@ export class ContextAssembler {
         const symbolList: string[] = [];
         const filesToParse = new Set<string>();
 
-        const planRow = dbService.getTaskPlan(taskId);
+        let planRow = dbService.getTaskPlan(taskId);
+        if (!planRow && activeTask.parent_task_id) {
+            planRow = dbService.getTaskPlan(activeTask.parent_task_id);
+        }
         if (planRow) {
             try {
                 const plan = JSON.parse(planRow.plan_json);
@@ -179,8 +210,8 @@ export class ContextAssembler {
         if (symbolList.length > 0) {
             symbolContextBlock = `Workspace Code Outline Symbols:\n${symbolList.join('\n---\n')}\n`;
             
-            if (this.estimateTokens(symbolContextBlock) > budget.codeSymbols) {
-                symbolContextBlock = symbolContextBlock.substring(0, budget.codeSymbols * 4);
+            if (this.estimateTokens(symbolContextBlock) > finalBudget.codeSymbols) {
+                symbolContextBlock = symbolContextBlock.substring(0, finalBudget.codeSymbols * 4);
             }
             tokenUsage.codeSymbols = this.estimateTokens(symbolContextBlock);
         }
@@ -197,7 +228,7 @@ export class ContextAssembler {
                     const chunkText = `[Semantic Memory Source: ${r.sourceType} - Dist: ${r.distance.toFixed(3)}]\n${r.content}\n`;
                     const chunkTokens = Math.ceil(chunkText.length / 4);
                     
-                    if (currentRagTokens + chunkTokens > budget.ragResults) {
+                    if (currentRagTokens + chunkTokens > finalBudget.ragResults) {
                         break;
                     }
                     relevantChunks.push(chunkText);
@@ -220,7 +251,7 @@ export class ContextAssembler {
         for (let i = recentMessages.length - 1; i >= 0; i--) {
             const msg = recentMessages[i];
             const msgTokens = this.estimateTokens(msg.content);
-            if (accumulatedTokens + msgTokens > budget.chatHistory) {
+            if (accumulatedTokens + msgTokens > finalBudget.chatHistory) {
                 break;
             }
             selectedMessages.unshift(msg);
@@ -322,6 +353,40 @@ export class ContextAssembler {
             console.error('[ContextAssembler] Taxonomy classification failed:', e);
         }
 
+        // Resolve parent plan details if available
+        let planBlock = '';
+        if (planRow) {
+            try {
+                const plan = JSON.parse(planRow.plan_json);
+                planBlock = `\n=== ACTIVE TASK PLAN BLUEPRINT ===\nExpected Outcome: ${plan.expectedOutcome || 'None'}\n\nDesign Document:\n${plan.designDoc || 'None'}\n\nImplementation Trade-offs:\n${plan.tradeoffs ? JSON.stringify(plan.tradeoffs, null, 2) : 'None'}\n\nRisk Mitigation & Consequences:\n${plan.consequences ? JSON.stringify(plan.consequences, null, 2) : 'None'}\n=== END ACTIVE TASK PLAN BLUEPRINT ===\n`;
+            } catch (e) {
+                console.error('[ContextAssembler] Failed to construct plan block:', e);
+            }
+        }
+
+        // Fetch completed sibling task outputs
+        let siblingOutputsBlock = '';
+        if (activeTask.parent_task_id) {
+            try {
+                const siblings = dbService.getSubtasks(activeTask.parent_task_id);
+                const completedSiblings = siblings.filter((s: any) => s.status === 'completed' && s.id !== taskId);
+                
+                if (completedSiblings.length > 0) {
+                    siblingOutputsBlock = '\n=== COMPLETED STEP HISTORY ===\n';
+                    for (const sibling of completedSiblings) {
+                        const outputs = dbService.getTaskOutputs(sibling.id);
+                        if (outputs && outputs.length > 0) {
+                            const latestOutput = outputs[0];
+                            siblingOutputsBlock += `[Step: ${sibling.title}]\nResult:\n${latestOutput.content}\n---\n`;
+                        }
+                    }
+                    siblingOutputsBlock += '=== END COMPLETED STEP HISTORY ===\n';
+                }
+            } catch (e) {
+                console.error('[ContextAssembler] Failed to query sibling outputs:', e);
+            }
+        }
+
         const baseSystemPromptTemplate = `You are Cursor Replacer's high-reliability agentic assistant.
 {{slot:safety_guidelines}}
 {{slot:meta_instruction}}
@@ -335,6 +400,8 @@ ${reconciledBlueprint}
 ${reconciledMemories}
 ${localizedRulesBlock}
 ${taskContextBlock}
+${planBlock}
+${siblingOutputsBlock}
 ${reconciledSymbols}
 ${reconciledRag}
 
@@ -351,13 +418,19 @@ Execute the active task effectively using the predefined plan.`;
                 taxonomyResult.resolvedSlots.set('safety_guidelines', 'Follow strict safety-critical guidelines. Ensure 100% accurate edits.');
             }
             if (!taxonomyResult.resolvedSlots.get('verification_focus')) {
-                taxonomyResult.resolvedSlots.set('verification_focus', 'Verify syntax and types, and do not introduce implicit \'any\' values.');
+                const planSelfCheck = planRow
+                    ? this.buildPlanAdherenceSelfCheck(JSON.parse(planRow.plan_json))
+                    : 'Verify syntax and types, and do not introduce implicit \'any\' values.';
+                taxonomyResult.resolvedSlots.set('verification_focus', planSelfCheck);
             }
             systemPrompt = TaxonomyPromptComposer.composePrompt(baseSystemPromptTemplate, taxonomyResult.resolvedSlots);
         } else {
             const fallbackSlots = new Map<string, string>();
             fallbackSlots.set('safety_guidelines', 'Follow strict safety-critical guidelines. Ensure 100% accurate edits.');
-            fallbackSlots.set('verification_focus', 'Verify syntax and types, and do not introduce implicit \'any\' values.');
+            const planSelfCheckFallback = planRow
+                ? this.buildPlanAdherenceSelfCheck(JSON.parse(planRow.plan_json))
+                : 'Verify syntax and types, and do not introduce implicit \'any\' values.';
+            fallbackSlots.set('verification_focus', planSelfCheckFallback);
             systemPrompt = TaxonomyPromptComposer.composePrompt(baseSystemPromptTemplate, fallbackSlots);
         }
 
@@ -370,9 +443,90 @@ Execute the active task effectively using the predefined plan.`;
         };
     }
 
+    /**
+     * Dynamically generates a plan-adherence self-check block from the plan's own fields.
+     * This is injected into the verification_focus slot so the LLM self-validates during generation.
+     * NOT hardcoded — adapts to any plan because it derives checks from plan JSON fields.
+     */
+    private static buildPlanAdherenceSelfCheck(plan: any): string {
+        const checks: string[] = [];
+
+        if (plan.expectedOutcome) {
+            checks.push(`□ Verify your output achieves: "${plan.expectedOutcome}"`);
+        }
+
+        if (plan.verificationCriteria && Array.isArray(plan.verificationCriteria)) {
+            for (const criterion of plan.verificationCriteria) {
+                checks.push(`□ Criterion met: "${criterion}"`);
+            }
+        }
+
+        if (plan.tradeoffs && Array.isArray(plan.tradeoffs)) {
+            for (const t of plan.tradeoffs) {
+                if (t.decision) {
+                    checks.push(`□ Uses chosen approach: "${t.decision}"`);
+                }
+            }
+        }
+
+        if (plan.consequences && Array.isArray(plan.consequences)) {
+            for (const c of plan.consequences) {
+                if (c.mitigation) {
+                    checks.push(`□ Mitigation applied: "${c.mitigation}"`);
+                }
+            }
+        }
+
+        if (plan.designDoc && typeof plan.designDoc === 'string' && plan.designDoc.length > 0) {
+            const excerpt = plan.designDoc.substring(0, 500);
+            checks.push(`□ Aligns with design architecture:\n"${excerpt}${plan.designDoc.length > 500 ? '...' : ''}"`);
+        }
+
+        return checks.length > 0
+            ? `\n=== PLAN ADHERENCE SELF-CHECK ===\nBefore finalizing your output, verify each item:\n${checks.join('\n')}\n=== END SELF-CHECK ===\n`
+            : 'Verify syntax and types, and do not introduce implicit \'any\' values.';
+    }
+
     private static estimateTokens(text: string): number {
         if (!text) return 0;
         return Math.ceil(text.length / 4);
+    }
+
+    private static resolveModelContextWindow(modelName: string): number {
+        const name = modelName.toLowerCase();
+        
+        // Cloud models
+        if (name.includes('gemini-1.5-pro')) return 1000000;
+        if (name.includes('gemini-1.5-flash')) return 1000000;
+        if (name.includes('gemini')) return 1000000;
+        if (name.includes('claude-3-5') || name.includes('claude-3')) return 200000;
+        if (name.includes('gpt-4o') || name.includes('gpt-4-turbo')) return 128000;
+        if (name.includes('gpt-4')) return 8192;
+        if (name.includes('gpt-3.5')) return 16384;
+        
+        // Check local models from constants
+        try {
+            const { TOP_CODING_MODELS } = require('../constants/models');
+            const matched = TOP_CODING_MODELS.find((m: any) => 
+                name.includes(m.id.toLowerCase()) || name.includes(m.name.toLowerCase())
+            );
+            if (matched) return matched.contextWindow;
+        } catch {
+            // ignore require errors
+        }
+
+        // Generic patterns for local models
+        const patterns: [RegExp, number][] = [
+            [/smollm2?\d*/i, 2048], [/llama\s*-?\s*3/i, 8192], [/llama\s*-?\s*2/i, 4096],
+            [/mistral/i, 32768], [/mixtral/i, 32768], [/gemma/i, 8192],
+            [/falcon/i, 2048], [/starcoder/i, 8192], [/dolphin/i, 8192],
+            [/nous-?hermes/i, 8192], [/yi/i, 4096], [/phi/i, 4096]
+        ];
+        for (const [re, ctx] of patterns) {
+            if (re.test(name)) return ctx;
+        }
+
+        return 4096; // default fallback
     }
 
 

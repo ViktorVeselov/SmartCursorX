@@ -51,16 +51,18 @@ You MUST generate non-empty, detailed values for all the following fields:
    - **Testing Strategy**: How each component and integration point will be tested, including unit, integration, and end-to-end approaches.
    - **No Placeholders**: Every section must contain complete, detailed content without arbitrary '// TODO' or '/* write implementation here */' tags.
 
-8. **"tradeoffs"**: An array of tradeoffs & design options (at least 3 distinct architectural options). Each tradeoff must use the following keys:
+8. **"codePlanning"**: A detailed draft or blueprint of the code changes you intend to make for each file to modify. For each file, provide the code within a standard markdown code block. Every code block MUST have a file header comment specifying the target file (e.g. "// File: src/main.ts") so the system can verify all relative imports. If no code modifications are needed for this task, return an empty string or a simple comment (e.g., "// No code changes planned.").
+
+9. **"tradeoffs"**: An array of tradeoffs & design options (at least 3 distinct architectural options). Each tradeoff must use the following keys:
    - "task": The implementation decision or design option analyzed (e.g., "safeStorage vs standard config", "separate IPC handler vs monolithic").
    - "considerations": Compare alternatives: pros, cons, complexity, security, performance.
    - "decision": The final decision made and its concrete justification.
 
-9. **"consequences"**: An array of risk/failure mode analyses (at least 3 entries). Each entry must use the following keys:
-   - "failureMode": The specific code or system-level failure mode (e.g., "SafeStorage unavailable on headless systems").
-   - "consequence": Direct runtime impact (e.g., "App crashes on start").
-   - "harm": The specific harm to the end user and organization (reputational, credential leak, etc.).
-   - "mitigation": The concrete code guard or mitigation in the plan to prevent/handle this.
+10. **"consequences"**: An array of risk/failure mode analyses (at least 3 entries). Each entry must use the following keys:
+    - "failureMode": The specific code or system-level failure mode (e.g., "SafeStorage unavailable on headless systems").
+    - "consequence": Direct runtime impact (e.g., "App crashes on start").
+    - "harm": The specific harm to the end user and organization (reputational, credential leak, etc.).
+    - "mitigation": The concrete code guard or mitigation in the plan to prevent/handle this.
 
 Here is the request: ${finalPrompt}`;
 

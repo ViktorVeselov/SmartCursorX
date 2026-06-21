@@ -24,11 +24,14 @@ export class DiffVerificationService {
         let compiles = true;
         let details = 'Deterministic verification details:\n';
 
+        const workspaceRoot = dbService.getWorkspacePathForTask(taskId) || path.resolve(process.cwd());
         const planRow = dbService.getTaskPlan(taskId);
+        let allowedToModify = new Set<string>();
+
         if (planRow) {
             try {
                 const plan = JSON.parse(planRow.plan_json);
-                const allowedToModify = new Set((plan.filesToModify || []).map((f: string) => path.normalize(f)));
+                allowedToModify = new Set((plan.filesToModify || []).map((f: string) => path.normalize(f)));
                 
                 for (const file of modifiedFiles) {
                     const normalizedFile = path.normalize(file);
@@ -48,7 +51,7 @@ export class DiffVerificationService {
         }
 
         for (const file of modifiedFiles) {
-            const absolutePath = path.resolve(file);
+            const absolutePath = path.resolve(workspaceRoot, file);
             if (fs.existsSync(absolutePath)) {
                 const content = fs.readFileSync(absolutePath, 'utf-8');
                 const lines = content.split(/\r?\n/);
@@ -68,25 +71,31 @@ export class DiffVerificationService {
                         antiPatterns.push(`${path.basename(file)}:L${i + 1} - Unresolved code placeholder comment.`);
                     }
                 }
+
+                // Run AST local import integrity check
+                if (['.ts', '.tsx', '.js', '.jsx'].includes(path.extname(file))) {
+                    const importViolations = this.verifyLocalImports(file, content, workspaceRoot, allowedToModify);
+                    for (const v of importViolations) {
+                        antiPatterns.push(`${path.basename(file)} - ${v}`);
+                    }
+                }
             }
         }
 
         if (antiPatterns.length > 0) {
-            details += `❌ Code Quality Rules: Found anti-patterns:\n - ${antiPatterns.join('\n - ')}\n`;
+            details += `❌ Code Quality & Import Rules: Found issues:\n - ${antiPatterns.join('\n - ')}\n`;
         } else {
-            details += `✅ Code Quality Rules: Checked. Banned typings or placeholders absent.\n`;
+            details += `✅ Code Quality & Import Rules: Checked. Banned typings, placeholders, and broken imports absent.\n`;
         }
 
         const hasTsFiles = modifiedFiles.some(f => ['.ts', '.tsx'].includes(path.extname(f)));
-
-        const workspaceRoot = path.resolve(process.cwd());
 
         // Compile checks for TypeScript (React/Electron project)
         if (hasTsFiles) {
             const tsconfigPath = path.join(workspaceRoot, 'tsconfig.json');
             if (fs.existsSync(tsconfigPath)) {
                 try {
-                    details += `⚡ Running TypeScript compilation check (tsc --noEmit)...\n`;
+                    details += `⚡ Running TypeScript compilation check (tsc --noEmit) in ${workspaceRoot}...\n`;
                     const tscResult = await this.runTscCheck(workspaceRoot);
                     if (!tscResult.success) {
                         compiles = false;
@@ -107,6 +116,55 @@ export class DiffVerificationService {
             antiPatterns,
             details
         };
+    }
+
+    private static verifyLocalImports(
+        file: string, 
+        content: string, 
+        workspaceRoot: string, 
+        plannedFiles: Set<string>
+    ): string[] {
+        const importViolations: string[] = [];
+        const fileDir = path.dirname(path.resolve(workspaceRoot, file));
+        
+        // Match imports and requires: import ... from '...' or import '...' or require('...')
+        const importRegex = /(?:import\s+(?:[\w\s{},*]+)\s+from\s+|import\s+|require\()\s*['"]([^'"]+)['"]\s*\)?/g;
+        
+        let match;
+        while ((match = importRegex.exec(content)) !== null) {
+            const importPath = match[1];
+            
+            // Only verify relative local imports (starting with . or ..)
+            if (importPath.startsWith('.') || importPath.startsWith('..')) {
+                const absoluteImportPath = path.resolve(fileDir, importPath);
+                
+                // Check if the resolved file exists on disk with typical extensions
+                const extensions = ['', '.ts', '.tsx', '.d.ts', '.js', '.jsx', '/index.ts', '/index.js', '/index.tsx', '/index.jsx'];
+                let resolved = false;
+                
+                for (const ext of extensions) {
+                    const testPath = absoluteImportPath + ext;
+                    if (fs.existsSync(testPath)) {
+                        resolved = true;
+                        break;
+                    }
+                    
+                    // Also check if it matches one of the planned files in the pipeline
+                    const relativeTestPath = path.relative(workspaceRoot, testPath);
+                    const normalizedTestPath = path.normalize(relativeTestPath);
+                    if (plannedFiles.has(normalizedTestPath)) {
+                        resolved = true;
+                        break;
+                    }
+                }
+                
+                if (!resolved) {
+                    importViolations.push(`Broken local import: "${importPath}" (resolves to non-existent file relative to workspace: ${path.relative(workspaceRoot, absoluteImportPath)})`);
+                }
+            }
+        }
+        
+        return importViolations;
     }
 
     private static runTscCheck(cwd: string): Promise<{ success: boolean; output: string }> {

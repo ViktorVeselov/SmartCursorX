@@ -22,7 +22,8 @@
     "test:models": "npx esbuild tests/unit/models/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/models/runTests.js && node tests/unit/models/runTests.js",
     "test:scripts": "npx esbuild tests/unit/scriptsArgs/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/scriptsArgs/runTests.js && node tests/unit/scriptsArgs/runTests.js",
     "test:changes": "npx esbuild tests/unit/changes/runTests.ts --bundle --platform=node --format=esm --alias:electron=./tests/unit/taxonomy/electron-mock.js --alias:electron-store=./tests/unit/taxonomy/electron-store-mock.js --outfile=tests/unit/changes/runTests.js && node tests/unit/changes/runTests.js",
-    "test": "npm run test:pathguard && npm run test:pm && npm run test:ipcsec && npm run test:dlq && npm run test:dlq:int && npm run test:changes"
+    "test:planning": "npx esbuild tests/unit/planning/runTests.ts --bundle --platform=node --format=esm --external:@ai-sdk/* --external:ai --external:ollama-ai-provider --external:@vercel/* --external:@opentelemetry/* --alias:electron=./tests/unit/taxonomy/electron-mock.js --alias:electron-store=./tests/unit/taxonomy/electron-store-mock.js --outfile=tests/unit/planning/runTests.js && node tests/unit/planning/runTests.js",
+    "test": "npm run test:pathguard && npm run test:pm && npm run test:ipcsec && npm run test:dlq && npm run test:dlq:int && npm run test:changes && npm run test:planning"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.82",

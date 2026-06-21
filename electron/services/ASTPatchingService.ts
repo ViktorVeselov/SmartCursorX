@@ -151,7 +151,7 @@ export class ASTPatchingService {
      * Parses JSON AST patches and returns preview data without writing to disk.
      * Used by the Change Review system to show users pending modifications before applying.
      */
-    static generatePreviewPatches(patchJson: string): PendingFileModification[] {
+    static generatePreviewPatches(patchJson: string, stepTarget?: string, isCreate: boolean = false): PendingFileModification[] {
         if (!patchJson) return [];
 
         try {
@@ -178,7 +178,11 @@ export class ASTPatchingService {
 
                     let content = '';
                     try {
-                        if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
+                        const isTargetCreate = isCreate && (
+                            relativePath === stepTarget ||
+                            (stepTarget && absolutePath === PathGuard.resolve(stepTarget))
+                        );
+                        if (!isTargetCreate && fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
                             content = fs.readFileSync(absolutePath, 'utf-8');
                         }
                     } catch {

@@ -123,12 +123,17 @@ ${assembled.systemPrompt}
 
 For "tradeoffs": You MUST consider at least 3 distinct architectural/design options (preferably 5). Compare pros, cons, complexity, security implications, and maintenance burden, then state the final decision and why it was chosen.
 
-For "consequences": You MUST include at least 3 entries. Think critically about what can actually go wrong at the SYSTEM level. For each consequence, analyze failure modes, consequences, harm analysis, and mitigations.`;
+For "consequences": You MUST include at least 3 entries. Think critically about what can actually go wrong at the SYSTEM level. For each consequence, analyze failure modes, consequences, harm analysis, and mitigations.
+
+For "designDoc": You MUST write a detailed, professional Design Specification (in Markdown format) explaining the architectural blueprint, module configurations, and code modifications for this task. Do not leave this field blank.
+
+For "codePlanning": You MUST write a detailed draft or blueprint of the code changes you intend to make for each file to modify. For each file, provide the code within a standard markdown code block. Every code block MUST have a file header comment specifying the target file (e.g. "// File: src/main.ts") so the system can verify all relative imports. If no code modifications are needed for this task, return an empty string or a simple comment (e.g., "// No code changes planned.").`;
 
         const userModel = secureStore.getSelectedModel();
         const model = aiService.getModel(userModel);
 
         let lastError: Error | null = null;
+        let auditFeedback = '';
 
         if (!aiService.isActive()) {
             throw new Error('[PlanningService] AI provider not active. Cannot generate plan.');
@@ -137,7 +142,10 @@ For "consequences": You MUST include at least 3 entries. Think critically about 
         for (let attempt = 1; attempt <= MAX_PLAN_RETRIES; attempt++) {
             try {
                 console.log(`[PlanningService] Step 1: Exploring workspace with tools (attempt ${attempt})...`);
-                const toolMessages = [{ role: 'user' as const, content: prompt }];
+                const currentPrompt = auditFeedback
+                    ? `${prompt}\n\n⚠️ PREVIOUS PLAN ATTEMPT FAILED PRE-EXECUTION AUDIT:\n${auditFeedback}\nPlease adjust your plan to ensure all imported paths in your code planning block resolve to existing files or files scheduled for creation/modification.`
+                    : prompt;
+                const toolMessages = [{ role: 'user' as const, content: currentPrompt }];
                 const toolResult = await generateText({
                     model,
                     messages: toolMessages,
@@ -311,11 +319,20 @@ For "consequences": You MUST include at least 3 entries. Think critically about 
                 );
 
                 plan.taskId = taskId;
+                
+                // Pre-Execution Plan Audit
+                console.log(`[PlanningService] Auditing plan for task ID ${taskId}...`);
+                const auditIssues = PlanningService.auditPlan(plan, workspacePath);
+                if (auditIssues.length > 0) {
+                    throw new Error(`Plan Audit Failed:\n- ${auditIssues.join('\n- ')}`);
+                }
+
                 dbService.addTaskPlan(taskId, JSON.stringify(plan), plan.confidence, 'draft');
                 return plan as unknown as ExecutionPlan;
             } catch (e) {
                 lastError = e instanceof Error ? e : new Error(String(e));
                 console.warn(`[PlanningService] Attempt ${attempt}/${MAX_PLAN_RETRIES} failed`, lastError.message);
+                auditFeedback = lastError.message;
 
                 if (attempt < MAX_PLAN_RETRIES) {
                     console.log(`[PlanningService] Retrying attempt ${attempt + 1}/${MAX_PLAN_RETRIES}...`);
@@ -329,5 +346,162 @@ For "consequences": You MUST include at least 3 entries. Think critically about 
             `Last error: ${lastError?.message || 'Unknown error'}. ` +
             `Please check that your selected model supports structured JSON output or try a different model.`
         );
+    }
+
+    private static parseCodeBlocksWithContext(text: string): { precedingText: string; content: string }[] {
+        const blocks: { precedingText: string; content: string }[] = [];
+        const regex = /([\s\S]*?)```(?:[a-zA-Z0-9+-]+)?\n([\s\S]*?)\n```/g;
+        let match;
+        
+        while ((match = regex.exec(text)) !== null) {
+            const precedingText = match[1];
+            const content = match[2];
+            blocks.push({ precedingText, content });
+        }
+
+        if (blocks.length === 0 && text && text.includes('import')) {
+            blocks.push({ precedingText: '', content: text });
+        }
+
+        return blocks;
+    }
+
+    private static associateFilePathWithCodeBlock(
+        precedingText: string,
+        codeContent: string,
+        plan: any
+    ): string | null {
+        const internalPathRegexes = [
+            /(?:\/\/|#|\/\*)\s*(?:file|path|filepath|target)\s*:\s*([^\s*]+)/i,
+            /(?:\/\/|#|\/\*)\s*([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)/i
+        ];
+        for (const line of codeContent.split('\n').slice(0, 5)) {
+            for (const regex of internalPathRegexes) {
+                const match = line.match(regex);
+                if (match) {
+                    return match[1].trim();
+                }
+            }
+        }
+
+        const pathCandidateRegex = /([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)/g;
+        let match;
+        const candidates: string[] = [];
+        while ((match = pathCandidateRegex.exec(precedingText)) !== null) {
+            candidates.push(match[1]);
+        }
+        
+        const plannedFiles = new Set<string>();
+        if (plan.filesToModify) plan.filesToModify.forEach((f: string) => plannedFiles.add(path.normalize(f).toLowerCase()));
+        if (plan.filesRead) plan.filesRead.forEach((f: string) => plannedFiles.add(path.normalize(f).toLowerCase()));
+        if (plan.steps) {
+            plan.steps.forEach((s: any) => {
+                if (s.target) plannedFiles.add(path.normalize(s.target).toLowerCase());
+            });
+        }
+
+        for (let i = candidates.length - 1; i >= 0; i--) {
+            const candidate = candidates[i];
+            const normalized = path.normalize(candidate).toLowerCase();
+            if (plannedFiles.has(normalized)) {
+                return candidate;
+            }
+        }
+
+        for (let i = candidates.length - 1; i >= 0; i--) {
+            const candidate = candidates[i];
+            if (candidate.includes('/') || candidate.includes('\\')) {
+                return candidate;
+            }
+        }
+
+        if (candidates.length > 0) {
+            return candidates[candidates.length - 1];
+        }
+
+        return null;
+    }
+
+    public static auditPlan(plan: any, workspacePath: string): string[] {
+        const issues: string[] = [];
+        if (!plan.codePlanning) {
+            return issues;
+        }
+
+        const workspaceRoot = path.resolve(workspacePath);
+
+        const plannedFiles = new Set<string>();
+        if (plan.filesToModify && Array.isArray(plan.filesToModify)) {
+            plan.filesToModify.forEach((f: any) => {
+                if (typeof f === 'string') {
+                    plannedFiles.add(path.normalize(f).toLowerCase());
+                }
+            });
+        }
+        if (plan.steps && Array.isArray(plan.steps)) {
+            plan.steps.forEach((s: any) => {
+                if (s && typeof s.target === 'string' && (s.action === 'create' || s.action === 'modify')) {
+                    plannedFiles.add(path.normalize(s.target).toLowerCase());
+                }
+            });
+        }
+
+        const blocks = this.parseCodeBlocksWithContext(plan.codePlanning);
+
+        for (const block of blocks) {
+            const associatedFile = this.associateFilePathWithCodeBlock(block.precedingText, block.content, plan);
+            
+            const importRegex = /(?:import\s+(?:[\w\s{},*]+)\s+from\s+|import\s+|require\()\s*['"]([^'"]+)['"]\s*\)?/g;
+            let match;
+            const relativeImports: string[] = [];
+
+            while ((match = importRegex.exec(block.content)) !== null) {
+                const importPath = match[1];
+                if (importPath.startsWith('.') || importPath.startsWith('..')) {
+                    relativeImports.push(importPath);
+                }
+            }
+
+            if (relativeImports.length === 0) {
+                continue;
+            }
+
+            if (!associatedFile) {
+                issues.push(`Found relative imports (${relativeImports.join(', ')}) in code planning block, but could not determine which file this block belongs to. Please specify the target file using a header or comment (e.g. "// File: src/main.ts").`);
+                continue;
+            }
+
+            const absoluteAssociatedFile = path.resolve(workspaceRoot, associatedFile);
+            const fileDir = path.dirname(absoluteAssociatedFile);
+
+            for (const importPath of relativeImports) {
+                const absoluteImportPath = path.resolve(fileDir, importPath);
+                
+                const extensions = ['', '.ts', '.tsx', '.d.ts', '.js', '.jsx', '/index.ts', '/index.js', '/index.tsx', '/index.jsx'];
+                let resolved = false;
+
+                for (const ext of extensions) {
+                    const testPath = absoluteImportPath + ext;
+                    if (fs.existsSync(testPath)) {
+                        resolved = true;
+                        break;
+                    }
+
+                    const relativeTestPath = path.relative(workspaceRoot, testPath);
+                    const normalizedTestPath = path.normalize(relativeTestPath).toLowerCase();
+                    if (plannedFiles.has(normalizedTestPath)) {
+                        resolved = true;
+                        break;
+                    }
+                }
+
+                if (!resolved) {
+                    const relativeResolvedPath = path.relative(workspaceRoot, absoluteImportPath);
+                    issues.push(`File "${associatedFile}" imports "${importPath}" (resolves to "${relativeResolvedPath}"), but this file does not exist in the workspace and is not scheduled to be created/modified in the plan.`);
+                }
+            }
+        }
+
+        return issues;
     }
 }
