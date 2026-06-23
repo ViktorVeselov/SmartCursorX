@@ -195,8 +195,21 @@ export function useConversations(
 
             const conv = conversations.find(c => c.id === convId);
             if (conv) {
-                setActiveProvider(typeof conv.provider === 'string' ? conv.provider : '');
-                setActiveModel(typeof conv.model === 'string' ? conv.model : '');
+                const restoredProvider = typeof conv.provider === 'string' ? conv.provider : '';
+                const restoredModel = typeof conv.model === 'string' ? conv.model : '';
+                setActiveProvider(restoredProvider);
+                setActiveModel(restoredModel);
+                // Persist to secureStore so execution and other components read the same values
+                try {
+                    const settings = await window.ipcRenderer.invoke('get-general-settings');
+                    await window.ipcRenderer.invoke('save-general-settings', {
+                        ...(settings || {}),
+                        activeProvider: restoredProvider,
+                        selectedModel: restoredModel
+                    });
+                } catch (e) {
+                    console.error('Failed to save settings on conversation select:', e);
+                }
             }
             setActiveConversationId(convId);
         } catch (err) {

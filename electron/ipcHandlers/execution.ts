@@ -4,6 +4,7 @@ import { SnapshotService } from '../services/SnapshotService';
 import { CompilationCheckerService } from '../services/CompilationCheckerService';
 import { VerificationService } from '../services/VerificationService';
 import { aiService } from '../services/AIService';
+import { secureStore } from '../secureStore';
 import { dbService } from '../db';
 import type { IpcHandlerContext } from './index';
 import * as fs from 'fs';
@@ -39,6 +40,9 @@ export function registerExecutionHandlers(ipcMain: Electron.IpcMain, _context: I
     ipcMain.handle('execution:start', async (_event, taskId: number) => {
         console.log(`[ExecutionHandler] Starting execution for task ${taskId}`);
         PendingModificationsService.clear();
+        // Ensure AIService is initialized with current provider from secureStore
+        // (chat UI may have changed provider/model via handleSelectModel)
+        aiService.initializeFromStore();
         try {
             const execResult = await ExecutionLoopService.executeTask(taskId);
             if (execResult !== 'passed') {
@@ -57,13 +61,14 @@ export function registerExecutionHandlers(ipcMain: Electron.IpcMain, _context: I
                     .join('\n---\n');
 
                 // Repair loop: feed compiler errors to LLM for surgical fix
+                const repairModel = secureStore.getSelectedModel();
                 for (repairAttempts = 1; repairAttempts <= 3; repairAttempts++) {
                     if (!aiService.isActive()) break;
 
                     const response = await aiService.chat([
                         { role: 'system', content: `You are a surgical fix tool. The following compilation errors were found. Output ONLY the minimal file patches needed to fix them. Do not change functionality or add features.` },
                         { role: 'user', content: `Compilation errors:\n${compilerOutput}\n\nOutput file patches to fix these errors. Use FILE: path blocks with the full corrected content of each file that needs changes.` }
-                    ], { temperature: 0.1 }) as import('../services/AIService').ChatResponse;
+                    ], { temperature: 0.1, model: repairModel }) as import('../services/AIService').ChatResponse;
 
                     if (!response?.text) break;
 

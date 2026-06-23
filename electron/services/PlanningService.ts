@@ -497,7 +497,25 @@ For "codePlanning": You MUST write a detailed draft or blueprint of the code cha
 
                 if (!resolved) {
                     const relativeResolvedPath = path.relative(workspaceRoot, absoluteImportPath);
-                    issues.push(`File "${associatedFile}" imports "${importPath}" (resolves to "${relativeResolvedPath}"), but this file does not exist in the workspace and is not scheduled to be created/modified in the plan.`);
+                    // Auto-fix: add missing file to plan so it gets created before it's imported
+                    if (!plan.filesToModify) plan.filesToModify = [];
+                    if (!plan.filesToModify.includes(relativeResolvedPath)) {
+                        plan.filesToModify.push(relativeResolvedPath);
+                    }
+                    if (!plan.steps) plan.steps = [];
+                    const alreadyPlanned = plan.steps.some(
+                        (s: any) => s.target === relativeResolvedPath
+                    );
+                    if (!alreadyPlanned) {
+                        plan.steps.push({
+                            order: plan.steps.length + 1,
+                            action: 'create',
+                            target: relativeResolvedPath,
+                            rationale: `Auto-added: imported by ${associatedFile}`,
+                            notes: `Created automatically by auditPlan because ${associatedFile} imports "${importPath}"`
+                        });
+                    }
+                    console.log(`[PlanningService.auditPlan] Auto-fix: added "${relativeResolvedPath}" to plan (imported by ${associatedFile})`);
                 }
             }
         }

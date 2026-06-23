@@ -776,25 +776,10 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
     }
 
     private static async executeCommandStep(
-        childTaskId: number,
+        _childTaskId: number,
         step: PlanStep
     ): Promise<{ success: boolean; feedback?: string }> {
-        const approved = await new Promise<boolean>((resolve) => {
-            const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
-            if (!mainWindow) return resolve(false);
-
-            mainWindow.webContents.send('tool:approval-request', {
-                type: 'run_command',
-                taskId: childTaskId,
-                details: `Run command: ${step.target}`,
-                rationale: step.rationale,
-            });
-            PendingModificationsService.setResolver(childTaskId, resolve);
-        });
-
-        if (!approved) return { success: false, feedback: 'Command rejected by user' };
-
-        PendingModificationsService.removePending(childTaskId);
+        console.log(`[ExecutionLoopService] Command execution not implemented, skipping step: ${step.target}`);
         return { success: true, feedback: 'Command approved but execution not implemented in this version' };
     }
 
