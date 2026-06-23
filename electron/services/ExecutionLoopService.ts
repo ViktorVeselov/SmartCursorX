@@ -199,10 +199,11 @@ export class ExecutionLoopService {
             // Build taxonomy-scoped context for this step
             const stepTaxonomy = this.classifyStep(taskId, step, plan, investText, baseTaxonomyResult);
 
-            // Execute step with retry loop
+            // Execute step with retry loop and failure classification
             let stepSuccess = false;
             let stepFeedback = '';
             let stepAttemptHistory: string[] = [];
+            let stepFeedbackType: 'execution' | 'verification' = 'execution';
 
             for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
                 this.checkAborted(taskId);
@@ -222,6 +223,7 @@ export class ExecutionLoopService {
                         break;
                     } else {
                         stepFeedback = result.feedback || 'Step failed';
+                        stepFeedbackType = result.feedbackType || 'execution';
                         stepAttemptHistory.push(`Attempt ${attempt}/${config.maxRetries}: ${stepFeedback}`);
                         console.warn(`[ExecutionLoopService] Step ${stepIdx + 1} attempt ${attempt} failed: ${stepFeedback}`);
                     }
@@ -237,11 +239,18 @@ export class ExecutionLoopService {
                     console.error(`[ExecutionLoopService] Step ${stepIdx + 1} exception:`, err);
                 }
 
-                // Rollback per-step snapshot on failure
-                try {
-                    SnapshotService.rollbackToSnapshot(stepSnapshot.snapshotId, stepSnapshot.skippedFiles);
-                } catch (rbErr) {
-                    console.error('[ExecutionLoopService] Step rollback failed:', rbErr);
+                // Patch-forward on verification issues (keep code on disk for next attempt to fix)
+                // Rollback on execution failures (bad parse, exception, etc.)
+                const isModifyCreate = step.action === 'modify' || step.action === 'create';
+                if (isModifyCreate && attempt < config.maxRetries && stepFeedbackType === 'verification') {
+                    console.log(`[ExecutionLoopService] Verification findings — patching forward, no rollback`);
+                } else if (isModifyCreate && attempt < config.maxRetries) {
+                    try {
+                        console.log(`[ExecutionLoopService] Execution failure — rolling back and retrying`);
+                        SnapshotService.rollbackToSnapshot(stepSnapshot.snapshotId, stepSnapshot.skippedFiles);
+                    } catch (rbErr) {
+                        console.error('[ExecutionLoopService] Step rollback failed:', rbErr);
+                    }
                 }
 
                 if (attempt < config.maxRetries) {
@@ -324,7 +333,7 @@ export class ExecutionLoopService {
         _abortSignal: AbortSignal,
         attempt: number,
         stepIdx: number
-    ): Promise<{ success: boolean; patches?: any[]; feedback?: string }> {
+    ): Promise<{ success: boolean; patches?: any[]; feedback?: string; feedbackType?: 'execution' | 'verification' }> {
         const action = step.action;
 
         if (action === 'read' || action === 'analyze') {
@@ -334,10 +343,11 @@ export class ExecutionLoopService {
         if (action === 'modify' || action === 'create') {
             const result = await this.executeModifyCreateStep(childTaskId, step, parentTaskId, activeTask, investText, taxonomyResult, modelUsed, config, attempt);
 
-            // Plan-adherence verification gate (opt-in via plan.autoVerify)
-            // BOUNDED RETRY SAFETY: If verification fails, it returns { success: false }
-            // which is handled by the existing retry loop (maxRetries=3, default).
-            // After 3 exhausted retries → DLQ escalation to user. No infinite loop.
+            // Advisory verification gate (opt-in via plan.autoVerify)
+            // Verification findings are advisory: fed back to LLM for fix/explanation.
+            // On 'needs_review', returns feedbackType='verification' so the caller
+            // patches forward (keeps code on disk) instead of rolling back.
+            // After 3 exhausted retries → DLQ escalation to user.
             if (result.success) {
                 try {
                     const parentPlanRow = dbService.getTaskPlan(parentTaskId);
@@ -346,30 +356,44 @@ export class ExecutionLoopService {
                         if (parentPlan.autoVerify === true) {
                             const outputs = dbService.getTaskOutputs(childTaskId);
                             if (outputs && outputs.length > 0) {
-                                this.sendProgress(parentTaskId, 'verifying', `Verifying plan adherence for step: ${step.target}...`);
+                                this.sendProgress(parentTaskId, 'verifying', `Verifying step: ${step.target}...`);
                                 const verifyStatus = await VerificationService.verifyOutput(
                                     outputs[0].id, taxonomyResult
                                 );
-                                if (verifyStatus === 'failed') {
+                                if (verifyStatus === 'passed') {
+                                    this.sendProgress(parentTaskId, 'verifying', 'Verification passed ✓');
+                                } else if (verifyStatus === 'needs_review') {
+                                    const verifyDetails = dbService.getVerificationResults(outputs[0].id);
+                                    const findings = (verifyDetails as any[])
+                                        .filter((r: any) => r.result === 'needs_review' || r.result === 'failed')
+                                        .map((r: any) => r.details)
+                                        .join('; ');
+                                    this.sendProgress(parentTaskId, 'verifying',
+                                        `Verification flagged issues: ${(findings || 'Review needed').substring(0, 200)}`);
+                                    return {
+                                        success: false,
+                                        feedback: `Verification flagged issues: ${findings}`,
+                                        feedbackType: 'verification'
+                                    };
+                                } else if (verifyStatus === 'failed') {
                                     const verifyDetails = dbService.getVerificationResults(outputs[0].id);
                                     const failedChecks = (verifyDetails as any[])
                                         .filter((r: any) => r.result === 'failed')
                                         .map((r: any) => r.details)
                                         .join('; ');
                                     this.sendProgress(parentTaskId, 'verifying',
-                                        `Plan adherence check failed: ${(failedChecks || 'Unknown').substring(0, 200)}`);
+                                        `Verification failed: ${(failedChecks || 'Unknown').substring(0, 200)}`);
                                     return {
                                         success: false,
-                                        feedback: `Plan adherence verification failed: ${failedChecks}`
+                                        feedback: `Verification failed: ${failedChecks}`,
+                                        feedbackType: 'execution'
                                     };
                                 }
-                                this.sendProgress(parentTaskId, 'verifying', 'Plan adherence check passed ✓');
                             }
                         }
                     }
                 } catch (verifyErr) {
-                    // Verification errors should not block execution — log and continue
-                    console.error('[ExecutionLoopService] Plan adherence verification error (non-blocking):', verifyErr);
+                    console.error('[ExecutionLoopService] Verification error (non-blocking):', verifyErr);
                 }
             }
 
@@ -391,7 +415,7 @@ export class ExecutionLoopService {
         childTaskId: number,
         step: PlanStep,
         activeTask: any,
-        _investText: string,
+        investText: string,
         taxonomyResult: any,
         modelUsed: string,
         _config: ExecutionConfig,
@@ -400,7 +424,7 @@ export class ExecutionLoopService {
     ): Promise<{ success: boolean; feedback?: string }> {
         if (!aiService.isActive()) return { success: true, feedback: 'AI not available' };
 
-        const assembled = await ContextAssembler.assembleContext(childTaskId, []);
+        const assembled = await ContextAssembler.assembleContext(childTaskId, [], undefined, undefined, undefined, investText);
         const systemInstructions = ASTPatchingService.shapeSystemInstructions('investigate', assembled.systemPrompt, undefined, taxonomyResult);
 
         // Resolve target files and check for non-existent ones
@@ -478,7 +502,7 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
         step: PlanStep,
         parentTaskId: number,
         activeTask: any,
-        _investText: string,
+        investText: string,
         taxonomyResult: any,
         modelUsed: string,
         config: ExecutionConfig,
@@ -486,7 +510,7 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
     ): Promise<{ success: boolean; patches?: any[]; feedback?: string }> {
         if (!aiService.isActive()) return { success: false, feedback: 'AI Service is inactive' };
 
-        const assembled = await ContextAssembler.assembleContext(childTaskId, []);
+        const assembled = await ContextAssembler.assembleContext(childTaskId, [], undefined, undefined, undefined, investText);
         let systemInstructions = ASTPatchingService.shapeSystemInstructions('modify', assembled.systemPrompt, undefined, taxonomyResult);
 
         if (config.userGuidance) {
@@ -554,12 +578,27 @@ For new files, use "find": "" (empty string) to indicate full-file creation.`
 }]
 \`\`\``;
 
+        // Inject code planning blueprint for this step if available
+        let codePlanningBlock = '';
+        try {
+            const parentPlanRow = dbService.getTaskPlan(parentTaskId);
+            if (parentPlanRow) {
+                const parentPlan = JSON.parse(parentPlanRow.plan_json);
+                const matchedCode = PlanningService.getCodePlanningForStep(parentPlan, step.target);
+                if (matchedCode) {
+                    codePlanningBlock = `\n\n=== CODE PLANNING BLUEPRINT (for ${step.target}) ===\n${matchedCode}\n=== END CODE PLANNING BLUEPRINT ===`;
+                }
+            }
+        } catch (e) {
+            console.warn('[ExecutionLoopService] Failed to extract code planning blueprint:', e);
+        }
+
         const prompt = `Task Title: ${activeTask.title}
 Step: ${step.action} — ${step.target}
 Rationale: ${step.rationale || ''}
 
 Apply changes ONLY to the target: ${step.target}
-Files involved: ${targetFiles.join(', ') || 'to be determined'}${targetFileContents}
+Files involved: ${targetFiles.join(', ') || 'to be determined'}${targetFileContents}${codePlanningBlock}
 
 ${isCreate ? 'Create the file with full content.' : 'Modify the existing file according to the plan.'}
 
@@ -1050,4 +1089,5 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
 
         return parsedAny;
     } */
+
 }

@@ -504,4 +504,21 @@ For "codePlanning": You MUST write a detailed draft or blueprint of the code cha
 
         return issues;
     }
+
+    /**
+     * Extracts the code planning block for a specific target file path from the plan's codePlanning field.
+     * Returns the code block content, or empty string if no matching block is found.
+     */
+    static getCodePlanningForStep(plan: any, targetPath: string): string {
+        if (!plan.codePlanning || typeof plan.codePlanning !== 'string') return '';
+        const blocks = this.parseCodeBlocksWithContext(plan.codePlanning);
+        const normalizedTarget = path.normalize(targetPath).toLowerCase();
+        for (const block of blocks) {
+            const matchedFile = this.associateFilePathWithCodeBlock(block.precedingText, block.content, plan);
+            if (matchedFile && path.normalize(matchedFile).toLowerCase() === normalizedTarget) {
+                return block.content;
+            }
+        }
+        return '';
+    }
 }

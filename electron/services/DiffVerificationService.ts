@@ -15,7 +15,7 @@ export class DiffVerificationService {
     /**
      * Executes fully deterministic compiler checks, file boundary rules, and anti-pattern lints.
      */
-    static async verify(taskId: number, modifiedFiles: string[]): Promise<DiffVerificationResult> {
+    static async verify(taskId: number, modifiedFiles: string[], skipTsc: boolean = false): Promise<DiffVerificationResult> {
         console.assert(typeof taskId === 'number', 'taskId must be a number');
         console.assert(Array.isArray(modifiedFiles), 'modifiedFiles must be an array');
 
@@ -45,7 +45,7 @@ export class DiffVerificationService {
         }
 
         if (violations.length > 0) {
-            details += `❌ Scope Violations: Modified files not in original plan: ${violations.join(', ')}\n`;
+            details += `⚠️ Scope note: Modified files outside original plan: ${violations.join(', ')}\n`;
         } else {
             details += `✅ Scope Boundaries: Checked. All edits conform strictly to planning schema.\n`;
         }
@@ -90,24 +90,32 @@ export class DiffVerificationService {
 
         const hasTsFiles = modifiedFiles.some(f => ['.ts', '.tsx'].includes(path.extname(f)));
 
-        // Compile checks for TypeScript (React/Electron project)
-        if (hasTsFiles) {
+        if (!skipTsc && hasTsFiles) {
             const tsconfigPath = path.join(workspaceRoot, 'tsconfig.json');
             if (fs.existsSync(tsconfigPath)) {
-                try {
-                    details += `⚡ Running TypeScript compilation check (tsc --noEmit) in ${workspaceRoot}...\n`;
-                    const tscResult = await this.runTscCheck(workspaceRoot);
-                    if (!tscResult.success) {
-                        compiles = false;
-                        details += `❌ TypeScript Compilation Check failed:\n${tscResult.output}\n`;
-                    } else {
-                        details += `✅ TypeScript Compilation Check passed.\n`;
+                const nodeModulesPath = path.join(workspaceRoot, 'node_modules');
+                if (!fs.existsSync(nodeModulesPath)) {
+                    details += `⚠️ node_modules not found — skipping TypeScript compilation check (dependencies may not be installed)\n`;
+                } else {
+                    try {
+                        details += `⚡ Running TypeScript compilation check (tsc --noEmit) in ${workspaceRoot}...\n`;
+                        const tscResult = await this.runTscCheck(workspaceRoot);
+                        if (!tscResult.success) {
+                            compiles = false;
+                            details += `❌ TypeScript Compilation Check failed:\n${tscResult.output}\n`;
+                        } else {
+                            details += `✅ TypeScript Compilation Check passed.\n`;
+                        }
+                    } catch (err: any) {
+                        console.error('[DiffVerificationService] Failed to spawn tsc check:', err);
+                        details += `⚠️ TS Compilation Check skipped: ${err.message || err}\n`;
                     }
-                } catch (err: any) {
-                    console.error('[DiffVerificationService] Failed to spawn tsc check:', err);
-                    details += `⚠️ TS Compilation Check skipped: ${err.message || err}\n`;
                 }
             }
+        }
+
+        if (skipTsc) {
+            details += `⏭️ TypeScript compilation check skipped (deferred to post-execution CompilationCheckerService).\n`;
         }
 
         return {
@@ -165,6 +173,22 @@ export class DiffVerificationService {
         }
         
         return importViolations;
+    }
+
+    /**
+     * Standalone compilation check for use in post-execution CompilationCheckerService.
+     * Runs tsc --noEmit and returns structured result.
+     */
+    static async checkCompilation(workspaceRoot: string): Promise<{ success: boolean; output: string }> {
+        const tsconfigPath = path.join(workspaceRoot, 'tsconfig.json');
+        if (!fs.existsSync(tsconfigPath)) {
+            return { success: true, output: 'No tsconfig.json found — skipping TypeScript check' };
+        }
+        const nodeModulesPath = path.join(workspaceRoot, 'node_modules');
+        if (!fs.existsSync(nodeModulesPath)) {
+            return { success: true, output: 'node_modules not found — skipping TypeScript check' };
+        }
+        return this.runTscCheck(workspaceRoot);
     }
 
     private static runTscCheck(cwd: string): Promise<{ success: boolean; output: string }> {

@@ -51,17 +51,22 @@ export class VerificationService {
         }
 
         console.log(`[VerificationService] Executing Tier 0 Deterministic Checks for task output ID ${taskOutputId}...`);
-        const tier0Result = await DiffVerificationService.verify(taskId, modifiedFiles);
+        const tier0Result = await DiffVerificationService.verify(taskId, modifiedFiles, true);
         
         let tier0Passed = true;
         let tier0Score = 1.0;
         let tier0ResultText = 'passed';
 
-        if (!tier0Result.compiles || tier0Result.scopeViolations.length > 0 || tier0Result.antiPatterns.length > 0) {
+        // Scope violations are warnings, not failures — system can modify files outside the plan
+        // (Scope details are already logged in tier0Result.details by DiffVerificationService)
+
+        // Anti-patterns are advisory — flagged for LLM response, not hard-blocking
+        // Compilation check is skipped here (deferred to post-execution CompilationCheckerService)
+        if (tier0Result.antiPatterns.length > 0) {
             tier0Passed = false;
-            tier0Score = 0.0;
-            tier0ResultText = 'failed';
-            finalStatus = 'failed';
+            tier0Score = 0.3;
+            tier0ResultText = 'needs_review';
+            finalStatus = 'needs_review';
         }
 
         dbService.addVerificationResult(
@@ -74,9 +79,8 @@ export class VerificationService {
         );
 
         if (!tier0Passed) {
-            console.warn('[VerificationService] Tier 0 Deterministic verification failed. Halting pipeline execution.');
-            dbService.updateTaskOutputVerification(taskOutputId, 'failed');
-            return 'failed';
+            console.warn('[VerificationService] Tier 0 found issues (advisory). Continuing to plan adherence check...');
+            dbService.updateTaskOutputVerification(taskOutputId, finalStatus);
         }
 
         // Tier 0.5: Plan Adherence LLM Judge (opt-in via plan.autoVerify)
@@ -86,10 +90,8 @@ export class VerificationService {
         console.log(`[VerificationService] Running Plan Adherence Check for task output ID ${taskOutputId}...`);
         const adherenceResult = await this.runPlanAdherenceCheck(taskId, taskOutputId, output.content);
         if (adherenceResult === 'failed') {
-            console.warn('[VerificationService] Plan adherence check failed.');
-            finalStatus = 'failed';
-            dbService.updateTaskOutputVerification(taskOutputId, 'failed');
-            return 'failed';
+            console.warn('[VerificationService] Plan adherence check flagged issues (advisory).');
+            finalStatus = 'needs_review';
         }
 
         const rules = dbService.getVerificationRules() as VerificationRule[];
