@@ -378,20 +378,27 @@ export function addKnowledgeChunk(db: any, sourceType: string, sourceId: string 
     });
 
     let floatArray: Float32Array | undefined;
+    const dim = getEmbeddingDbDim(db);
     if (embedding) {
         floatArray = embedding instanceof Float32Array ? embedding : new Float32Array(embedding);
-        checkArgs(floatArray.length === 1536, 'Vector embedding must have exactly 1536 dimensions');
+        checkArgs(floatArray.length === dim, `Vector embedding must have exactly ${dim} dimensions (got ${floatArray.length})`);
     }
 
     return runTx(floatArray);
+}
+
+function getEmbeddingDbDim(db: any): number {
+    const { getStoredEmbeddingDim } = require('./schema');
+    return getStoredEmbeddingDim(db) || 1536;
 }
 
 export function searchKnowledge(db: any, queryEmbedding: number[] | Float32Array, limit: number = 10) {
     checkArgs(limit > 0, 'Limit must be positive');
     if (!db) return [];
 
+    const dim = getEmbeddingDbDim(db);
     const floatArray = queryEmbedding instanceof Float32Array ? queryEmbedding : new Float32Array(queryEmbedding);
-    checkArgs(floatArray.length === 1536, 'Query vector must have exactly 1536 dimensions');
+    checkArgs(floatArray.length === dim, `Query vector must have exactly ${dim} dimensions (got ${floatArray.length})`);
 
     const stmt = db.prepare(`
         SELECT 

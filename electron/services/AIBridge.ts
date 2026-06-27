@@ -176,6 +176,34 @@ class AIBridge {
         }).embeddingModel(model);
         break;
       }
+      case 'ollama': {
+        const providerConfig = dbService.getCustomProviders().find((p: any) => p.id === 'ollama');
+        const baseUrl = providerConfig?.base_url || 'http://localhost:11434';
+        embeddingModel = createOpenAICompatible({
+          name: 'ollama',
+          baseURL: baseUrl,
+          apiKey: 'ollama',
+        }).embeddingModel(model);
+        break;
+      }
+      case 'local': {
+        const localService = LocalModelService.getInstance();
+        const port = localService.getServerPort();
+        embeddingModel = createOpenAICompatible({
+          name: 'local',
+          baseURL: `http://localhost:${port}/v1`,
+          apiKey: 'not-needed',
+        }).embeddingModel(model);
+        break;
+      }
+      case 'zen': {
+        embeddingModel = createOpenAICompatible({
+          name: 'zen',
+          baseURL: 'https://opencode.ai/zen/v1',
+          apiKey: 'zen-embedding-key',
+        }).embeddingModel(model);
+        break;
+      }
       // Add other providers here if they have their own embedding models
       default: {
         if (providerConfig) {
@@ -196,19 +224,7 @@ class AIBridge {
       value: text,
     });
 
-    if (embedding) {
-      if (embedding.length < 1536) {
-        const padded = new Array(1536).fill(0);
-        for (let i = 0; i < embedding.length; i++) {
-          padded[i] = embedding[i];
-        }
-        return padded;
-      } else if (embedding.length > 1536) {
-        return embedding.slice(0, 1536);
-      }
-    }
-
-    return embedding;
+    return embedding || [];
   }
 
   public async getAvailableModels(provider: string): Promise<string[]> {

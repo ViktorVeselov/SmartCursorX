@@ -32,7 +32,7 @@ export function usePlanModifier() {
 
         const systemPrompt = `You are an expert system architect. You are given an execution plan in JSON format and developer instructions.
 - If the instructions ask to modify or update the existing plan, apply the modifications and output the updated plan.
-- To prevent data loss and save tokens, do NOT rewrite unchanged sections. If the developer's instructions only target the roadmap steps, preserve the existing 'designDoc', 'expectedOutcome', 'filesRead', 'filesToModify', 'verificationCriteria', 'tradeoffs', and 'consequences' exactly as they are. If the instructions target only a specific component or section, focus only on updating that relevant part and output the rest of the fields identical to the input.
+- To prevent data loss and save tokens, do NOT rewrite unchanged sections. If the developer's instructions only target the roadmap steps, preserve the existing 'designDoc', 'expectedOutcome', 'filesRead', 'filesToModify', 'filesToCreate', 'verificationCriteria', 'tradeoffs', and 'consequences' exactly as they are. If the instructions target only a specific component or section, focus only on updating that relevant part and output the rest of the fields identical to the input.
 - If the instructions ask to create a new plan, regenerate the plan, or start from scratch, discard the existing plan and generate a completely new execution plan from scratch based on the developer instructions.
 ${assignInstructions}
 IMPORTANT: Every single field in the JSON output MUST be populated with meaningful content. Do NOT leave any field as an empty string, empty array, or placeholder. If you do not have specific content for a field, generate reasonable default content based on the context. Every step must have a non-empty action, target, and rationale. Every trade-off must have a non-empty task, considerations, and decision. Every consequence must have a non-empty failureMode, consequence, harm, and mitigation.
@@ -52,6 +52,7 @@ Format:
   "expectedOutcome": "...",
   "filesRead": [],
   "filesToModify": [],
+  "filesToCreate": [],
   "verificationCriteria": [],
   "designDoc": "Markdown formatted detailed text / design specs (optional)",
   "tradeoffs": [

@@ -358,10 +358,14 @@ export function SettingsFinetuningTab({ huggingfaceToken, setHuggingfaceToken }:
     setLogs(prev => [...prev, `Converting CoT dataset from ${cotPath}...`]);
     try {
       const outPath = 'data-set/fable5_ft_instruction.jsonl';
-      const cmd = `python scripts/convert_cot_dataset.py --input "${cotPath}" --output "${outPath}" --mode instruction --max-samples 2000 --filter-truncated`;
-      setLogs(prev => [...prev, `Running: ${cmd}`]);
-      // Use IPC to run the conversion in main process
-      const result = await getIpc().invoke('shell:exec', cmd);
+      setLogs(prev => [...prev, `Converting: ${cotPath} → ${outPath}`]);
+      const result = await getIpc().invoke('finetune:convert-dataset', {
+        inputPath: cotPath,
+        outputPath: outPath,
+        mode: 'instruction',
+        maxSamples: 2000,
+        filterTruncated: true,
+      });
       setLogs(prev => [...prev, ...(result?.stdout?.split('\n').filter(Boolean) || ['Conversion complete'])]);
       setManifest({ samples: 2000, taskTypes: { code_gen: 2000 }, sourceFiles: 53, totalTokens: 16983000 });
       setStatus('ready');

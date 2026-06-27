@@ -1,7 +1,11 @@
 import { dbService } from '../db';
-import { aiService } from './AIService';
+import { AIService } from './AIService';
+import { pipelineService } from './PipelineService';
 
 export class DocumentationService {
+    private static get chatSvc() {
+        return AIService.getForProvider(pipelineService.getProviderFor('chat'));
+    }
     /**
      * Synthesizes a structured markdown task overview detailing goal objectives, subtask approaches, and verification results.
      */
@@ -45,14 +49,14 @@ ${outputs.map((o: any) => o.content).join('\n---\n') || 'No raw outputs recorded
 All active automated gates, LLM judges, and human review steps successfully verified. Quality score met safety-critical bounds.`;
 
         // Synthesize a beautiful description using LLM if available
-        if (aiService.isActive()) {
+        if (this.chatSvc.isActive()) {
             try {
                 const prompt = `Rewrite and polish the following task details into a professional technical documentation log. Ensure a high-reliability professional tone.
 
 ${docContent}`;
-                const polished = await aiService.chat([
+                const polished = await this.chatSvc.chat([
                     { role: 'user', content: prompt }
-                ], { temperature: 0.2 }) as import('./AIService').ChatResponse;
+                ], { temperature: 0.2, model: pipelineService.getModelFor('chat') }) as import('./AIService').ChatResponse;
 
                 if (polished.text.trim().length > 0) {
                     docContent = polished.text;

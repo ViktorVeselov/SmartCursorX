@@ -2,6 +2,9 @@ import { secureStore } from '../secureStore';
 import { PathGuard } from '../services/PathGuard';
 import { checkArgs } from '../../src/helpers/invariant';
 import { WorkspaceWatcherService } from '../services/WorkspaceWatcherService';
+import { pipelineService } from '../services/PipelineService';
+import { pipelineEngine } from '../services/PipelineEngineService';
+import { dbService } from '../db/index';
 import path from 'node:path';
 import type { IpcHandlerContext } from './index';
 
@@ -63,7 +66,14 @@ export function registerSettingsHandlers(ipcMain: Electron.IpcMain, context: Ipc
             vertexLocation: secureStore.getVertexLocation(),
             azureApiBase: secureStore.getAzureApiBase(),
             azureApiVersion: secureStore.getAzureApiVersion(),
-            activeWorkspacePath: secureStore.getActiveWorkspacePath()
+            activeWorkspacePath: secureStore.getActiveWorkspacePath(),
+
+            embeddingProvider: secureStore.getEmbeddingProvider(),
+            embeddingModel: secureStore.getEmbeddingModel(),
+            embeddingBaseUrl: secureStore.getEmbeddingBaseUrl(),
+            embeddingDimension: secureStore.getEmbeddingDimension(),
+
+            pipelineEnabled: secureStore.getPipelineEnabled()
         };
     });
 
@@ -88,8 +98,65 @@ export function registerSettingsHandlers(ipcMain: Electron.IpcMain, context: Ipc
         if (typeof settings.azureApiBase === 'string') secureStore.setAzureApiBase(settings.azureApiBase);
         if (typeof settings.azureApiVersion === 'string') secureStore.setAzureApiVersion(settings.azureApiVersion);
 
+        if (typeof settings.embeddingProvider === 'string') secureStore.setEmbeddingProvider(settings.embeddingProvider);
+        if (typeof settings.embeddingModel === 'string') secureStore.setEmbeddingModel(settings.embeddingModel);
+        if (typeof settings.embeddingBaseUrl === 'string') secureStore.setEmbeddingBaseUrl(settings.embeddingBaseUrl);
+        if (typeof settings.embeddingDimension === 'number') secureStore.setEmbeddingDimension(settings.embeddingDimension);
+        if (typeof settings.pipelineEnabled === 'boolean') secureStore.setPipelineEnabled(settings.pipelineEnabled);
+
         return true;
     });
+
+    ipcMain.handle('embedding:get-config', () => secureStore.getEmbeddingConfig());
+
+    ipcMain.handle('pipeline:get-enabled', () => pipelineService.isEnabled());
+
+    ipcMain.handle('pipeline:set-enabled', (_event, enabled: boolean) => {
+        checkArgs(typeof enabled === 'boolean', 'Pipeline enabled must be a boolean');
+        pipelineService.setEnabled(enabled);
+        return true;
+    });
+
+    ipcMain.handle('pipeline:get-config', () => pipelineService.getConfig());
+
+    ipcMain.handle('pipeline:set-config', (_event, config) => {
+        checkArgs(config !== null && typeof config === 'object', 'Pipeline config must be an object');
+        pipelineService.setConfig(config);
+        return true;
+    });
+
+    ipcMain.handle('embedding:set-config', (_event, config: { provider: string; model: string; baseUrl?: string }) => {
+        checkArgs(config !== null && typeof config === 'object', 'Embedding config must be an object');
+        if (typeof config.provider === 'string') secureStore.setEmbeddingProvider(config.provider);
+        if (typeof config.model === 'string') secureStore.setEmbeddingModel(config.model);
+        if (typeof config.baseUrl === 'string') secureStore.setEmbeddingBaseUrl(config.baseUrl);
+        return true;
+    });
+
+    ipcMain.handle('pipeline:get-presets', () => {
+        return dbService.getPipelinePresets();
+    });
+
+    ipcMain.handle('pipeline:save-preset', (_event, name: string, config: object) => {
+        checkArgs(typeof name === 'string' && name.length > 0, 'Preset name must be a non-empty string');
+        checkArgs(config !== null && typeof config === 'object', 'Config must be an object');
+        return dbService.addPipelinePreset(name, config);
+    });
+
+    ipcMain.handle('pipeline:load-preset', (_event, id: number) => {
+        checkArgs(typeof id === 'number', 'Preset ID must be a number');
+        const preset = dbService.getPipelinePreset(id);
+        if (!preset) throw new Error(`Pipeline preset ${id} not found`);
+        return { ...preset, config: JSON.parse(preset.config) };
+    });
+
+    ipcMain.handle('pipeline:delete-preset', (_event, id: number) => {
+        checkArgs(typeof id === 'number', 'Preset ID must be a number');
+        dbService.deletePipelinePreset(id);
+        return true;
+    });
+
+    ipcMain.handle('pipeline:engine-steps', () => pipelineEngine.resolveSteps());
 
     ipcMain.handle('set-workspace-path', (_event, workspacePath: string) => {
         const resolved = path.resolve(workspacePath);

@@ -1,5 +1,6 @@
 import { dbService } from '../db';
-import { aiService } from './AIService';
+import { AIService } from './AIService';
+import { pipelineService } from './PipelineService';
 import { SnapshotService } from './SnapshotService';
 import { PlanningService } from './PlanningService';
 import { TaskService } from './TaskService';
@@ -9,7 +10,6 @@ import { PathGuard } from './PathGuard';
 import { ASTPatchingService } from './ASTPatchingService';
 import { PendingModificationsService } from './PendingModificationsService';
 import { VerificationService } from './VerificationService';
-import { secureStore } from '../secureStore';
 import { taxonomyService } from './taxonomy/TaxonomyService';
 import { TaxonomyClassifier } from './taxonomy/TaxonomyClassifier';
 import type { OperationalContext } from './taxonomy/types';
@@ -37,6 +37,14 @@ const DEFAULT_CONFIG: ExecutionConfig = { maxRetries: 3, baseTemperature: 0.0, e
 export class ExecutionLoopService {
     private static dlqEntries = new Map<number, DlqEntry>();
     private static abortControllers = new Map<number, AbortController>();
+
+    private static get chatSvc() {
+        return AIService.getForProvider(pipelineService.getProviderFor('chat'));
+    }
+
+    private static get codeCompletionSvc() {
+        return AIService.getForProvider(pipelineService.getProviderFor('code_generation'));
+    }
 
     private static sendProgress(taskId: number, phase: string, message: string, attempt?: number, totalAttempts?: number, stepIndex?: number): void {
         const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
@@ -125,14 +133,13 @@ export class ExecutionLoopService {
         const abortController = new AbortController();
         this.abortControllers.set(taskId, abortController);
 
-        const modelUsed = secureStore.getSelectedModel();
         const startTime = Date.now();
 
         // Investigation phase
         this.sendProgress(taskId, 'investigating', 'Analyzing dependencies and assumptions...');
         let investText = '';
         try {
-            investText = await this.performInvestigation(taskId, activeTask, modelUsed, startTime);
+            investText = await this.performInvestigation(taskId, activeTask, startTime);
         } catch (err: any) {
             if (err.message === 'EXECUTION_STOPPED') {
                 this.abortControllers.delete(taskId);
@@ -214,7 +221,7 @@ export class ExecutionLoopService {
 
                     const result = await this.executeSingleStep(
                         childTaskId, step, taskId, activeTask, investText, stepTaxonomy,
-                        modelUsed, config, abortController.signal, attempt, stepIdx
+                        config, abortController.signal, attempt, stepIdx
                     );
 
                     if (result.success) {
@@ -328,7 +335,6 @@ export class ExecutionLoopService {
         activeTask: any,
         investText: string,
         taxonomyResult: any,
-        modelUsed: string,
         config: ExecutionConfig,
         _abortSignal: AbortSignal,
         attempt: number,
@@ -337,11 +343,11 @@ export class ExecutionLoopService {
         const action = step.action;
 
         if (action === 'read' || action === 'analyze') {
-            return this.executeReadAnalyzeStep(childTaskId, step, activeTask, investText, taxonomyResult, modelUsed, config, attempt, stepIdx);
+            return this.executeReadAnalyzeStep(childTaskId, step, activeTask, investText, taxonomyResult, config, attempt, stepIdx);
         }
 
         if (action === 'modify' || action === 'create') {
-            const result = await this.executeModifyCreateStep(childTaskId, step, parentTaskId, activeTask, investText, taxonomyResult, modelUsed, config, attempt);
+            const result = await this.executeModifyCreateStep(childTaskId, step, parentTaskId, activeTask, investText, taxonomyResult, config, attempt);
 
             // Advisory verification gate (opt-in via plan.autoVerify)
             // Verification findings are advisory: fed back to LLM for fix/explanation.
@@ -417,12 +423,11 @@ export class ExecutionLoopService {
         activeTask: any,
         investText: string,
         taxonomyResult: any,
-        modelUsed: string,
         _config: ExecutionConfig,
         attempt: number,
         _stepIdx: number
     ): Promise<{ success: boolean; feedback?: string }> {
-        if (!aiService.isActive()) return { success: true, feedback: 'AI not available' };
+        if (!this.chatSvc.isActive()) return { success: true, feedback: 'AI not available' };
 
         const assembled = await ContextAssembler.assembleContext(childTaskId, [], undefined, undefined, undefined, investText);
         const systemInstructions = ASTPatchingService.shapeSystemInstructions('investigate', assembled.systemPrompt, undefined, taxonomyResult);
@@ -475,10 +480,11 @@ Do NOT propose or generate code modifications. Return only findings and analysis
 
 IMPORTANT: Do NOT output any tool/function calls. You do not have access to tools in this step. Return your response purely as plain text in the chat response.`;
 
-        const response = await aiService.chat([
+        const model = pipelineService.getModelFor('chat');
+        const response = await this.chatSvc.chat([
             { role: 'system', content: systemInstructions },
             { role: 'user', content: prompt }
-        ], { temperature: Math.min(0.1 + (attempt - 1) * 0.05, 0.3), model: modelUsed });
+        ], { temperature: Math.min(0.1 + (attempt - 1) * 0.05, 0.3), model });
 
         const text = typeof response === 'string' ? response : 'text' in response ? response.text : '';
         if (!text) return { success: false, feedback: 'Empty AI response' };
@@ -490,8 +496,8 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
             activeTask.assigned_agent_id,
             'analysis',
             Math.ceil(text.length / 4),
-            modelUsed,
-            aiService.providerId
+            pipelineService.getModelFor('chat'),
+            this.chatSvc.providerId
         );
 
         return { success: true };
@@ -504,11 +510,10 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
         activeTask: any,
         investText: string,
         taxonomyResult: any,
-        modelUsed: string,
         config: ExecutionConfig,
         attempt: number
     ): Promise<{ success: boolean; patches?: any[]; feedback?: string }> {
-        if (!aiService.isActive()) return { success: false, feedback: 'AI Service is inactive' };
+        if (!this.codeCompletionSvc.isActive()) return { success: false, feedback: 'AI Service is inactive' };
 
         const assembled = await ContextAssembler.assembleContext(childTaskId, [], undefined, undefined, undefined, investText);
         let systemInstructions = ASTPatchingService.shapeSystemInstructions('modify', assembled.systemPrompt, undefined, taxonomyResult);
@@ -608,10 +613,11 @@ IMPORTANT: You MUST wrap your response in a JSON array [...], even for a single 
 
 IMPORTANT: Do NOT output any tool/function calls. You do not have access to tools in this step. Return your response purely as plain text in the chat response.`;
 
-        const response = await aiService.chat([
+        const model = pipelineService.getModelFor('code_generation');
+        const response = await this.codeCompletionSvc.chat([
             { role: 'system', content: systemInstructions },
             { role: 'user', content: prompt }
-        ], { temperature: tempWithEscalation, model: modelUsed });
+        ], { temperature: tempWithEscalation, model });
 
         const chatResp = response as import('./AIService').ChatResponse;
         const responseContent = chatResp.text;
@@ -652,6 +658,10 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
         }
 
         if (!parseSuccess) {
+            if (!isCreate) {
+                console.warn(`[ExecutionLoopService] Modify step — all parsers failed. Returning feedback instead of silent full rewrite.`);
+                return { success: false, feedback: 'Could not extract surgical patches from AI response after 4 parsing attempts. The AI may need to produce find/replace pairs instead of full-file content.' };
+            }
             console.warn(`[ExecutionLoopService] All structured parsers failed. Using entire AI response as file content for ${step.target}...`);
             const absolutePath = PathGuard.resolve(step.target);
             if (absolutePath) {
@@ -671,6 +681,16 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
                 parseSuccess = true;
             } else {
                 throw new Error('Failed parsing file patches from AI response (JSON AST, full-file blocks, markdown code blocks, and raw path+content all failed).');
+            }
+        }
+
+        // For modify steps, validate that patches are surgical (not full-rewrite)
+        if (!isCreate && parseSuccess) {
+            const hasFullRewrite = patches.some((p: any) =>
+                p.patches && p.patches.some((pp: any) => pp.find === '')
+            );
+            if (hasFullRewrite) {
+                return { success: false, feedback: 'Full file rewrite detected on modify step. Retrying with stronger surgical guidance.' };
             }
         }
 
@@ -726,8 +746,8 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
             activeTask.assigned_agent_id,
             'code',
             Math.ceil(responseContent.length / 4),
-            modelUsed,
-            aiService.isActive() ? aiService.providerId : 'fallback'
+            pipelineService.getModelFor('code_generation'),
+            this.codeCompletionSvc.isActive() ? this.codeCompletionSvc.providerId : 'fallback'
         );
 
         return { success: true, patches };
@@ -776,11 +796,26 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
     }
 
     private static async executeCommandStep(
-        _childTaskId: number,
+        childTaskId: number,
         step: PlanStep
     ): Promise<{ success: boolean; feedback?: string }> {
-        console.log(`[ExecutionLoopService] Command execution not implemented, skipping step: ${step.target}`);
-        return { success: true, feedback: 'Command approved but execution not implemented in this version' };
+        const approved = await new Promise<boolean>((resolve) => {
+            const mainWindow = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
+            if (!mainWindow) return resolve(false);
+
+            mainWindow.webContents.send('tool:approval-request', {
+                type: 'run_command',
+                taskId: childTaskId,
+                details: `Run command: ${step.target}`,
+                rationale: step.rationale,
+            });
+            PendingModificationsService.setResolver(childTaskId, resolve);
+        });
+
+        if (!approved) return { success: false, feedback: 'Command rejected by user' };
+
+        PendingModificationsService.removePending(childTaskId);
+        return { success: false, feedback: 'run_command steps are no longer supported. Use "read" or "analyze" steps instead.' };
     }
 
     private static async handleStepDlq(
@@ -827,10 +862,9 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
     private static async performInvestigation(
         taskId: number,
         activeTask: any,
-        modelUsed: string,
         startTime: number
     ): Promise<string> {
-        if (!aiService.isActive()) return '';
+        if (!this.chatSvc.isActive()) return '';
 
         console.log(`[ExecutionLoopService] Investigation phase...`);
         const investAssembled = await ContextAssembler.assembleContext(taskId, []);
@@ -854,18 +888,19 @@ IMPORTANT: Do NOT output any tool/function calls. You do not have access to tool
 2. Outline a deterministic "Assumption Matrix" inside a scratchpad block.
 3. Validate that you are ready and have no blind spots. Do NOT propose code changes yet.`;
 
-        const investResult = await aiService.chat([
+        const model = pipelineService.getModelFor('chat');
+        const investResult = await this.chatSvc.chat([
             { role: 'system', content: investSystemInstructions },
             { role: 'user', content: investPrompt }
-        ], { temperature: 0.1, model: modelUsed });
+        ], { temperature: 0.1, model });
 
         console.log(`[ExecutionLoopService] Investigation completed.`);
 
         const investText = typeof investResult === 'string' ? investResult : 'text' in investResult ? investResult.text : '';
         if (investText) {
             dbService.addModelPerformance(
-                modelUsed,
-                aiService.providerId,
+                model,
+                this.chatSvc.providerId,
                 'investigation',
                 1, 1,
                 Math.ceil(investText.length / 4),

@@ -111,6 +111,7 @@ export interface CompletionOptions {
 
 export class AIService {
   private static instance: AIService;
+  private static instances = new Map<string, AIService>();
   private config: ProviderConfig | null = null;
 
   private constructor() {}
@@ -120,6 +121,21 @@ export class AIService {
       AIService.instance = new AIService();
     }
     return AIService.instance;
+  }
+
+  static getForProvider(providerId: string): AIService {
+    const existing = AIService.instances.get(providerId);
+    if (existing?.isActive()) return existing;
+
+    const svc = new AIService();
+    svc.initializeFromStore(providerId);
+    AIService.instances.set(providerId, svc);
+    return svc;
+  }
+
+  static clearInstances(): void {
+    AIService.instances.clear();
+    AIService.instance = new AIService();
   }
 
   initialize(config: ProviderConfig) {

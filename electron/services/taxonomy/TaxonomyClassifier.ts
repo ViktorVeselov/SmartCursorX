@@ -50,7 +50,7 @@ export class TaxonomyClassifier {
     if (plan) {
       const parsedPlan = typeof plan === 'string' ? JSON.parse(plan) : plan;
       const stepsCount = parsedPlan.steps ? parsedPlan.steps.length : 0;
-      const filesCount = parsedPlan.filesToModify ? parsedPlan.filesToModify.length : 0;
+      const filesCount = (parsedPlan.filesToModify ? parsedPlan.filesToModify.length : 0) + (parsedPlan.filesToCreate ? parsedPlan.filesToCreate.length : 0);
 
       if (stepsCount > 0 && stepsCount < thresholds.complexityGate.minPlanSteps) return false;
       if (filesCount > 0 && filesCount < thresholds.complexityGate.minFilesModified) return false;
@@ -81,6 +81,14 @@ export class TaxonomyClassifier {
       const parsedPlan = typeof plan === 'string' ? JSON.parse(plan) : plan;
       if (parsedPlan.filesToModify && Array.isArray(parsedPlan.filesToModify)) {
         for (const file of parsedPlan.filesToModify) {
+          const baseName = file.split(/[/\\]/).pop() || '';
+          fileNames.push(baseName);
+          const dirName = file.split(/[/\\]/).slice(0, -1).join('/') || '';
+          if (dirName) directoryPaths.push(dirName);
+        }
+      }
+      if (parsedPlan.filesToCreate && Array.isArray(parsedPlan.filesToCreate)) {
+        for (const file of parsedPlan.filesToCreate) {
           const baseName = file.split(/[/\\]/).pop() || '';
           fileNames.push(baseName);
           const dirName = file.split(/[/\\]/).slice(0, -1).join('/') || '';

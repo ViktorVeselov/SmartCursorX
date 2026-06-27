@@ -1,7 +1,7 @@
 import { dbService } from '../db';
-import { aiService } from './AIService';
+import { AIService } from './AIService';
+import { pipelineService } from './PipelineService';
 import { ContextAssembler } from './ContextAssembler';
-import { secureStore } from '../secureStore';
 import { ExecutionPlanSchema } from './ai';
 import type { ExecutionPlan } from './ai';
 import { generateText, tool, stepCountIs } from 'ai';
@@ -15,6 +15,13 @@ export type { ExecutionPlan, PlanStep, Tradeoff, Consequence } from './ai';
 const MAX_PLAN_RETRIES = 3;
 
 export class PlanningService {
+    private static get planExplorationSvc() {
+        return AIService.getForProvider(pipelineService.getProviderFor('plan_exploration'));
+    }
+    private static get planGenerationSvc() {
+        return AIService.getForProvider(pipelineService.getProviderFor('plan_generation'));
+    }
+
     private static getWhitelistedRoots(workspacePath: string): string[] {
         return [path.resolve(workspacePath)];
     }
@@ -112,7 +119,7 @@ Your goal is 100% accuracy and safety. Plan all reads, analyses, modifications, 
 1. Evidence-Based: Base your plan steps on facts/code files that you have explicitly verified. No guessing.
 2. Assumption Identification: Scrutinize all assumptions (e.g., assuming a file exists, assuming a function signature).
 3. Explicit Uncertainty: If you have ANY uncertainty about imports, database tables, or function names, use your tool actions (read_file, grep_search, list_directory) to explore the workspace and verify them before outputting your final plan.
-4. Direct File Operations: When you are certain of the required change, use write_file to create/replace files and edit_file for surgical find/replace patches. These tools respect workspace containment and handle parent directory creation automatically.
+4. Explore Only — Do Not Execute: This planning phase is read-only. Use read_file, grep_search, and list_directory to investigate the codebase. Do NOT write or edit files during planning. File modifications will be executed automatically in the execution phase after your plan is approved.
 
 Task Information:
 Title: ${task.title}
@@ -129,13 +136,14 @@ For "designDoc": You MUST write a detailed, professional Design Specification (i
 
 For "codePlanning": You MUST write a detailed draft or blueprint of the code changes you intend to make for each file to modify. For each file, provide the code within a standard markdown code block. Every code block MUST have a file header comment specifying the target file (e.g. "// File: src/main.ts") so the system can verify all relative imports. If no code modifications are needed for this task, return an empty string or a simple comment (e.g., "// No code changes planned.").`;
 
-        const userModel = secureStore.getSelectedModel();
-        const model = aiService.getModel(userModel);
+        const planExplorationModel = pipelineService.getModelFor('plan_exploration');
+        const model = this.planExplorationSvc.getModel(planExplorationModel);
+        const planGenerationModel = pipelineService.getModelFor('plan_generation');
 
         let lastError: Error | null = null;
         let auditFeedback = '';
 
-        if (!aiService.isActive()) {
+        if (!this.planExplorationSvc.isActive()) {
             throw new Error('[PlanningService] AI provider not active. Cannot generate plan.');
         }
 
@@ -240,68 +248,6 @@ For "codePlanning": You MUST write a detailed draft or blueprint of the code cha
                                     return `Error listing directory: ${err.message}`;
                                 }
                             }
-                        }),
-                        write_file: tool({
-                            description: PlanningService.getToolDescription(
-                                'write_file',
-                                'Create or overwrite a workspace file. Creates parent directories if they do not exist. Use this to write new files or replace entire file contents.',
-                                assembled.taxonomyResult
-                            ),
-                            inputSchema: z.object({
-                                filePath: z.string().describe('Relative path from workspace root'),
-                                content: z.string().describe('Full file content to write')
-                            }),
-                            execute: async ({ filePath, content }: { filePath: string; content: string }) => {
-                                const absolutePath = PlanningService.resolveToAllowedRoot(filePath, workspacePath);
-                                if (!absolutePath) {
-                                    return `Error: Path out of bounds: ${filePath}`;
-                                }
-                                try {
-                                    const dir = path.dirname(absolutePath);
-                                    if (!fs.existsSync(dir)) {
-                                        fs.mkdirSync(dir, { recursive: true });
-                                    }
-                                    fs.writeFileSync(absolutePath, content, 'utf-8');
-                                    const lines = content.split('\n').length;
-                                    return `Successfully wrote ${filePath} (+${lines}/-0, ${content.length}b)`;
-                                } catch (err: any) {
-                                    return `Error writing file: ${err.message}`;
-                                }
-                            }
-                        }),
-                        edit_file: tool({
-                            description: PlanningService.getToolDescription(
-                                'edit_file',
-                                'Find exact text in a file and replace it. Use for surgical edits without rewriting the whole file. Returns error if the file does not exist or the text is not found.',
-                                assembled.taxonomyResult
-                            ),
-                            inputSchema: z.object({
-                                filePath: z.string().describe('Relative path from workspace root'),
-                                find: z.string().describe('Exact text to find (case-sensitive)'),
-                                replace: z.string().describe('Replacement text')
-                            }),
-                            execute: async ({ filePath, find, replace }: { filePath: string; find: string; replace: string }) => {
-                                const absolutePath = PlanningService.resolveToAllowedRoot(filePath, workspacePath);
-                                if (!absolutePath) {
-                                    return `Error: Path out of bounds: ${filePath}`;
-                                }
-                                if (!fs.existsSync(absolutePath)) {
-                                    return `Error: File not found: ${filePath}. Use write_file to create it first.`;
-                                }
-                                try {
-                                    const content = fs.readFileSync(absolutePath, 'utf-8');
-                                    if (!content.includes(find)) {
-                                        return `Error: Could not find exact match "${find.substring(0, 80)}${find.length > 80 ? '...' : ''}" in ${filePath}. The text must match exactly including whitespace.`;
-                                    }
-                                    const newContent = content.replace(find, replace);
-                                    fs.writeFileSync(absolutePath, newContent, 'utf-8');
-                                    const oldLines = content.split('\n').length;
-                                    const newLines = newContent.split('\n').length;
-                                    return `Successfully edited ${filePath} (+${newLines > oldLines ? newLines - oldLines : 0}/-${oldLines > newLines ? oldLines - newLines : 0})`;
-                                } catch (err: any) {
-                                    return `Error editing file: ${err.message}`;
-                                }
-                            }
                         })
                     }
                 });
@@ -309,11 +255,11 @@ For "codePlanning": You MUST write a detailed draft or blueprint of the code cha
                 console.log(`[PlanningService] Step 2: Generating final structured plan JSON...`);
                 const finalMessages = [...toolMessages, ...toolResult.response.messages];
 
-                const plan = await aiService.generateObject(
+                const plan = await this.planGenerationSvc.generateObject(
                     ExecutionPlanSchema,
                     finalMessages as any,
                     {
-                        model: userModel,
+                        model: planGenerationModel,
                         temperature: attempt === 3 ? 0.3 : 0.1
                     }
                 );
@@ -342,7 +288,7 @@ For "codePlanning": You MUST write a detailed draft or blueprint of the code cha
 
         throw new Error(
             `[PlanningService] Plan generation failed after ${MAX_PLAN_RETRIES} attempts. ` +
-            `Model: ${userModel}, Provider: ${aiService.providerId}. ` +
+            `Model: ${planGenerationModel}, Provider: ${this.planGenerationSvc.providerId}. ` +
             `Last error: ${lastError?.message || 'Unknown error'}. ` +
             `Please check that your selected model supports structured JSON output or try a different model.`
         );
@@ -393,6 +339,7 @@ For "codePlanning": You MUST write a detailed draft or blueprint of the code cha
         
         const plannedFiles = new Set<string>();
         if (plan.filesToModify) plan.filesToModify.forEach((f: string) => plannedFiles.add(path.normalize(f).toLowerCase()));
+        if (plan.filesToCreate) plan.filesToCreate.forEach((f: string) => plannedFiles.add(path.normalize(f).toLowerCase()));
         if (plan.filesRead) plan.filesRead.forEach((f: string) => plannedFiles.add(path.normalize(f).toLowerCase()));
         if (plan.steps) {
             plan.steps.forEach((s: any) => {
@@ -433,6 +380,13 @@ For "codePlanning": You MUST write a detailed draft or blueprint of the code cha
         const plannedFiles = new Set<string>();
         if (plan.filesToModify && Array.isArray(plan.filesToModify)) {
             plan.filesToModify.forEach((f: any) => {
+                if (typeof f === 'string') {
+                    plannedFiles.add(path.normalize(f).toLowerCase());
+                }
+            });
+        }
+        if (plan.filesToCreate && Array.isArray(plan.filesToCreate)) {
+            plan.filesToCreate.forEach((f: any) => {
                 if (typeof f === 'string') {
                     plannedFiles.add(path.normalize(f).toLowerCase());
                 }
@@ -497,6 +451,12 @@ For "codePlanning": You MUST write a detailed draft or blueprint of the code cha
 
                 if (!resolved) {
                     const relativeResolvedPath = path.relative(workspaceRoot, absoluteImportPath);
+                    // Validate path plausibility before auto-adding
+                    if (!PlanningService.isPathPlausible(relativeResolvedPath)) {
+                        const ext = path.extname(relativeResolvedPath);
+                        issues.push(`Cannot auto-add "${relativeResolvedPath}" for "${associatedFile}" — path ${ext ? `has unexpected extension "${ext}"` : 'has no file extension or contains build/generated directory'}. Please verify the import path "${importPath}" is correct.`);
+                        continue;
+                    }
                     // Auto-fix: add missing file to plan so it gets created before it's imported
                     if (!plan.filesToModify) plan.filesToModify = [];
                     if (!plan.filesToModify.includes(relativeResolvedPath)) {
@@ -521,6 +481,29 @@ For "codePlanning": You MUST write a detailed draft or blueprint of the code cha
         }
 
         return issues;
+    }
+
+    /**
+     * Validates that an auto-added path is plausible (has a known extension,
+     * doesn't point into generated/build directories).
+     */
+    private static isPathPlausible(relativePath: string): boolean {
+        const VALID_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.rs', '.go', '.css', '.html', '.json', '.md', '.yml', '.yaml', '.toml']);
+        const SKIP_DIRECTORIES = ['node_modules', '.git', 'dist', 'build', '.venv', 'venv', '__pycache__', '.next', 'out'];
+
+        const ext = path.extname(relativePath);
+        if (!ext || !VALID_EXTENSIONS.has(ext.toLowerCase())) {
+            return false;
+        }
+
+        const normalized = relativePath.replace(/\\/g, '/');
+        for (const skip of SKIP_DIRECTORIES) {
+            if (normalized.includes(`/${skip}/`) || normalized.startsWith(`${skip}/`)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

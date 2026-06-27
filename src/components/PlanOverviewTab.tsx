@@ -29,6 +29,17 @@ interface PlanOverviewTabProps {
     setEditingModifyIndex: (v: number | null) => void;
     handleSaveModifyItem: (i: number) => void;
     handleDeleteModifyItem: (i: number) => void;
+    showAddCreate: boolean;
+    setShowAddCreate: (v: boolean) => void;
+    newCreateText: string;
+    setNewCreateText: (v: string) => void;
+    handleAddCreateItem: () => void;
+    editingCreateIndex: number | null;
+    editingCreateText: string;
+    setEditingCreateText: (v: string) => void;
+    setEditingCreateIndex: (v: number | null) => void;
+    handleSaveCreateItem: (i: number) => void;
+    handleDeleteCreateItem: (i: number) => void;
     showAddCrit: boolean;
     setShowAddCrit: (v: boolean) => void;
     newCritText: string;
@@ -72,6 +83,17 @@ export function PlanOverviewTab({
     setEditingModifyIndex,
     handleSaveModifyItem,
     handleDeleteModifyItem,
+    showAddCreate,
+    setShowAddCreate,
+    newCreateText,
+    setNewCreateText,
+    handleAddCreateItem,
+    editingCreateIndex,
+    editingCreateText,
+    setEditingCreateText,
+    setEditingCreateIndex,
+    handleSaveCreateItem,
+    handleDeleteCreateItem,
     showAddCrit,
     setShowAddCrit,
     newCritText,
@@ -317,6 +339,97 @@ export function PlanOverviewTab({
                 </div>
             </div>
 
+            {/* Files to Create */}
+            <div style={{
+                background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0.005) 100%)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: '12px',
+                padding: '20px',
+                backdropFilter: 'blur(8px)',
+                boxShadow: '0 8px 32px rgba(0, 0, 0, 0.2)'
+            }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <h3 style={{ margin: 0, fontSize: '13.5px', fontWeight: 600, color: 'white', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span className="codicon codicon-new-file" style={{ color: '#4ec9b0' }} /> Files to Create
+                    </h3>
+                    <button
+                        onClick={() => setShowAddCreate(!showAddCreate)}
+                        style={{ background: 'none', border: 'none', color: '#4ec9b0', cursor: 'pointer' }}
+                    >
+                        <span className="codicon codicon-add" />
+                    </button>
+                </div>
+
+                {showAddCreate && (
+                    <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>
+                        <input
+                            type="text"
+                            placeholder="src/filename.ts"
+                            value={newCreateText}
+                            onChange={e => setNewCreateText(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleAddCreateItem()}
+                            style={{ flex: 1, background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', outline: 'none' }}
+                        />
+                        <button onClick={handleAddCreateItem} style={{ padding: '2px 8px', background: '#4ec9b0', border: 'none', borderRadius: '4px', color: '#0d1117', fontSize: '11px', fontWeight: 600 }}>Add</button>
+                    </div>
+                )}
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {(plan.filesToCreate || []).map((file, i) => {
+                        const isEditingItem = editingCreateIndex === i;
+                        return (
+                            <div key={i} style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                background: 'rgba(255, 255, 255, 0.02)',
+                                border: '1px solid rgba(255, 255, 255, 0.05)',
+                                padding: '6px 12px',
+                                borderRadius: '6px'
+                            }}>
+                                {isEditingItem ? (
+                                    <input
+                                        type="text"
+                                        value={editingCreateText}
+                                        onChange={e => setEditingCreateText(e.target.value)}
+                                        onKeyDown={e => e.key === 'Enter' && handleSaveCreateItem(i)}
+                                        onBlur={() => handleSaveCreateItem(i)}
+                                        autoFocus
+                                        style={{ flex: 1, background: 'rgba(0,0,0,0.2)', border: 'none', color: 'white', outline: 'none', fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' }}
+                                    />
+                                ) : (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: 'rgba(255, 255, 255, 0.7)' }}>
+                                        <span className="codicon codicon-new-file" style={{ color: '#4ec9b0' }} />
+                                        <span>{file}</span>
+                                    </div>
+                                )}
+                                <div style={{ display: 'flex', gap: '4px' }}>
+                                    <button
+                                        onClick={() => {
+                                            setEditingCreateText(file);
+                                            setEditingCreateIndex(i);
+                                        }}
+                                        style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', padding: '2px' }}
+                                    >
+                                        <span className="codicon codicon-edit" style={{ fontSize: '10px' }} />
+                                    </button>
+                                    <button
+                                        onClick={() => handleDeleteCreateItem(i)}
+                                        style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', padding: '2px' }}
+                                    >
+                                        <span className="codicon codicon-trash" style={{ fontSize: '10px' }} />
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })}
+                    {(!plan.filesToCreate || plan.filesToCreate.length === 0) && (
+                        <div style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.35)', fontStyle: 'italic' }}>No files listed for creation - add files above or use AI to generate the plan</div>
+                    )}
+                </div>
+            </div>
+
+            {/* Verification & Testing Criteria */}
             <div style={{
                 background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0.005) 100%)',
                 border: '1px solid rgba(255, 255, 255, 0.06)',

@@ -51,6 +51,11 @@ export function InteractivePlanEditor({ taskId }: InteractivePlanEditorProps) {
     const [newModifyText, setNewModifyText] = useState('');
     const [showAddModify, setShowAddModify] = useState(false);
 
+    const [editingCreateIndex, setEditingCreateIndex] = useState<number | null>(null);
+    const [editingCreateText, setEditingCreateText] = useState('');
+    const [newCreateText, setNewCreateText] = useState('');
+    const [showAddCreate, setShowAddCreate] = useState(false);
+
     const [editingCritIndex, setEditingCritIndex] = useState<number | null>(null);
     const [editingCritText, setEditingCritText] = useState('');
     const [newCritText, setNewCritText] = useState('');
@@ -272,6 +277,28 @@ export function InteractivePlanEditor({ taskId }: InteractivePlanEditorProps) {
         await savePlan({ ...plan, filesToModify: updated });
     };
 
+    const handleAddCreateItem = async () => {
+        if (!plan || !newCreateText.trim()) return;
+        const updated = [...(plan.filesToCreate || []), newCreateText.trim()];
+        await savePlan({ ...plan, filesToCreate: updated });
+        setNewCreateText('');
+        setShowAddCreate(false);
+    };
+
+    const handleSaveCreateItem = async (index: number) => {
+        if (!plan || !editingCreateText.trim()) return;
+        const updated = [...(plan.filesToCreate || [])];
+        updated[index] = editingCreateText.trim();
+        await savePlan({ ...plan, filesToCreate: updated });
+        setEditingCreateIndex(null);
+    };
+
+    const handleDeleteCreateItem = async (index: number) => {
+        if (!plan) return;
+        const updated = (plan.filesToCreate || []).filter((_, idx) => idx !== index);
+        await savePlan({ ...plan, filesToCreate: updated });
+    };
+
     const handleAddCritItem = async () => {
         if (!plan || !newCritText.trim()) return;
         const updated = [...(plan.verificationCriteria || []), newCritText.trim()];
@@ -480,6 +507,17 @@ export function InteractivePlanEditor({ taskId }: InteractivePlanEditorProps) {
                         setEditingModifyIndex={setEditingModifyIndex}
                         handleSaveModifyItem={handleSaveModifyItem}
                         handleDeleteModifyItem={handleDeleteModifyItem}
+                        showAddCreate={showAddCreate}
+                        setShowAddCreate={setShowAddCreate}
+                        newCreateText={newCreateText}
+                        setNewCreateText={setNewCreateText}
+                        handleAddCreateItem={handleAddCreateItem}
+                        editingCreateIndex={editingCreateIndex}
+                        editingCreateText={editingCreateText}
+                        setEditingCreateText={setEditingCreateText}
+                        setEditingCreateIndex={setEditingCreateIndex}
+                        handleSaveCreateItem={handleSaveCreateItem}
+                        handleDeleteCreateItem={handleDeleteCreateItem}
                         showAddCrit={showAddCrit}
                         setShowAddCrit={setShowAddCrit}
                         newCritText={newCritText}

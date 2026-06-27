@@ -1,6 +1,6 @@
 import path from 'path';
 import { app } from 'electron';
-import { createDatabase, createTables, migrateKeysToSecureStore, migrateTaskIds } from './schema';
+import { createDatabase, createTables, migrateKeysToSecureStore, migrateTaskIds, getStoredEmbeddingDim, recreateVecTable } from './schema';
 import {
     createConversation, getConversations, getConversationMessages, addChatMessage,
     updateChatMessage, truncateChatMessages, touchConversation, deleteConversation,
@@ -8,7 +8,7 @@ import {
 } from './conversations';
 import {
     getAgentRules, addAgentRule, updateAgentRule, deleteAgentRule, toggleAgentRule,
-    addAgent, getAgents, deleteAgent,
+     addAgent, getAgents, getAgentById, deleteAgent,
     addFlow, getFlows, deleteFlow, updateFlow,
     addCustomProvider, getCustomProviders, deleteCustomProvider,
     addCustomModel, getCustomModels, toggleCustomModelThinking, deleteCustomModel,
@@ -30,6 +30,9 @@ import {
 import {
     getCachedContext, setCachedContext, logCompression, getCompressionLog
 } from './contextCache';
+import {
+    addPipelinePreset, getPipelinePresets, getPipelinePreset, deletePipelinePreset, updatePipelinePreset
+} from './pipelines';
 
 export class DatabaseService {
     private db: any = null;
@@ -47,10 +50,22 @@ export class DatabaseService {
             createTables(this.db);
             migrateKeysToSecureStore(this.db);
             migrateTaskIds(this.db);
+            this.syncVecDimension();
             console.log(`Database initialized at ${this.dbPath}`);
         } catch (err) {
             console.error('Failed to initialize database:', err);
             throw err;
+        }
+    }
+
+    syncVecDimension(): void {
+        const { secureStore } = require('../secureStore');
+        const configDim = secureStore.getEmbeddingDimension();
+        if (configDim <= 0) return;
+        const storedDim = getStoredEmbeddingDim(this.db);
+        if (storedDim !== configDim) {
+            console.log(`[DatabaseService] Embedding dimension changed: ${storedDim || 'N/A'} → ${configDim}. Recreating vec table.`);
+            recreateVecTable(this.db, configDim);
         }
     }
 
@@ -128,6 +143,9 @@ export class DatabaseService {
     }
     getAgents() {
         return getAgents(this.db);
+    }
+    getAgent(id: number) {
+        return getAgentById(this.db, id);
     }
     deleteAgent(id: number) {
         return deleteAgent(this.db, id);
@@ -358,6 +376,23 @@ export class DatabaseService {
     }
     getCompressionLog(conversationId?: string) {
         return getCompressionLog(this.db, conversationId);
+    }
+
+    // ── Pipeline Presets ──
+    addPipelinePreset(name: string, config: object) {
+        return addPipelinePreset(this.db, name, config);
+    }
+    getPipelinePresets() {
+        return getPipelinePresets(this.db);
+    }
+    getPipelinePreset(id: number) {
+        return getPipelinePreset(this.db, id);
+    }
+    deletePipelinePreset(id: number) {
+        return deletePipelinePreset(this.db, id);
+    }
+    updatePipelinePreset(id: number, name: string, config: object) {
+        return updatePipelinePreset(this.db, id, name, config);
     }
 }
 

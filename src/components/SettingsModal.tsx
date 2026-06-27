@@ -9,13 +9,15 @@ import { SettingsUsageTab } from './SettingsUsageTab';
 import { SettingsPerformanceTab } from './SettingsPerformanceTab';
 import { SettingsFinetuningTab } from './SettingsFinetuningTab';
 import { SettingsLocalModels } from './SettingsLocalModels';
+import { SettingsEmbeddingTab } from './SettingsEmbeddingTab';
+import { SettingsPipelineTab } from './SettingsPipelineTab';
 
 interface SettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
 }
 
-type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'openclaw' | 'local' | 'usage' | 'performance' | 'finetuning';
+type SettingsTab = 'general' | 'models' | 'embeddings' | 'pipeline' | 'agent' | 'rules' | 'openclaw' | 'local' | 'usage' | 'performance' | 'finetuning';
 
 const getIpc = () => window.ipcRenderer;
 
@@ -76,6 +78,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
     // Fine-Tuned Models
     const [fineTunedModels, setFineTunedModels] = useState<any[]>([]);
+
+    // Embedding Config
+    const [embeddingProvider, setEmbeddingProvider] = useState('openai');
+    const [embeddingModel, setEmbeddingModel] = useState('text-embedding-3-small');
+    const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState('');
+    const [embeddingDimension, setEmbeddingDimension] = useState(0);
 
     // Enterprise Cloud Credentials
     const [awsAccessKeyId, setAwsAccessKeyId] = useState('');
@@ -142,6 +150,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 setVertexLocation(settings.vertexLocation || 'us-central1');
                 setAzureApiBase(settings.azureApiBase || '');
                 setAzureApiVersion(settings.azureApiVersion || '2024-02-01');
+
+                setEmbeddingProvider(settings.embeddingProvider || settings.activeProvider || 'openai');
+                setEmbeddingModel(settings.embeddingModel || (settings.embeddingProvider === 'openrouter' ? 'openai/text-embedding-3-small' : 'text-embedding-3-small'));
+                setEmbeddingBaseUrl(settings.embeddingBaseUrl || '');
+                setEmbeddingDimension(settings.embeddingDimension || 0);
             }
 
             // Fetch stored encrypted keys
@@ -339,7 +352,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         });
 
         // Save general & agent configuration (including cloud settings)
-        await getIpc().invoke('save-general-settings', {
+        const generalSettings: Record<string, any> = {
             theme,
             fontSize: Number(fontSize),
             activeProvider: modelProvider,
@@ -357,8 +370,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             vertexProject,
             vertexLocation,
             azureApiBase,
-            azureApiVersion
-        });
+            azureApiVersion,
+
+            embeddingProvider,
+            embeddingModel,
+            embeddingBaseUrl,
+        };
+        if (embeddingDimension > 0) {
+            generalSettings.embeddingDimension = embeddingDimension;
+        }
+        await getIpc().invoke('save-general-settings', generalSettings);
 
         // Orchestrate Proxy Process Lifecycle
         if (enableLiteLLMProxy) {
@@ -422,7 +443,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         Settings
                     </div>
                     {(() => {
-                        const baseTabs = ['general', 'models', 'agent', 'rules', 'openclaw', 'usage', 'performance', 'finetuning', 'local'];
+                        const baseTabs = ['general', 'models', 'embeddings', 'pipeline', 'agent', 'rules', 'openclaw', 'usage', 'performance', 'finetuning', 'local'];
                         return baseTabs.map(tab => (
                             <div
                                 key={tab}
@@ -440,9 +461,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     gap: 8,
                                 }}
                             >
-                                <span className={`codicon codicon-${tab === 'general' ? 'gear' : tab === 'models' ? 'circuit-board' : tab === 'agent' ? 'hubot' : tab === 'rules' ? 'checklist' : tab === 'openclaw' ? 'server-process' : tab === 'local' ? 'server-environment' : tab === 'usage' ? 'graph-line' : tab === 'performance' ? 'dashboard' : tab === 'finetuning' ? 'wand' : 'gear'}`} style={{ fontSize: 14 }} />
+                                <span className={`codicon codicon-${tab === 'general' ? 'gear' : tab === 'models' ? 'circuit-board' : tab === 'embeddings' ? 'database' : tab === 'pipeline' ? 'debug-step-over' : tab === 'agent' ? 'hubot' : tab === 'rules' ? 'checklist' : tab === 'openclaw' ? 'server-process' : tab === 'local' ? 'server-environment' : tab === 'usage' ? 'graph-line' : tab === 'performance' ? 'dashboard' : tab === 'finetuning' ? 'wand' : 'gear'}`} style={{ fontSize: 14 }} />
                                 <span style={{ flex: 1, textAlign: 'left' }}>
-                                    {tab === 'openclaw' ? 'OpenClaw' : tab === 'local' ? 'Local LLMs (Exp)' : tab === 'usage' ? 'Usage & Costs' : tab === 'performance' ? 'Performance' : tab === 'finetuning' ? 'Fine-Tune (Exp)' : tab === 'rules' ? 'Rules' : tab}
+                                    {tab === 'openclaw' ? 'OpenClaw' : tab === 'local' ? 'Local LLMs (Exp)' : tab === 'usage' ? 'Usage & Costs' : tab === 'performance' ? 'Performance' : tab === 'finetuning' ? 'Fine-Tune (Exp)' : tab === 'rules' ? 'Rules' : tab === 'embeddings' ? 'Embeddings' : tab === 'pipeline' ? 'Pipeline' : tab}
                                 </span>
                                 {tab === 'local' && isLocalServerRunning && (
                                     <span style={{
@@ -532,6 +553,19 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             isProxyRunning={isProxyRunning} setIsProxyRunning={setIsProxyRunning}
                             fineTunedModels={fineTunedModels} setFineTunedModels={setFineTunedModels}
                         />
+                    )}
+
+                    {activeTab === 'embeddings' && (
+                        <SettingsEmbeddingTab
+                            embeddingProvider={embeddingProvider} setEmbeddingProvider={setEmbeddingProvider}
+                            embeddingModel={embeddingModel} setEmbeddingModel={setEmbeddingModel}
+                            embeddingBaseUrl={embeddingBaseUrl} setEmbeddingBaseUrl={setEmbeddingBaseUrl}
+                            embeddingDimension={embeddingDimension}
+                        />
+                    )}
+
+                    {activeTab === 'pipeline' && (
+                        <SettingsPipelineTab />
                     )}
 
                     {activeTab === 'agent' && (

@@ -1,12 +1,28 @@
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
 };
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
 };
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // tests/unit/taxonomy/electron-mock.js
 var safeStorage, app;
@@ -47,39 +63,110 @@ var init_electron_store_mock = __esm({
 });
 
 // electron/secureStore.ts
+var secureStore_exports = {};
+__export(secureStore_exports, {
+  listEncryptedKeys: () => listEncryptedKeys,
+  secureStore: () => secureStore,
+  store: () => store
+});
 import console3 from "console";
+import * as crypto from "crypto";
+import * as os from "os";
+function deriveFallbackKey() {
+  if (fallbackKey) return fallbackKey;
+  const interfaces = os.networkInterfaces() || {};
+  const macs = [];
+  for (const iface of Object.values(interfaces)) {
+    if (iface) {
+      for (const addr of iface) {
+        if (!addr.internal && addr.mac && addr.mac !== "00:00:00:00:00:00") {
+          macs.push(addr.mac);
+        }
+      }
+    }
+  }
+  macs.sort();
+  const fingerprint = `${os.hostname()}|${macs.join("|")}|cursor-replacer-aes-fallback`;
+  const salt = crypto.createHash(AES_DIGEST).update(fingerprint).digest();
+  fallbackKey = crypto.pbkdf2Sync(fingerprint, salt, AES_ITERATIONS, AES_KEY_LENGTH, AES_DIGEST);
+  return fallbackKey;
+}
+function aesEncrypt(value) {
+  const key = deriveFallbackKey();
+  const iv = crypto.randomBytes(AES_IV_LENGTH);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(value, "utf-8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${AES_PREFIX}${iv.toString("base64")}:${encrypted.toString("base64")}:${tag.toString("base64")}`;
+}
+function aesDecrypt(encoded) {
+  const parts = encoded.slice(AES_PREFIX.length).split(":");
+  if (parts.length !== 3) throw new Error("Invalid AES encrypted value format");
+  const key = deriveFallbackKey();
+  const iv = Buffer.from(parts[0], "base64");
+  const encrypted = Buffer.from(parts[1], "base64");
+  const tag = Buffer.from(parts[2], "base64");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  return decipher.update(encrypted) + decipher.final("utf-8");
+}
+function isAesEncrypted(value) {
+  return value.startsWith(AES_PREFIX);
+}
 function encryptValue(value) {
   console3.assert(typeof value === "string", "Value to encrypt must be a string");
   if (!safeStorage.isEncryptionAvailable()) {
-    console3.warn("[SecureStore] Encryption not available, storing as-is");
-    return value;
+    return aesEncrypt(value);
   }
   const buffer = safeStorage.encryptString(value);
   return buffer.toString("base64");
 }
 function decryptValue(encrypted) {
-  console3.assert(typeof encrypted === "string", "Encrypted value must be a base64 string");
-  if (!safeStorage.isEncryptionAvailable()) {
-    console3.warn("[SecureStore] Encryption not available, returning as-is");
-    return encrypted;
+  console3.assert(typeof encrypted === "string", "Encrypted value must be a string");
+  if (!encrypted) throw new Error("Empty encrypted value");
+  if (isAesEncrypted(encrypted)) {
+    return aesDecrypt(encrypted);
   }
-  const buffer = Buffer.from(encrypted, "base64");
-  return safeStorage.decryptString(buffer);
+  if (safeStorage.isEncryptionAvailable()) {
+    const buffer = Buffer.from(encrypted, "base64");
+    return safeStorage.decryptString(buffer);
+  }
+  console3.warn("[SecureStore] Decrypting legacy plaintext value \u2014 consider re-saving after safeStorage becomes available");
+  return encrypted;
 }
 function checkEncryptionGuard() {
-  if (!safeStorage.isEncryptionAvailable()) {
-    const isDev = !app.isPackaged || process.env.NODE_ENV === "development";
-    if (isDev) {
-      throw new Error("[SecureStore] OS-level encryption is not available in development.");
-    }
-  }
 }
-var store, secureStore, originalSetApiKey, originalSetGitHubToken, originalSetHuggingFaceToken;
+function listEncryptedKeys() {
+  const knownProviders = ["openai", "anthropic", "gemini", "openrouter", "ollama", "github", "huggingface"];
+  const encryptionType = safeStorage.isEncryptionAvailable() ? "os-level" : "aes-256-gcm";
+  return knownProviders.map((id) => {
+    let hasKey = false;
+    if (id === "github") {
+      hasKey = !!secureStore.getGitHubToken();
+    } else if (id === "huggingface") {
+      hasKey = !!secureStore.getHuggingFaceToken();
+    } else {
+      hasKey = !!secureStore.getApiKey(id);
+    }
+    return {
+      providerId: id,
+      hasKey,
+      encryptionType
+    };
+  });
+}
+var AES_PREFIX, AES_IV_LENGTH, AES_KEY_LENGTH, AES_ITERATIONS, AES_DIGEST, fallbackKey, store, secureStore;
 var init_secureStore = __esm({
   "electron/secureStore.ts"() {
     "use strict";
     init_electron_mock();
     init_electron_store_mock();
+    AES_PREFIX = "$aes$";
+    AES_IV_LENGTH = 16;
+    AES_KEY_LENGTH = 32;
+    AES_ITERATIONS = 1e5;
+    AES_DIGEST = "sha256";
+    fallbackKey = null;
     store = new ElectronStore({
       name: "secure-settings",
       // Isolate from legacy config.json
@@ -100,7 +187,12 @@ var init_secureStore = __esm({
         vertexLocation: "us-central1",
         azureApiBase: "",
         azureApiVersion: "2024-02-01",
-        activeWorkspacePath: ""
+        activeWorkspacePath: "",
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingBaseUrl: "",
+        embeddingDimension: 0,
+        pipelineEnabled: false
       }
     });
     secureStore = {
@@ -282,6 +374,62 @@ var init_secureStore = __esm({
         console3.assert(typeof pathStr === "string", "Workspace path must be a string");
         store.set("activeWorkspacePath", pathStr);
       },
+      getPipelineConfig() {
+        return store.get("pipelineConfig");
+      },
+      setPipelineConfig(config) {
+        console3.assert(config && typeof config === "object", "Pipeline config must be an object");
+        store.set("pipelineConfig", config);
+      },
+      deletePipelineConfig() {
+        store.delete("pipelineConfig");
+      },
+      // Embedding config getters & setters
+      getEmbeddingProvider() {
+        return store.get("embeddingProvider") || "openai";
+      },
+      setEmbeddingProvider(provider) {
+        console3.assert(typeof provider === "string", "Embedding provider must be a string");
+        store.set("embeddingProvider", provider);
+      },
+      getEmbeddingModel() {
+        return store.get("embeddingModel") || "text-embedding-3-small";
+      },
+      setEmbeddingModel(model) {
+        console3.assert(typeof model === "string", "Embedding model must be a string");
+        store.set("embeddingModel", model);
+      },
+      getEmbeddingBaseUrl() {
+        return store.get("embeddingBaseUrl") || "";
+      },
+      setEmbeddingBaseUrl(url) {
+        console3.assert(typeof url === "string", "Embedding base URL must be a string");
+        store.set("embeddingBaseUrl", url);
+      },
+      getEmbeddingConfig() {
+        return {
+          provider: this.getEmbeddingProvider(),
+          model: this.getEmbeddingModel(),
+          baseUrl: this.getEmbeddingBaseUrl(),
+          dimension: this.getEmbeddingDimension()
+        };
+      },
+      getEmbeddingDimension() {
+        return store.get("embeddingDimension") || 0;
+      },
+      setEmbeddingDimension(dim) {
+        console3.assert(typeof dim === "number" && dim > 0, "Embedding dimension must be a positive number");
+        const current = this.getEmbeddingDimension();
+        if (current !== dim) {
+          store.set("embeddingDimension", dim);
+        }
+      },
+      getPipelineEnabled() {
+        return !!store.get("pipelineEnabled");
+      },
+      setPipelineEnabled(enabled) {
+        store.set("pipelineEnabled", enabled);
+      },
       getHardwareSpec() {
         return store.get("hardwareSpec");
       },
@@ -313,25 +461,21 @@ var init_secureStore = __esm({
         store.delete(`customProvider_${providerId}_encrypted`);
       }
     };
-    originalSetApiKey = secureStore.setApiKey;
-    secureStore.setApiKey = function(providerId, key) {
-      checkEncryptionGuard();
-      originalSetApiKey.call(secureStore, providerId, key);
-    };
-    originalSetGitHubToken = secureStore.setGitHubToken;
-    secureStore.setGitHubToken = function(token) {
-      checkEncryptionGuard();
-      originalSetGitHubToken.call(secureStore, token);
-    };
-    originalSetHuggingFaceToken = secureStore.setHuggingFaceToken;
-    secureStore.setHuggingFaceToken = function(token) {
-      checkEncryptionGuard();
-      originalSetHuggingFaceToken.call(secureStore, token);
-    };
   }
 });
 
 // electron/db/schema.ts
+var schema_exports = {};
+__export(schema_exports, {
+  createDatabase: () => createDatabase,
+  createTables: () => createTables,
+  createVecTable: () => createVecTable,
+  getStoredEmbeddingDim: () => getStoredEmbeddingDim,
+  migrateKeysToSecureStore: () => migrateKeysToSecureStore,
+  migrateTaskIds: () => migrateTaskIds,
+  recreateVecTable: () => recreateVecTable,
+  setStoredEmbeddingDim: () => setStoredEmbeddingDim
+});
 import path3 from "path";
 import { createRequire } from "module";
 function createDatabase(dbPath) {
@@ -352,6 +496,14 @@ function createDatabase(dbPath) {
 }
 function createTables(db) {
   if (!db) return;
+  db.prepare(`
+        CREATE TABLE IF NOT EXISTS pipeline_presets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            config TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    `).run();
   db.prepare(`
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -571,12 +723,8 @@ function createTables(db) {
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     `).run();
-  db.prepare(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS vec_knowledge USING vec0(
-            chunk_id INTEGER PRIMARY KEY,
-            embedding float[1536] distance_metric=cosine
-        )
-    `).run();
+  const dim = getStoredEmbeddingDim(db) || 1536;
+  createVecTable(db, dim);
   db.prepare(`
         CREATE TABLE IF NOT EXISTS task_docs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -809,6 +957,38 @@ function migrateTaskIds(db) {
   } catch (err) {
     console.error("[DatabaseService] Task ID migration failed:", err);
   }
+}
+function getStoredEmbeddingDim(db) {
+  if (!db) return 0;
+  try {
+    const row = db.prepare(`SELECT value FROM app_config WHERE key = 'embedding_dim'`).get();
+    return row ? Number(row.value) : 0;
+  } catch {
+    return 0;
+  }
+}
+function setStoredEmbeddingDim(db, dim) {
+  if (!db) return;
+  db.prepare(`
+        CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT)
+    `).run();
+  db.prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES ('embedding_dim', ?)`).run(String(dim));
+}
+function createVecTable(db, dim) {
+  if (!db) return;
+  db.prepare(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS vec_knowledge USING vec0(
+            chunk_id INTEGER PRIMARY KEY,
+            embedding float[${dim}] distance_metric=cosine
+        )
+    `).run();
+}
+function recreateVecTable(db, dim) {
+  if (!db) return;
+  db.prepare(`DROP TABLE IF EXISTS vec_knowledge`).run();
+  createVecTable(db, dim);
+  setStoredEmbeddingDim(db, dim);
+  console.log(`[DatabaseService] vec_knowledge recreated with dimension ${dim}`);
 }
 var require2, Database, sqliteVec;
 var init_schema = __esm({
@@ -1541,17 +1721,23 @@ function addKnowledgeChunk(db, sourceType, sourceId, content, metadata, tokenCou
     return chunkId;
   });
   let floatArray;
+  const dim = getEmbeddingDbDim(db);
   if (embedding) {
     floatArray = embedding instanceof Float32Array ? embedding : new Float32Array(embedding);
-    checkArgs(floatArray.length === 1536, "Vector embedding must have exactly 1536 dimensions");
+    checkArgs(floatArray.length === dim, `Vector embedding must have exactly ${dim} dimensions (got ${floatArray.length})`);
   }
   return runTx(floatArray);
+}
+function getEmbeddingDbDim(db) {
+  const { getStoredEmbeddingDim: getStoredEmbeddingDim2 } = (init_schema(), __toCommonJS(schema_exports));
+  return getStoredEmbeddingDim2(db) || 1536;
 }
 function searchKnowledge(db, queryEmbedding, limit = 10) {
   checkArgs(limit > 0, "Limit must be positive");
   if (!db) return [];
+  const dim = getEmbeddingDbDim(db);
   const floatArray = queryEmbedding instanceof Float32Array ? queryEmbedding : new Float32Array(queryEmbedding);
-  checkArgs(floatArray.length === 1536, "Query vector must have exactly 1536 dimensions");
+  checkArgs(floatArray.length === dim, `Query vector must have exactly ${dim} dimensions (got ${floatArray.length})`);
   const stmt = db.prepare(`
         SELECT 
             k.id,
@@ -1745,6 +1931,30 @@ var init_contextCache = __esm({
   }
 });
 
+// electron/db/pipelines.ts
+function addPipelinePreset(db, name, config) {
+  const stmt = db.prepare("INSERT INTO pipeline_presets (name, config) VALUES (?, ?)");
+  const result = stmt.run(name, JSON.stringify(config));
+  return { id: result.lastInsertRowid, name, config: JSON.stringify(config), created_at: (/* @__PURE__ */ new Date()).toISOString() };
+}
+function getPipelinePresets(db) {
+  return db.prepare("SELECT id, name, config, created_at FROM pipeline_presets ORDER BY name").all();
+}
+function getPipelinePreset(db, id) {
+  return db.prepare("SELECT id, name, config, created_at FROM pipeline_presets WHERE id = ?").get(id);
+}
+function deletePipelinePreset(db, id) {
+  db.prepare("DELETE FROM pipeline_presets WHERE id = ?").run(id);
+}
+function updatePipelinePreset(db, id, name, config) {
+  db.prepare("UPDATE pipeline_presets SET name = ?, config = ? WHERE id = ?").run(name, JSON.stringify(config), id);
+}
+var init_pipelines = __esm({
+  "electron/db/pipelines.ts"() {
+    "use strict";
+  }
+});
+
 // electron/db/index.ts
 var db_exports = {};
 __export(db_exports, {
@@ -1762,6 +1972,7 @@ var init_db = __esm({
     init_agents();
     init_settings();
     init_contextCache();
+    init_pipelines();
     DatabaseService = class {
       db = null;
       dbPath;
@@ -1776,10 +1987,21 @@ var init_db = __esm({
           createTables(this.db);
           migrateKeysToSecureStore(this.db);
           migrateTaskIds(this.db);
+          this.syncVecDimension();
           console.log(`Database initialized at ${this.dbPath}`);
         } catch (err) {
           console.error("Failed to initialize database:", err);
           throw err;
+        }
+      }
+      syncVecDimension() {
+        const { secureStore: secureStore2 } = (init_secureStore(), __toCommonJS(secureStore_exports));
+        const configDim = secureStore2.getEmbeddingDimension();
+        if (configDim <= 0) return;
+        const storedDim = getStoredEmbeddingDim(this.db);
+        if (storedDim !== configDim) {
+          console.log(`[DatabaseService] Embedding dimension changed: ${storedDim || "N/A"} \u2192 ${configDim}. Recreating vec table.`);
+          recreateVecTable(this.db, configDim);
         }
       }
       save() {
@@ -2059,6 +2281,22 @@ var init_db = __esm({
       getCompressionLog(conversationId) {
         return getCompressionLog(this.db, conversationId);
       }
+      // ── Pipeline Presets ──
+      addPipelinePreset(name, config) {
+        return addPipelinePreset(this.db, name, config);
+      }
+      getPipelinePresets() {
+        return getPipelinePresets(this.db);
+      }
+      getPipelinePreset(id) {
+        return getPipelinePreset(this.db, id);
+      }
+      deletePipelinePreset(id) {
+        return deletePipelinePreset(this.db, id);
+      }
+      updatePipelinePreset(id, name, config) {
+        return updatePipelinePreset(this.db, id, name, config);
+      }
     };
     dbService = new DatabaseService();
   }
@@ -2067,11 +2305,11 @@ var init_db = __esm({
 // tests/unit/changes/runTests.ts
 import path8 from "path";
 import fs4 from "fs";
-import os2 from "os";
+import os3 from "os";
 
 // electron/ipcHandlers/changes.ts
 import path7 from "path";
-import os from "os";
+import os2 from "os";
 import { createRequire as createRequire2 } from "module";
 
 // electron/services/PendingModificationsService.ts
@@ -2203,7 +2441,7 @@ var PendingModificationsService = class {
 init_db();
 import * as fs2 from "fs";
 import * as path6 from "path";
-import * as crypto from "crypto";
+import * as crypto2 from "crypto";
 
 // electron/services/PathGuard.ts
 import * as path5 from "path";
@@ -2271,7 +2509,7 @@ var SnapshotService = class {
       if (absolutePath && fs2.existsSync(absolutePath)) {
         try {
           const content = fs2.readFileSync(absolutePath, "utf-8");
-          const hash = crypto.createHash("sha256").update(content).digest("hex");
+          const hash = crypto2.createHash("sha256").update(content).digest("hex");
           dbService.addBlob(hash, content);
           dbService.addSnapshotFile(snapshotId, absolutePath, hash);
           console4.log(`[SnapshotService] Snapshotted file: ${file} (resolved: ${absolutePath}, hash: ${hash.substring(0, 8)})`);
@@ -2434,7 +2672,7 @@ async function getWorkspaceRoot(rootPath) {
 }
 async function isGitRepo(cwd) {
   const normalized = normalizePath(cwd);
-  const tmpDir = normalizePath(os.tmpdir());
+  const tmpDir = normalizePath(os2.tmpdir());
   if (normalized === tmpDir || normalized.startsWith(tmpDir + path7.sep)) {
     return false;
   }
@@ -2861,7 +3099,7 @@ async function run() {
   let content = await getContentHandler(null, "src/components/TopBar.tsx", "pending", 101);
   assertEqual(content.originalContent, "old TopBar content", "original content returned correctly");
   assertEqual(content.proposedContent, "new TopBar content", "proposed content returned correctly");
-  const tempNonGitWorkspace = os2.tmpdir();
+  const tempNonGitWorkspace = os3.tmpdir();
   secureStore.setActiveWorkspacePath(tempNonGitWorkspace);
   const testFileRelative = "changes_test_file.txt";
   const testFileAbsolute = path8.resolve(tempNonGitWorkspace, testFileRelative);

@@ -3,6 +3,7 @@ import path from 'path';
 import { createRequire } from 'module';
 import { PathGuard } from '../services/PathGuard';
 import { CodeAnalysisService } from '../services/CodeAnalysisService';
+import { auditLogger } from '../services/AuditLogger';
 import { checkArgs } from '../../src/helpers/invariant';
 import type { IpcHandlerContext } from './index';
 
@@ -94,6 +95,7 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
     });
 
     ipcMain.handle('write-file', async (_event, filePath, content) => {
+        auditLogger.log('write-file', [filePath]);
         if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('Invalid file path');
         if (typeof content !== 'string') throw new Error('Invalid content');
         const resolvedPath = resolveWorkspacePath(filePath, context);
@@ -139,6 +141,7 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
     });
 
     ipcMain.handle('delete-path', async (_event, targetPath) => {
+        auditLogger.log('delete-path', [targetPath]);
         if (typeof targetPath !== 'string') throw new Error('Invalid path argument');
         const resolvedPath = resolveWorkspacePath(targetPath, context);
         if (!PathGuard.isContained(resolvedPath)) {
@@ -159,6 +162,7 @@ export function registerFileSystemHandlers(ipcMain: Electron.IpcMain, context: I
     });
 
     ipcMain.handle('rename-path', async (_event, oldPath, newPath) => {
+        auditLogger.log('rename-path', [oldPath, newPath]);
         if (typeof oldPath !== 'string' || typeof newPath !== 'string') throw new Error('Invalid path arguments');
         const resolvedOldPath = resolveWorkspacePath(oldPath, context);
         const resolvedNewPath = resolveWorkspacePath(newPath, context);

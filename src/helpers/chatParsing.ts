@@ -2,7 +2,7 @@ import { buildPlanDisplayMessage, extractExecutionPlanFromText } from '../utils/
 import { getNumericTaskId } from '../utils/taskId';
 
 export interface ActivityTimelineItem {
-    type: 'search' | 'analyze' | 'edit' | 'plan';
+    type: 'search' | 'analyze' | 'edit' | 'plan' | 'create';
     query?: string;
     resultsCount?: number;
     filePath?: string;
@@ -26,6 +26,7 @@ export interface AssistantActivity {
     duration?: string;
     filesRead: string[];
     filesEdited: string[];
+    filesCreated?: string[];
     thoughts?: string;
     planSteps?: ArchitecturalThinkingStep[];
     activities?: ActivityTimelineItem[];
@@ -206,6 +207,7 @@ export function parseAssistantResponse(
             duration: (parsedPlan.duration as string) || activity?.duration,
             filesRead: (parsedPlan.filesRead as string[]) || (parsedPlan.files as string[]) || activity?.filesRead || [],
             filesEdited: (parsedPlan.filesToModify as string[]) || (parsedPlan.filesEdited as string[]) || activity?.filesEdited || [],
+            filesCreated: (parsedPlan.filesToCreate as string[]) || activity?.filesCreated || [],
             thoughts: (parsedPlan.expectedOutcome as string) || activity?.thoughts || '',
             planSteps: (parsedPlan.steps as ArchitecturalThinkingStep[]) || activity?.planSteps || []
         };

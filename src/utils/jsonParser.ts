@@ -174,6 +174,9 @@ export function mergeExecutionPlans(objects: Record<string, unknown>[]): Record<
         if (Array.isArray(obj.filesToModify)) {
             merged.filesToModify = Array.from(new Set([...((merged.filesToModify as string[]) || []), ...(obj.filesToModify as string[])]));
         }
+        if (Array.isArray(obj.filesToCreate)) {
+            merged.filesToCreate = Array.from(new Set([...((merged.filesToCreate as string[]) || []), ...(obj.filesToCreate as string[])]));
+        }
         if (Array.isArray(obj.verificationCriteria)) {
             merged.verificationCriteria = Array.from(new Set([...((merged.verificationCriteria as string[]) || []), ...(obj.verificationCriteria as string[])]));
         }
@@ -340,7 +343,8 @@ export function isExecutionPlanLike(obj: unknown): obj is Record<string, unknown
         plan.tradeoffs ||
         plan.consequences ||
         plan.filesRead ||
-        plan.filesToModify
+        plan.filesToModify ||
+        plan.filesToCreate
     );
 }
 

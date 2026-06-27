@@ -46,9 +46,7 @@ export class OpenClawService {
 
         return new Promise((resolve) => {
             try {
-                const child = spawn('openclaw', ['--version'], {
-                    shell: true
-                });
+                const child = spawn('openclaw', ['--version']);
 
                 let output = '';
                 child.stdout?.on('data', (data) => {
@@ -98,8 +96,7 @@ export class OpenClawService {
             // Typical command: openclaw gateway start --port 3037 (or similar, depending on configuration)
             // We use system environment for PATH resolution
             this.gatewayProcess = spawn('openclaw', ['gateway', 'start', '--port', port.toString()], {
-                env: { ...process.env },
-                shell: true
+                env: { ...process.env }
             });
 
             this.gatewayProcess.stdout?.on('data', (data) => {
@@ -136,7 +133,7 @@ export class OpenClawService {
             this.addLog('Stopping OpenClaw Gateway...');
             try {
                 if (process.platform === 'win32') {
-                    spawn('taskkill', ['/pid', this.gatewayProcess.pid!.toString(), '/f', '/t'], { shell: true });
+                    spawn('taskkill', ['/pid', this.gatewayProcess.pid!.toString(), '/f', '/t']);
                 } else {
                     this.gatewayProcess.kill('SIGINT');
                 }
@@ -162,9 +159,7 @@ export class OpenClawService {
         this.addLog('Running diagnostics (openclaw doctor)...');
         return new Promise((resolve) => {
             try {
-                const child = spawn('openclaw', ['doctor'], {
-                    shell: true
-                });
+                const child = spawn('openclaw', ['doctor']);
 
                 let output = '';
                 child.stdout?.on('data', (data) => {
@@ -192,9 +187,7 @@ export class OpenClawService {
         this.addLog(`Approving pairing request for channel "${channel}" with code "${code}"...`);
         return new Promise((resolve) => {
             try {
-                const child = spawn('openclaw', ['pairing', 'approve', channel, code], {
-                    shell: true
-                });
+                const child = spawn('openclaw', ['pairing', 'approve', channel, code]);
 
                 let output = '';
                 child.stdout?.on('data', (data) => {
@@ -230,9 +223,7 @@ export class OpenClawService {
         this.addLog(`Invoking agent with message "${message.substring(0, 30)}..." and thinking depth "${thinkingDepth}"`);
         try {
             // CLI command syntax: openclaw agent --message "msg" --thinking depth
-            const child = spawn('openclaw', ['agent', '--message', message, '--thinking', thinkingDepth], {
-                shell: true
-            });
+            const child = spawn('openclaw', ['agent', '--message', message, '--thinking', thinkingDepth]);
 
             child.stdout?.on('data', (data) => {
                 onChunk(data.toString());

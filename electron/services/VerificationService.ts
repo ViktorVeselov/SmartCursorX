@@ -1,5 +1,6 @@
 import { dbService } from '../db';
-import { aiService } from './AIService';
+import { AIService } from './AIService';
+import { pipelineService } from './PipelineService';
 import { DiffVerificationService } from './DiffVerificationService';
 import console from 'console';
 
@@ -24,6 +25,10 @@ export interface VerificationResult {
 }
 
 export class VerificationService {
+    private static get judgeSvc() {
+        return AIService.getForProvider(pipelineService.getProviderFor('verification_judge'));
+    }
+
     /**
      * Executes verification pipelines sequentially matching the three-tier taxonomy constraints.
      * Integrates Tier 0 fully-deterministic static analysis before standard pattern/LLM checks.
@@ -44,7 +49,7 @@ export class VerificationService {
         if (planRow) {
             try {
                 const plan = JSON.parse(planRow.plan_json);
-                modifiedFiles = plan.filesToModify || [];
+                modifiedFiles = [...new Set([...(plan.filesToModify || []), ...(plan.filesToCreate || [])])];
             } catch (e) {
                 console.error('[VerificationService] Failed to parse plan JSON for verification:', e);
             }
@@ -132,7 +137,7 @@ export class VerificationService {
                     details = 'Required verification pattern match not found';
                 }
             } else if (rule.rule_type === 'llm_judge') {
-                if (aiService.isActive()) {
+                if (this.judgeSvc.isActive()) {
                     try {
                         const prompt = `Rate the following content on a scale of 0 to 1 based on the rubric: "${rule.config.rubric}".
 Respond with a JSON structure containing: {"score": 0.8, "explanation": "reasons..."}.
@@ -140,18 +145,22 @@ Respond with a JSON structure containing: {"score": 0.8, "explanation": "reasons
 Content to verify:
 "${output.content}"`;
 
-                        const response = await aiService.chat([
+                        const response = await this.judgeSvc.chat([
                             { role: 'user', content: prompt }
-                        ], { temperature: 0.0, responseSchema: {
-                            type: 'object',
-                            title: 'VerificationScore',
-                            properties: {
-                                score: { type: 'number', minimum: 0, maximum: 1 },
-                                explanation: { type: 'string' }
-                            },
-                            required: ['score', 'explanation'],
-                            additionalProperties: false
-                        } }) as import('./AIService').ChatResponse;
+                        ], {
+                            temperature: 0.0,
+                            model: pipelineService.getModelFor('verification_judge'),
+                            responseSchema: {
+                                type: 'object',
+                                title: 'VerificationScore',
+                                properties: {
+                                    score: { type: 'number', minimum: 0, maximum: 1 },
+                                    explanation: { type: 'string' }
+                                },
+                                required: ['score', 'explanation'],
+                                additionalProperties: false
+                            }
+                        }) as import('./AIService').ChatResponse;
 
                         const data = JSON.parse(response.text);
                         score = Number(data.score || 0.0);
@@ -302,7 +311,7 @@ Content to verify:
             .join('\n');
 
         // LLM Judge call (same model as execution)
-        if (!aiService.isActive()) return 'skipped';
+        if (!this.judgeSvc.isActive()) return 'skipped';
 
         try {
             const prompt = `You are a plan-adherence verification judge.
@@ -316,10 +325,11 @@ Be strict: partial implementations or missing mitigations should lower the score
 Code output to verify:
 "${outputContent.substring(0, 8000)}"`;
 
-            const response = await aiService.chat([
+            const response = await this.judgeSvc.chat([
                 { role: 'user', content: prompt }
             ], {
                 temperature: 0.0,
+                model: pipelineService.getModelFor('verification_judge'),
                 responseSchema: {
                     type: 'object',
                     title: 'VerificationScore',

@@ -170,6 +170,7 @@ export function useConversations(
                     duration: '0.0',
                     filesRead: [],
                     filesToModify: [],
+                    filesToCreate: [],
                     expectedOutcome: ''
                 };
                 await window.ipcRenderer.invoke('plan:save', taskId, JSON.stringify(emptyPlan));

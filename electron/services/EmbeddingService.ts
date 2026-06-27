@@ -12,23 +12,66 @@ export interface ChunkResult {
     distance: number;
 }
 
+const KNOWN_EMBEDDING_DIMS: Record<string, number> = {
+    'text-embedding-3-small': 1536,
+    'text-embedding-3-large': 3072,
+    'text-embedding-ada-002': 1536,
+    'gemini-embedding-001': 768,
+    'zen-embedding-v1': 768,
+    'nomic-embed-text': 768,
+    'all-minilm': 384,
+    'mxbai-embed-large': 1024,
+    'bge-m3': 1024,
+    'snowflake-arctic-embed': 1024,
+    'llama': 4096,
+    'bert': 768,
+};
+
+const DEFAULT_EMBEDDING_DIM = 1536;
+
 export class EmbeddingService {
+    static resolveEmbeddingDimension(modelName: string): number {
+        if (KNOWN_EMBEDDING_DIMS[modelName]) return KNOWN_EMBEDDING_DIMS[modelName];
+        const baseName = modelName.split(':')[0].split('/').pop() || modelName;
+        const lowerBase = baseName.toLowerCase();
+        const matched = Object.keys(KNOWN_EMBEDDING_DIMS).find(k => lowerBase.startsWith(k.toLowerCase()));
+        return matched ? KNOWN_EMBEDDING_DIMS[matched] : DEFAULT_EMBEDDING_DIM;
+    }
+
+    static getEffectiveDimension(): number {
+        const config = secureStore.getEmbeddingConfig();
+        const storedDim = secureStore.getEmbeddingDimension();
+        if (storedDim > 0) return storedDim;
+        const resolved = this.resolveEmbeddingDimension(config.model);
+        secureStore.setEmbeddingDimension(resolved);
+        return resolved;
+    }
+
     /**
-     * Generates a 1536-dimension float vector embedding using the active provider.
-     * Falls back to a deterministic TF-IDF/frequency vector if no API key is configured.
+     * Generates a float vector embedding using the configured provider/model.
+     * Falls back to a zero vector if no API key is configured.
      */
     static async generateEmbedding(text: string): Promise<Float32Array> {
         console.assert(typeof text === 'string', 'text must be a valid string');
-        const defaultDim = 1536;
+        const dim = this.getEffectiveDimension();
         const startTime = Date.now();
         const estimatedTokens = Math.ceil(text.length / 4);
 
-        const activeProvider = secureStore.getActiveProvider();
-        const activeModel = activeProvider === 'gemini' ? 'gemini-embedding-001' : 'text-embedding-3-small';
+        const embeddingConfig = secureStore.getEmbeddingConfig();
+        const activeProvider = embeddingConfig.provider;
+        const activeModel = embeddingConfig.model;
 
         try {
             const embedding = await aiBridge.getEmbedding(activeProvider, activeModel, text);
-            if (embedding && embedding.length === defaultDim) {
+            if (embedding && embedding.length > 0) {
+                const actualDim = embedding.length;
+                if (actualDim !== dim) {
+                    console.log(`[EmbeddingService] Detected actual dimension ${actualDim} (configured ${dim}). Updating.`);
+                    secureStore.setEmbeddingDimension(actualDim);
+                    dbService.syncVecDimension();
+                }
+                const targetDim = actualDim > 0 ? actualDim : dim;
+                const normalized = EmbeddingService.normalizeToDim(embedding, targetDim);
                 try {
                     dbService.addModelPerformance(
                         activeModel,
@@ -44,7 +87,7 @@ export class EmbeddingService {
                 } catch (perfErr) {
                     console.error('[EmbeddingService] Failed to log embedding performance:', perfErr);
                 }
-                return new Float32Array(embedding);
+                return normalized;
             }
         } catch (e) {
             console.error(`[EmbeddingService] ${activeProvider} embeddings call failed:`, e);
@@ -66,7 +109,20 @@ export class EmbeddingService {
         }
 
         console.warn('[EmbeddingService] No compatible API key set or embedding calls failed. Returning zero vector (semantic search unavailable).');
-        return new Float32Array(defaultDim);
+        return new Float32Array(dim);
+    }
+
+    /**
+     * Pads or truncates an embedding array to the target dimension.
+     */
+    static normalizeToDim(embedding: number[], targetDim: number): Float32Array {
+        if (embedding.length === targetDim) return new Float32Array(embedding);
+        const result = new Float32Array(targetDim);
+        const copyLen = Math.min(embedding.length, targetDim);
+        for (let i = 0; i < copyLen; i++) {
+            result[i] = embedding[i];
+        }
+        return result;
     }
 
     /**

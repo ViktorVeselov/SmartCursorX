@@ -31,7 +31,8 @@ export class DiffVerificationService {
         if (planRow) {
             try {
                 const plan = JSON.parse(planRow.plan_json);
-                allowedToModify = new Set((plan.filesToModify || []).map((f: string) => path.normalize(f)));
+                const allPlanned = [...(plan.filesToModify || []), ...(plan.filesToCreate || [])];
+                allowedToModify = new Set(allPlanned.map((f: string) => path.normalize(f)));
                 
                 for (const file of modifiedFiles) {
                     const normalizedFile = path.normalize(file);
@@ -195,7 +196,7 @@ export class DiffVerificationService {
         return new Promise((resolve) => {
             const proc = spawn('npx', ['tsc', '--noEmit'], {
                 cwd,
-                shell: true
+                shell: process.platform === 'win32'
             });
 
             let output = '';

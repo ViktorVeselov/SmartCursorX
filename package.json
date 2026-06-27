@@ -21,9 +21,13 @@
     "test:vram": "npx esbuild tests/unit/vramCalculator/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/vramCalculator/runTests.js && node tests/unit/vramCalculator/runTests.js",
     "test:models": "npx esbuild tests/unit/models/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/models/runTests.js && node tests/unit/models/runTests.js",
     "test:scripts": "npx esbuild tests/unit/scriptsArgs/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/scriptsArgs/runTests.js && node tests/unit/scriptsArgs/runTests.js",
+    "test:embeddings": "npx esbuild tests/unit/embeddingDimensions/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/embeddingDimensions/runTests.js && node tests/unit/embeddingDimensions/runTests.js",
+    "test:pipeline": "npx esbuild tests/unit/pipeline/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/pipeline/runTests.js && node tests/unit/pipeline/runTests.js",
+    "test:pipeline-engine": "npx esbuild tests/unit/pipelineEngine/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/pipelineEngine/runTests.js && node tests/unit/pipelineEngine/runTests.js",
     "test:changes": "npx esbuild tests/unit/changes/runTests.ts --bundle --platform=node --format=esm --alias:electron=./tests/unit/taxonomy/electron-mock.js --alias:electron-store=./tests/unit/taxonomy/electron-store-mock.js --outfile=tests/unit/changes/runTests.js && node tests/unit/changes/runTests.js",
     "test:planning": "npx esbuild tests/unit/planning/runTests.ts --bundle --platform=node --format=esm --external:@ai-sdk/* --external:ai --external:ollama-ai-provider --external:@vercel/* --external:@opentelemetry/* --alias:electron=./tests/unit/taxonomy/electron-mock.js --alias:electron-store=./tests/unit/taxonomy/electron-store-mock.js --outfile=tests/unit/planning/runTests.js && node tests/unit/planning/runTests.js",
-    "test": "npm run test:pathguard && npm run test:pm && npm run test:ipcsec && npm run test:dlq && npm run test:dlq:int && npm run test:changes && npm run test:planning"
+    "test": "npm run test:pathguard && npm run test:pm && npm run test:ipcsec && npm run test:securestore && npm run test:dlq && npm run test:dlq:int && npm run test:changes && npm run test:planning && npm run test:embeddings && npm run test:pipeline && npm run test:pipeline-engine",
+    "test:securestore": "npx esbuild tests/unit/secureStore/runTests.ts --bundle --platform=node --format=esm --outfile=tests/unit/secureStore/runTests.js && node tests/unit/secureStore/runTests.js"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.82",
@@ -32,6 +36,7 @@
     "@monaco-editor/react": "^4.6.0",
     "@vscode/codicons": "^0.0.44",
     "@xterm/addon-fit": "^0.11.0",
+    "@xyflow/react": "^12.11.1",
     "ai": "^6.0.200",
     "better-sqlite3": "^12.6.2",
     "chokidar": "^3.6.0",
@@ -59,13 +64,13 @@
     "@typescript-eslint/eslint-plugin": "^7.1.1",
     "@typescript-eslint/parser": "^7.1.1",
     "@vitejs/plugin-react": "^6.0.2",
-    "electron": "^39.8.10",
+    "electron": "^42.5.0",
     "electron-builder": "^26.8.1",
     "eslint": "^8.57.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
     "monaco-editor": "^0.55.1",
-    "typescript": "^5.2.2",
+    "typescript": "^5.9.3",
     "vite": "^8.0.14",
     "vite-plugin-electron": "^1.0.4",
     "vite-plugin-electron-renderer": "^1.0.0"

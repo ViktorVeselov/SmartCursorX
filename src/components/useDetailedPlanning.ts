@@ -105,7 +105,7 @@ Files to Modify:
 ${plan.filesToModify.join('\n')}
 
 Files to Create:
-${plan.steps.filter((s) => s.action === 'create').map((s) => s.target).join('\n')}
+${(plan.filesToCreate || plan.steps.filter((s) => s.action === 'create').map((s) => s.target)).join('\n')}
 
 Existing Design Document (includes high-level tradeoffs and consequences to consider):
 ${cleanDoc}
@@ -179,11 +179,19 @@ IMPORTANT: The "tradeoffs" and "consequences" you generate here are for the IMPL
             }
         }, handleEnd, 'ai:detailed-plan');
 
+        // Read current provider/model from settings so the backend uses the same
+        // model the user has selected in the chat panel (consistent with ai:chat-start / ai:plan-start).
+        const settings = await window.ipcRenderer.invoke('get-general-settings');
+        const providerId = settings?.activeProvider;
+        const model = settings?.selectedModel;
+
         window.ipcRenderer.send('ai:detailed-plan-start', {
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt }
             ],
+            providerId,
+            model,
             convId: '__detailed_plan__'
         });
     };

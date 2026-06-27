@@ -35,6 +35,7 @@ export const ExecutionPlanSchema = z.object({
   expectedOutcome: z.string(),
   filesRead: z.array(z.string()),
   filesToModify: z.array(z.string()),
+  filesToCreate: z.array(z.string()).optional(),
   verificationCriteria: z.array(z.string()),
   confidence: z.number().min(0).max(1),
   designDoc: z.string().optional(),

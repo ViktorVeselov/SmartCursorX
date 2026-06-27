@@ -123,8 +123,9 @@ export class ContextAssembler {
                 const plan = JSON.parse(planRow.plan_json);
                 const reads = plan.filesRead || [];
                 const writes = plan.filesToModify || [];
-                
-                for (const f of [...reads, ...writes]) {
+                const creates = plan.filesToCreate || [];
+
+                for (const f of [...reads, ...writes, ...creates]) {
                     if (typeof f === 'string' && f.trim().length > 0) {
                         filesToParse.add(f.trim());
                     }
@@ -520,7 +521,9 @@ Execute the active task effectively using the predefined plan.`;
             [/smollm2?\d*/i, 2048], [/llama\s*-?\s*3/i, 8192], [/llama\s*-?\s*2/i, 4096],
             [/mistral/i, 32768], [/mixtral/i, 32768], [/gemma/i, 8192],
             [/falcon/i, 2048], [/starcoder/i, 8192], [/dolphin/i, 8192],
-            [/nous-?hermes/i, 8192], [/yi/i, 4096], [/phi/i, 4096]
+            [/nous-?hermes/i, 8192], [/yi/i, 4096], [/phi/i, 4096],
+            [/nemotron/i, 1000000], [/\bnvidia\b/i, 1000000],
+            [/deepseek/i, 65536], [/qwen/i, 32768], [/codestral/i, 256000]
         ];
         for (const [re, ctx] of patterns) {
             if (re.test(name)) return ctx;

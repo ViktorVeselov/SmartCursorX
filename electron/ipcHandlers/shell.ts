@@ -1,4 +1,5 @@
 import { openClawService } from '../services/OpenClawService';
+import { auditLogger } from '../services/AuditLogger';
 import { checkArgs } from '../../src/helpers/invariant';
 import type { IpcHandlerContext } from './index';
 
@@ -55,9 +56,21 @@ export function registerShellHandlers(ipcMain: Electron.IpcMain, context: IpcHan
             context.ptyProcesses.delete(terminalId);
         }
 
+        const ALLOWED_ENV_VARS = new Set([
+            'PATH', 'HOME', 'USER', 'USERNAME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+            'SHELL', 'TERM', 'TERMINFO', 'TMPDIR', 'TEMP', 'TMP',
+            'LANG', 'LC_ALL', 'LC_CTYPE', 'LOCALE',
+            'COLORTERM', 'DISPLAY', 'XDG_SESSION_TYPE', 'WAYLAND_DISPLAY',
+            'PWD', 'OLDPWD',
+            'EDITOR', 'VISUAL', 'PAGER',
+            'NODE_PATH', 'NVM_BIN', 'NVM_DIR',
+            'PYTHONPATH', 'PIP_USER',
+            'WINDIR', 'SYSTEMROOT', 'PATHEXT', 'ALLUSERSPROFILE', 'PROCESSOR_ARCHITECTURE',
+            'PSModulePath', 'MSYSTEM', 'CHERE_INVOKING',
+        ]);
         const safeEnv = Object.fromEntries(
             Object.entries(process.env).filter(([key]) =>
-                !/api[_-]?key|secret|token|password|credential/i.test(key)
+                key && ALLOWED_ENV_VARS.has(key)
             )
         );
         const ptyProcess = pty.spawn(selectedShell, [], {
@@ -138,6 +151,7 @@ export function registerShellHandlers(ipcMain: Electron.IpcMain, context: IpcHan
     });
 
     ipcMain.handle('openclaw:run-agent', (_event, message, thinkingDepth) => {
+        auditLogger.log('openclaw:run-agent', [message.substring(0, 80), thinkingDepth]);
         checkArgs(typeof message === 'string' && message.length > 0, 'Agent message must be a non-empty string');
         openClawService.runAgentStream(
             message,
@@ -158,15 +172,5 @@ export function registerShellHandlers(ipcMain: Electron.IpcMain, context: IpcHan
 
     ipcMain.handle('openclaw:get-logs', () => {
         return openClawService.getLogs();
-    });
-
-    ipcMain.handle('shell:exec', async (_event, command: string) => {
-        const { execSync } = require('child_process');
-        try {
-            const stdout = execSync(command, { encoding: 'utf-8', timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
-            return { stdout: stdout.trim(), stderr: '' };
-        } catch (err: any) {
-            return { stdout: err.stdout?.trim() || '', stderr: err.stderr?.trim() || err.message };
-        }
     });
 }

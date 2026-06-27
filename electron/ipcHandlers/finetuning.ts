@@ -1,8 +1,11 @@
 import { ipcMain, BrowserWindow } from 'electron'
+import { spawn } from 'child_process'
 import { finetuningService } from '../services/FinetuningService'
 import { secureStore } from '../secureStore'
+import { auditLogger } from '../services/AuditLogger'
 import { DatasetConfig } from '../constants/models'
 import { HardwareSpec } from '../services/backends/BaseFinetuneBackend'
+import { checkArgs } from '../../src/helpers/invariant'
 
 export function registerFinetuningHandlers(_ipcMain: Electron.IpcMain) {
   let progressUnsub: (() => void) | null = null
@@ -37,6 +40,7 @@ export function registerFinetuningHandlers(_ipcMain: Electron.IpcMain) {
   })
 
   ipcMain.handle('finetune:start', async (_event, options: any) => {
+    auditLogger.log('finetune:start', [options?.modelId, options?.datasetPath]);
     if (progressUnsub) progressUnsub()
 
     progressUnsub = finetuningService.onProgress((event) => {
@@ -63,6 +67,7 @@ export function registerFinetuningHandlers(_ipcMain: Electron.IpcMain) {
   })
 
   ipcMain.handle('finetune:stop', async () => {
+    auditLogger.log('finetune:stop', []);
     if (progressUnsub) { progressUnsub(); progressUnsub = null }
     await finetuningService.stopTraining()
     return { success: true }
@@ -94,5 +99,40 @@ export function registerFinetuningHandlers(_ipcMain: Electron.IpcMain) {
     }
     await finetuningService.installDependencies(sendLog)
     return { success: true }
+  })
+
+  ipcMain.handle('finetune:convert-dataset', async (_event, params: {
+    inputPath: string;
+    outputPath: string;
+    mode?: string;
+    maxSamples?: number;
+    filterTruncated?: boolean;
+  }) => {
+    auditLogger.log('finetune:convert-dataset', [params.inputPath, params.outputPath, params.mode]);
+    checkArgs(params && typeof params.inputPath === 'string', 'inputPath must be a string');
+    checkArgs(typeof params.outputPath === 'string', 'outputPath must be a string');
+
+    const scriptPath = 'scripts/convert_cot_dataset.py';
+    const args = [
+      scriptPath,
+      '--input', params.inputPath,
+      '--output', params.outputPath,
+      '--mode', params.mode || 'instruction',
+      '--max-samples', String(params.maxSamples || 2000),
+    ];
+    if (params.filterTruncated !== false) args.push('--filter-truncated');
+
+    return new Promise((resolve, reject) => {
+      const proc = spawn('python', args, { shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      proc.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+      proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+      proc.on('close', (code) => {
+        if (code === 0) resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
+        else reject(new Error(stderr.trim() || `process exited with code ${code}`));
+      });
+      proc.on('error', reject);
+    });
   })
 }

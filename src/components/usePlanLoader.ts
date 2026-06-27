@@ -169,6 +169,7 @@ export function usePlanLoader(taskId: number) {
                     expectedOutcome: 'Task completed successfully',
                     filesRead: [],
                     filesToModify: [],
+                    filesToCreate: [],
                     verificationCriteria: ['No compilation errors'],
                     confidence: 0.9,
                     designDoc: '# Implementation Design Doc\n\nDescribe your architectural blueprint, module configurations, and code modifications here.'

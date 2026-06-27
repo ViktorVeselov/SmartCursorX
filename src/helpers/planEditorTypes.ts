@@ -14,6 +14,7 @@ export interface ExecutionPlan {
     expectedOutcome: string;
     filesRead: string[];
     filesToModify: string[];
+    filesToCreate?: string[];
     verificationCriteria: string[];
     confidence: number;
     designDoc?: string;

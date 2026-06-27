@@ -297,6 +297,7 @@ export function ChatMessageCard({
                             finalActivity = {
                                 filesRead: msg.filesRead || [],
                                 filesEdited: [],
+                                filesCreated: [],
                                 thoughts: '',
                                 activities: msg.activities || []
                             };

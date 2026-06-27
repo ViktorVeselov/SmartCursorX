@@ -3,6 +3,8 @@ import crypto from 'crypto';
 import { createRequire } from 'module';
 import { dbService } from '../db';
 import { checkArgs, assertNonNull } from '../../src/helpers/invariant';
+import { auditLogger } from '../services/AuditLogger';
+import { PathGuard } from '../services/PathGuard';
 import type { IpcHandlerContext } from './index';
 
 const require = createRequire(import.meta.url);
@@ -49,8 +51,15 @@ export function registerGitHandlers(ipcMain: Electron.IpcMain, context: IpcHandl
     });
 
     ipcMain.handle('git-clone', async (_event, repoUrl: string, destinationDir: string) => {
+        auditLogger.log('git-clone', [repoUrl, destinationDir]);
         checkArgs(typeof repoUrl === 'string' && repoUrl.trim().length > 0, 'repoUrl must be a valid non-empty string');
         checkArgs(typeof destinationDir === 'string' && destinationDir.trim().length > 0, 'destinationDir must be a valid non-empty string');
+
+        // Ensure destination is within workspace
+        const resolvedDest = path.resolve(destinationDir);
+        if (!PathGuard.isContained(resolvedDest)) {
+            throw new Error(`Destination path "${destinationDir}" is outside the workspace`);
+        }
 
         let targetUrl = repoUrl.trim();
         if (!targetUrl.startsWith('https://') && !targetUrl.startsWith('git@') && !targetUrl.startsWith('http://')) {
@@ -58,8 +67,8 @@ export function registerGitHandlers(ipcMain: Electron.IpcMain, context: IpcHandl
         }
 
         try {
-            const parentDir = path.dirname(destinationDir);
-            const folderName = path.basename(destinationDir);
+            const parentDir = path.dirname(resolvedDest);
+            const folderName = path.basename(resolvedDest);
             await fs.mkdir(parentDir, { recursive: true });
 
             const { spawn } = require('child_process');

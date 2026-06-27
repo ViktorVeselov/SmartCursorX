@@ -30,6 +30,15 @@ export function createTables(db: any) {
     if (!db) return;
 
     db.prepare(`
+        CREATE TABLE IF NOT EXISTS pipeline_presets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            config TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    `).run();
+
+    db.prepare(`
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT NOT NULL,
@@ -274,12 +283,8 @@ export function createTables(db: any) {
         )
     `).run();
 
-    db.prepare(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS vec_knowledge USING vec0(
-            chunk_id INTEGER PRIMARY KEY,
-            embedding float[1536] distance_metric=cosine
-        )
-    `).run();
+    const dim = getStoredEmbeddingDim(db) || 1536;
+    createVecTable(db, dim);
 
     db.prepare(`
         CREATE TABLE IF NOT EXISTS task_docs (
@@ -532,4 +537,40 @@ export function migrateTaskIds(db: any) {
     } catch (err) {
         console.error('[DatabaseService] Task ID migration failed:', err);
     }
+}
+
+export function getStoredEmbeddingDim(db: any): number {
+    if (!db) return 0;
+    try {
+        const row = db.prepare(`SELECT value FROM app_config WHERE key = 'embedding_dim'`).get();
+        return row ? Number(row.value) : 0;
+    } catch {
+        return 0;
+    }
+}
+
+export function setStoredEmbeddingDim(db: any, dim: number): void {
+    if (!db) return;
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT)
+    `).run();
+    db.prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES ('embedding_dim', ?)`).run(String(dim));
+}
+
+export function createVecTable(db: any, dim: number): void {
+    if (!db) return;
+    db.prepare(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS vec_knowledge USING vec0(
+            chunk_id INTEGER PRIMARY KEY,
+            embedding float[${dim}] distance_metric=cosine
+        )
+    `).run();
+}
+
+export function recreateVecTable(db: any, dim: number): void {
+    if (!db) return;
+    db.prepare(`DROP TABLE IF EXISTS vec_knowledge`).run();
+    createVecTable(db, dim);
+    setStoredEmbeddingDim(db, dim);
+    console.log(`[DatabaseService] vec_knowledge recreated with dimension ${dim}`);
 }

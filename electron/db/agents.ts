@@ -48,6 +48,11 @@ export function getAgents(db: any) {
     return db.prepare('SELECT * FROM agents ORDER BY created_at DESC').all();
 }
 
+export function getAgentById(db: any, id: number) {
+    if (!db) return null;
+    return db.prepare('SELECT * FROM agents WHERE id = ?').get(id) || null;
+}
+
 export function deleteAgent(db: any, id: number) {
     checkArgs(typeof id === 'number', 'Agent ID must be a number');
     if (!db) throw new Error('DB not initialized');

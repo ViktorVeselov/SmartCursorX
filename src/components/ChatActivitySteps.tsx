@@ -83,6 +83,14 @@ export function ActivitySteps({
             virtualSteps.push({ type: 'edit', filePath: file, timestamp: 0 });
         });
 
+        (activity.filesCreated || []).forEach(file => {
+            const norm = file.replace(/\\/g, '/').toLowerCase();
+            if (!seenFiles.has(norm)) {
+                seenFiles.add(norm);
+            }
+            virtualSteps.push({ type: 'create', filePath: file, timestamp: 0 });
+        });
+
         (activity.planSteps || []).forEach(step => {
             virtualSteps.push({
                 type: 'plan' as const,
@@ -135,6 +143,7 @@ export function ActivitySteps({
     const searchSteps = steps.filter(s => s.type === 'search');
     const analyzeSteps = steps.filter(s => s.type === 'analyze');
     const editSteps = steps.filter(s => s.type === 'edit');
+    const createSteps = steps.filter(s => s.type === 'create');
     const planSteps = steps.filter(s => (s.type as string) === 'plan');
 
     const uniqueFiles = Array.from(new Set(analyzeSteps.map(s => s.filePath?.replace(/\\/g, '/').toLowerCase()).filter(Boolean)));
@@ -262,7 +271,7 @@ export function ActivitySteps({
 
                                     {isExploredExpanded && (
                                         <div style={{ display: 'flex', flexDirection: 'column', width: '100%', paddingLeft: '14px' }}>
-                                            {steps.filter(s => s.type !== 'edit' && (s.type as string) !== 'plan').map((step, idx) => {
+                                            {steps.filter(s => s.type !== 'edit' && s.type !== 'create' && (s.type as string) !== 'plan').map((step, idx) => {
                                                 if (step.type === 'search') {
                                                     return (
                                                         <div key={idx} style={{ 
@@ -297,7 +306,27 @@ export function ActivitySteps({
                                                                     {step.resultsCount} {step.resultsCount === 1 ? 'result' : 'results'}
                                                                 </span>
                                                             )}
-                                                        </div>
+                            {/* Created steps - siblings to Explored */}
+                            {createSteps.length > 0 && (
+                                <div style={{ display: 'flex', flexDirection: 'column', width: '100%', paddingLeft: '14px' }}>
+                                    {createSteps.map((step, idx) => (
+                                        <div key={idx} style={{ padding: '2px 0', fontSize: '13px', lineHeight: '1.6', display: 'flex', alignItems: 'center', color: 'var(--text-secondary, rgba(255,255,255,0.55))' }}>
+                                            <span style={{ marginRight: '6px' }}>Created</span>
+                                            <span style={{ fontFamily: 'Consolas, Monaco, monospace', fontSize: '12px', color: 'var(--text-primary, rgba(255,255,255,0.85))', cursor: 'pointer', marginRight: '6px' }}
+                                                onClick={() => handleFileClick(step.filePath)}
+                                                onMouseOver={e => e.currentTarget.style.textDecoration = 'underline'}
+                                                onMouseOut={e => e.currentTarget.style.textDecoration = 'none'}
+                                            >
+                                                {step.filePath?.split(/[/\\]/).pop()}
+                                            </span>
+                                            <span style={{ color: 'var(--text-secondary, rgba(255,255,255,0.4))', fontSize: '11px', fontFamily: 'Consolas, Monaco, monospace' }}>
+                                                ({step.filePath})
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                                                     );
                                                 }
 

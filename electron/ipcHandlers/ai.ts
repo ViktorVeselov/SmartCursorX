@@ -1,4 +1,5 @@
-import { aiService, ApiTimeoutError, ApiAuthError, ApiRateLimitError, ApiNetworkError } from '../services/AIService';
+import { AIService, aiService, ApiTimeoutError, ApiAuthError, ApiRateLimitError, ApiNetworkError } from '../services/AIService';
+import { pipelineService } from '../services/PipelineService';
 import { aiBridge } from '../services/AIBridge';
 import { CostEstimatorService } from '../services/CostEstimatorService';
 import { ExecutionPlanSchema, CodePlanningResultSchema, getZenModelsInfo } from '../services/ai';
@@ -188,8 +189,8 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
         const isAborted = () => context.abortedConvIds.has(streamConvId);
         const getSignal = () => context.activeAbortControllers.get(streamConvId)?.signal;
         try {
-            const targetProvider = providerId || secureStore.getActiveProvider();
-            const targetModel = model || secureStore.getSelectedModel();
+            const targetProvider = providerId || pipelineService.getProviderFor('chat');
+            const targetModel = model || pipelineService.getModelFor('chat');
 
             if (targetProvider === 'local') {
                 const localService = LocalModelService.getInstance();
@@ -209,10 +210,8 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                 }
             }
 
-            if (!aiService.isActive() || aiService.providerId !== targetProvider) {
-                console.log(`[ChatStream] Dynamic initialization of AIService for provider: ${targetProvider}`);
-                aiService.initializeFromStore(targetProvider);
-            }
+            const chatService = AIService.getForProvider(targetProvider);
+            console.log(`[ChatStream] Using AIService for provider: ${chatService.providerId}`);
 
             const workspacePath = rootPath || getWorkspacePath();
             if (rootPath) {
@@ -325,7 +324,7 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                   ]
                 : messages;
 
-            const result = await aiService.chat(chatMessages, {
+            const result = await chatService.chat(chatMessages, {
                 stream: true,
                 model: targetModel,
                 temperature: 0.7,
@@ -334,7 +333,7 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                 abortSignal: getSignal(),
                 tools: chatTools,
             });
-            console.log('[ChatStream] aiService.chat() returned, type:', typeof result, 'has text:', 'text' in result);
+            console.log('[ChatStream] chatService.chat() returned, type:', typeof result, 'has text:', 'text' in result);
 
             if (isAborted()) {
                 console.log('[ChatStream] Stream request cancelled before start, sending ai:chat-end');
@@ -391,7 +390,7 @@ export function registerAIHandlers(ipcMain: Electron.IpcMain, context: IpcHandle
                         { role: 'system', content: fallbackPrompt },
                         ...messages,
                     ];
-                    const fallbackResult = await aiService.chat(fallbackMessages, {
+                    const fallbackResult = await chatService.chat(fallbackMessages, {
                         stream: true,
                         model: targetModel,
                         temperature: 0.7,
@@ -551,8 +550,8 @@ async function handleStructuredPlanStart(
         const startTime = Date.now();
         
         try {
-            const targetProvider = providerId || secureStore.getActiveProvider();
-            const targetModel = model || secureStore.getSelectedModel();
+            const targetProvider = providerId || pipelineService.getProviderFor('plan_generation');
+            const targetModel = model || pipelineService.getModelFor('plan_generation');
 
             if (targetProvider === 'local') {
                 const localService = LocalModelService.getInstance();
@@ -572,12 +571,10 @@ async function handleStructuredPlanStart(
                 }
             }
 
-            if (!aiService.isActive() || aiService.providerId !== targetProvider) {
-                console.log(`[PlanStream:${channelPrefix}] Dynamic initialization of AIService for provider: ${targetProvider}`);
-                aiService.initializeFromStore(targetProvider);
-            }
+            const planService = AIService.getForProvider(targetProvider);
+            console.log(`[PlanStream:${channelPrefix}] Using AIService for provider: ${planService.providerId}`);
 
-            const partialStream = await aiService.streamObject(
+            const partialStream = await planService.streamObject(
                 schema,
                 messages,
                 { model: targetModel, temperature: 0.1, effortLevel, thinking, abortSignal: planAbortController.signal }

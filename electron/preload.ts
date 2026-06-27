@@ -32,11 +32,13 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'finetune:detect-hardware', 'finetune:refresh-hardware', 'finetune:get-models', 'finetune:get-state', 'finetune:get-recommendation',
   'finetune:prepare-dataset', 'finetune:export-dataset', 'finetune:start', 'finetune:stop',
   'finetune:reset', 'finetune:get-adapter-path', 'finetune:get-builtin-dataset',
-  'finetune:install-dependencies', 'finetune:check-packages',
-  'shell:exec',
+  'finetune:install-dependencies', 'finetune:check-packages', 'finetune:convert-dataset',
   'local:list', 'local:search-hf', 'local:hf-files', 'local:download', 'local:delete',
   'local:start-server', 'local:stop-server', 'local:redownload-llama', 'local:server-status',
   'local:get-model-settings', 'local:set-context-size',
+  'embedding:get-config', 'embedding:set-config',
+  'pipeline:get-enabled', 'pipeline:set-enabled', 'pipeline:get-config', 'pipeline:set-config',
+  'pipeline:get-presets', 'pipeline:save-preset', 'pipeline:load-preset', 'pipeline:delete-preset', 'pipeline:engine-steps',
   'changes:is-git', 'changes:get-list', 'changes:get-file-content', 'changes:stage-file', 'changes:discard-file'
 ]);
 

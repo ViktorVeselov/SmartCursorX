@@ -86,7 +86,7 @@ export class CompilationCheckerService {
         language: string
     ): Promise<LanguageCheckResult> {
         return new Promise((resolve) => {
-            const proc = spawn(command, args, { cwd, shell: true });
+            const proc = spawn(command, args, { cwd });
             let output = '';
             const timeout = setTimeout(() => {
                 proc.kill();

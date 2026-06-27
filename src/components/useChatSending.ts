@@ -7,6 +7,16 @@ import { handleSlashCommand } from '../helpers/chatCommands';
 import { buildPlanModePrompt } from '../helpers/planPrompts';
 import type { ActivityTimelineItem } from '../helpers/chatParsing';
 
+function getPlatform(): string {
+    if (typeof navigator !== 'undefined') {
+        const ua = navigator.userAgent;
+        if (ua.includes('Windows')) return 'win32';
+        if (ua.includes('Mac')) return 'darwin';
+        if (ua.includes('Linux')) return 'linux';
+    }
+    return 'unknown';
+}
+
 interface Message {
     id?: number;
     role: 'user' | 'assistant' | 'system';
@@ -439,7 +449,7 @@ export function useChatSending(params: ChatSendingParams) {
                 systemMessages.push({ role: 'system', content: `[Active Workflow Context: ${activeWorkflow.name}]\nDescription: ${activeWorkflow.description || ''}\nSteps/Structure:\n${stepsText}` });
             }
             let finalPrompt = userMsg.content;
-            if (sendPlanModeActive) finalPrompt = buildPlanModePrompt(userMsg.content, executionMode, dbAgents, flows);
+            if (sendPlanModeActive) finalPrompt = buildPlanModePrompt(userMsg.content, executionMode, dbAgents, flows, rootPath || '', getPlatform());
             else if (executionMode === 'think') finalPrompt = `[Thinking Mode Active: Generate step-by-step structure] ${finalPrompt}`;
             const llmUserMsg = { ...userMsg, content: finalPrompt };
             let finalSystemMessages = [...systemMessages];

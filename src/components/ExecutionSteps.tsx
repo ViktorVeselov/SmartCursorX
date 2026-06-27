@@ -23,6 +23,7 @@ interface ExecutionAttempt {
 interface PlanData {
     filesRead?: string[];
     filesToModify?: string[];
+    filesToCreate?: string[];
     steps?: PlanStep[];
 }
 
@@ -176,6 +177,18 @@ export function ExecutionSteps({ taskId }: ExecutionStepsProps) {
                         <div key={i} style={{ padding: '2px 0', display: 'flex', alignItems: 'center' }}>
                             <span className="codicon codicon-diff-modified" style={{ marginRight: '6px', color: '#e2c08d', fontSize: '12px' }} />
                             <span>Planned modify on {file}</span>
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {/* Planned Creations */}
+            {plan && plan.filesToCreate && plan.filesToCreate.length > 0 && (
+                <div style={{ marginBottom: '10px', paddingLeft: '6px' }}>
+                    {plan.filesToCreate.map((file, i) => (
+                        <div key={i} style={{ padding: '2px 0', display: 'flex', alignItems: 'center' }}>
+                            <span className="codicon codicon-add" style={{ marginRight: '6px', color: '#4ec9b0', fontSize: '12px' }} />
+                            <span>Planned create on {file}</span>
                         </div>
                     ))}
                 </div>
